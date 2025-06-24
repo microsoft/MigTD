@@ -1,0 +1,13 @@
+[package]
+name = "verify_quote_app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "verify_quote_app"
+path = "src/main.rs"
+
+[dependencies]
+hex = "0.4"
