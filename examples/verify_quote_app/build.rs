@@ -45,8 +45,10 @@ fn main() {
         "{}/external/dcap_source/QuoteGeneration/quote_wrapper/servtd_attest/linux",
         &lib_path
     );    
-    
     println!("cargo:rustc-link-search=native={}", search_dir);
-    println!("cargo:rustc-link-lib=static=servtd_attest");
-    println!("cargo:rustc-link-arg=-Wl,-defsym=__ImageBase=0");
+    println!("cargo:rustc-link-arg=-defsym=__ImageBase=0");
+    //the following line from src/attestation/build.rs does not wotk for a Rust App with standard runtime
+    //println!("cargo:rustc-link-lib=static=servtd_attest");
+    println!("cargo:rustc-link-arg=-lservtd_attest");
+
 }
