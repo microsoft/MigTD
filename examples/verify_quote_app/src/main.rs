@@ -1,5 +1,9 @@
 use std::fs;
 use std::ffi::c_void;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 
 // Direct reproduction of the AttestLibError enum from the real attestation library
 #[repr(C)]
@@ -249,12 +253,281 @@ fn print_error(error: Error) {
     }
 }
 
-fn main() {
- //   println!("=== MigTD Attestation verify_quote_integrity REAL FUNCTION Test ===");
- //   println!("This application demonstrates the REAL verify_quote_integrity function call\n");
+// Command line interface structure
+#[derive(Parser)]
+#[command(name = "verify_quote_app")]
+#[command(about = "MigTD Quote Verification App with Networking")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run in server mode (receives quotes for verification)
+    Server {
+        /// Port to listen on
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+        /// Bind address
+        #[arg(short, long, default_value = "127.0.0.1")]
+        bind: String,
+    },
+    /// Run in client mode (sends quotes to server)
+    Client {
+        /// Server address to connect to
+        #[arg(short, long, default_value = "127.0.0.1")]
+        server: String,
+        /// Server port to connect to
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+        /// Send sample quote
+        #[arg(long)]
+        send_quote: bool,
+        /// Request server's quote
+        #[arg(long)]
+        request_quote: bool,
+    },
+    /// Run standalone verification (original behavior)
+    Standalone,
+}
+
+// Network message protocol
+#[derive(Serialize, Deserialize, Debug)]
+enum NetworkMessage {
+    QuoteRequest,
+    QuoteResponse { 
+        quote: Vec<u8> 
+    },
+    VerifyQuote { 
+        quote: Vec<u8> 
+    },
+    VerificationResult { 
+        success: bool, 
+        verified_report: Option<Vec<u8>>,
+        error: Option<String>
+    },
+    Ping,
+    Pong,
+}
+
+impl NetworkMessage {
+    pub fn quote(&self) -> Option<&Vec<u8>> {
+        match self {
+            NetworkMessage::QuoteResponse { quote } => Some(quote),
+            NetworkMessage::VerifyQuote { quote } => Some(quote),
+            _ => None,
+        }
+    }
+}
+
+// Network communication functions
+async fn send_message(stream: &mut TcpStream, message: &NetworkMessage) -> Result<(), String> {
+    let json = serde_json::to_string(message).map_err(|e| e.to_string())?;
+    let len = json.len() as u32;
+    
+    // Send length first (4 bytes)
+    stream.write_all(&len.to_be_bytes()).await.map_err(|e| e.to_string())?;
+    // Send JSON message
+    stream.write_all(json.as_bytes()).await.map_err(|e| e.to_string())?;
+    stream.flush().await.map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+async fn receive_message(stream: &mut TcpStream) -> Result<NetworkMessage, String> {
+    // Read length first (4 bytes)
+    let mut len_bytes = [0u8; 4];
+    stream.read_exact(&mut len_bytes).await.map_err(|e| e.to_string())?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    
+    // Read JSON message
+    let mut buffer = vec![0u8; len];
+    stream.read_exact(&mut buffer).await.map_err(|e| e.to_string())?;
+    
+    let json = String::from_utf8(buffer).map_err(|e| e.to_string())?;
+    let message: NetworkMessage = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    
+    Ok(message)
+}
+
+// Server mode implementation
+async fn run_server(bind_addr: String, port: u16) -> Result<(), String> {
+    println!("=== MigTD Quote Verification Server ===");
+    println!("Starting server on {}:{}", bind_addr, port);
+    
+    // Initialize attestation heap
+    match attest_init_heap() {
+        Some(heap_size) => println!("✓ Heap initialized successfully (size: {} bytes)", heap_size),
+        None => {
+            println!("✗ Failed to initialize heap");
+            return Err("Failed to initialize attestation heap".to_string());
+        }
+    }
+    
+    let listener = TcpListener::bind(format!("{}:{}", bind_addr, port)).await
+        .map_err(|e| format!("Failed to bind to {}:{}: {}", bind_addr, port, e))?;
+    println!("✓ Server listening on {}:{}", bind_addr, port);
+    
+    loop {
+        let (mut stream, addr) = listener.accept().await
+            .map_err(|e| format!("Failed to accept connection: {}", e))?;
+        println!("\n📡 New connection from: {}", addr);
+        
+        tokio::spawn(async move {
+            if let Err(e) = handle_client(&mut stream).await {
+                println!("❌ Error handling client {}: {}", addr, e);
+            }
+        });
+    }
+}
+
+async fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
+    loop {
+        match receive_message(stream).await {
+            Ok(message) => {
+                println!("📨 Received: {:?}", message);
+                
+                match message {
+                    NetworkMessage::Ping => {
+                        send_message(stream, &NetworkMessage::Pong).await?;
+                        println!("📤 Sent: Pong");
+                    }
+                    NetworkMessage::QuoteRequest => {
+                        let quote = get_sample_quote();
+                        let response = NetworkMessage::QuoteResponse { quote };
+                        send_message(stream, &response).await?;
+                        if let Some(quote) = response.quote() {
+                            println!("📤 Sent quote ({} bytes)", quote.len());
+                        }
+                    }
+                    NetworkMessage::VerifyQuote { quote } => {
+                        println!("🔍 Verifying received quote ({} bytes)", quote.len());
+                        
+                        match verify_quote_real(&quote) {
+                            Ok(verified_report) => {
+                                println!("✅ Quote verification successful!");
+                                let response = NetworkMessage::VerificationResult {
+                                    success: true,
+                                    verified_report: Some(verified_report),
+                                    error: None,
+                                };
+                                send_message(stream, &response).await?;
+                                println!("📤 Sent verification result (success)");
+                            }
+                            Err(e) => {
+                                println!("❌ Quote verification failed: {:?}", e);
+                                let response = NetworkMessage::VerificationResult {
+                                    success: false,
+                                    verified_report: None,
+                                    error: Some(format!("{:?}", e)),
+                                };
+                                send_message(stream, &response).await?;
+                                println!("📤 Sent verification result (failure)");
+                            }
+                        }
+                    }
+                    _ => {
+                        println!("⚠️ Unexpected message type in server mode");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("❌ Connection error: {}", e);
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+// Client mode implementation
+async fn run_client(server_addr: String, port: u16, send_quote: bool, request_quote: bool) -> Result<(), String> {
+    println!("=== MigTD Quote Verification Client ===");
+    println!("Connecting to server at {}:{}", server_addr, port);
+    
+    let mut stream = TcpStream::connect(format!("{}:{}", server_addr, port)).await
+        .map_err(|e| format!("Failed to connect to {}:{}: {}", server_addr, port, e))?;
+    println!("✓ Connected to server");
+    
+    // Initialize attestation heap for local operations
+    match attest_init_heap() {
+        Some(heap_size) => println!("✓ Heap initialized successfully (size: {} bytes)", heap_size),
+        None => {
+            println!("⚠️ Failed to initialize heap (may affect local operations)");
+        }
+    }
+    
+    // Send ping to test connection
+    println!("\n🏓 Testing connection with ping...");
+    send_message(&mut stream, &NetworkMessage::Ping).await?;
+    match receive_message(&mut stream).await? {
+        NetworkMessage::Pong => println!("✅ Connection test successful (received pong)"),
+        _ => println!("⚠️ Unexpected response to ping"),
+    }
+    
+    if request_quote {
+        println!("\n📞 Requesting quote from server...");
+        send_message(&mut stream, &NetworkMessage::QuoteRequest).await?;
+        
+        match receive_message(&mut stream).await? {
+            NetworkMessage::QuoteResponse { quote } => {
+                println!("✅ Received quote from server ({} bytes)", quote.len());
+                println!("   Quote preview: {}", hex::encode(&quote[..std::cmp::min(32, quote.len())]));
+                
+                // Optionally verify the received quote locally
+                println!("🔍 Verifying received quote locally...");
+                match verify_quote_real(&quote) {
+                    Ok(verified_report) => {
+                        println!("✅ Local verification successful!");
+                        println!("   Verified report size: {} bytes", verified_report.len());
+                    }
+                    Err(e) => {
+                        println!("❌ Local verification failed: {:?}", e);
+                    }
+                }
+            }
+            _ => println!("⚠️ Unexpected response to quote request"),
+        }
+    }
+    
+    if send_quote {
+        println!("\n📤 Sending quote to server for verification...");
+        let quote = get_sample_quote();
+        println!("   Generated local quote ({} bytes)", quote.len());
+        
+        let message = NetworkMessage::VerifyQuote { quote };
+        send_message(&mut stream, &message).await?;
+        
+        match receive_message(&mut stream).await? {
+            NetworkMessage::VerificationResult { success, verified_report, error } => {
+                if success {
+                    println!("✅ Server verification successful!");
+                    if let Some(report) = verified_report {
+                        println!("   Verified report size: {} bytes", report.len());
+                        println!("   Report preview: {}", hex::encode(&report[..std::cmp::min(32, report.len())]));
+                    }
+                } else {
+                    println!("❌ Server verification failed");
+                    if let Some(err) = error {
+                        println!("   Error: {}", err);
+                    }
+                }
+            }
+            _ => println!("⚠️ Unexpected response to verification request"),
+        }
+    }
+    
+    println!("\n✅ Client operations completed");
+    Ok(())
+}
+
+async fn run_standalone() {
+    println!("=== MigTD Attestation verify_quote_integrity REAL FUNCTION Test ===");
+    println!("This application demonstrates the REAL verify_quote_integrity function call\n");
    
     // Step 1: Initialize attestation heap
- //   println!("1. Initializing attestation heap...");
+    println!("1. Initializing attestation heap...");
     match attest_init_heap() {
         Some(heap_size) => println!("   ✓ Heap initialized successfully (size: {} bytes)", heap_size),
         None => {
@@ -342,7 +615,8 @@ fn main() {
     println!("\n6. Testing servtd_get_quote callback...");
     let result = servtd_get_quote(std::ptr::null_mut(), 2048);
     println!("   servtd_get_quote returned: {}", result);
-      println!("\n=== REAL FUNCTION DEMONSTRATION COMPLETE ===");
+    
+    println!("\n=== REAL FUNCTION DEMONSTRATION COMPLETE ===");
     println!("\nThis application successfully demonstrated:");
     println!("1. ✓ Real init_heap() function call");
     println!("2. ✓ Real verify_quote_integrity() function call");
@@ -369,4 +643,32 @@ fn main() {
     println!("2. Linux kernel with SGX/TDX drivers");
     println!("3. BIOS with SGX/TDX enabled");
     println!("4. libservtd_attest.a properly compiled and linked");
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    
+    let result = match cli.command {
+        Commands::Server { port, bind } => {
+            run_server(bind, port).await
+        }
+        Commands::Client { server, port, send_quote, request_quote } => {
+            if !send_quote && !request_quote {
+                println!("⚠️ No client operations specified. Use --send-quote or --request-quote");
+                println!("   Example: --send-quote --request-quote");
+                return;
+            }
+            run_client(server, port, send_quote, request_quote).await
+        }
+        Commands::Standalone => {
+            run_standalone().await;
+            return;
+        }
+    };
+    
+    if let Err(e) = result {
+        eprintln!("❌ Application error: {}", e);
+        std::process::exit(1);
+    }
 }
