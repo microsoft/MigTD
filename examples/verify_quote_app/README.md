@@ -2,13 +2,32 @@
 
 This application demonstrates MigTD quote verification with added networking capabilities, allowing two instances to communicate and exchange quotes and verification results.
 
+## Quick Start
+
+```bash
+# Build the application
+cd examples/verify_quote_app
+cargo build --release
+
+# Run standalone mode (requires sudo for TPM access)
+sudo ./target/release/verify_quote_app standalone
+
+# Or run network modes (no sudo required)
+./target/release/verify_quote_app server
+./target/release/verify_quote_app client --send-quote
+```
+
+**⚠️ Important**: Standalone and Azure modes require `sudo` for TPM access. Server/Client modes do not require elevated privileges.
+
 ## Features
 
-- **Standalone Mode**: Original quote verification functionality
+- **Standalone Mode**: Original quote verification functionality with real collateral support
 - **Server Mode**: Listens for connections and processes quote verification requests
 - **Client Mode**: Connects to servers to send/receive quotes and verification results
 - **Cross-machine Communication**: Works between different machines and on the same machine
 - **Asynchronous Networking**: Uses Tokio for efficient async I/O
+- **Real Collateral Support**: Uses real collateral.bin and quote.bin files from mikbras/tdtools
+- **Azure TDX Integration**: Full support for Azure TDX CVM attestation via az-tdx-vtpm crate
 
 ## Build
 
@@ -24,8 +43,44 @@ cargo build --release
 Run the original quote verification demonstration:
 
 ```bash
-./target/release/verify_quote_app standalone
+# Note: Standalone mode requires sudo for TPM access
+sudo ./target/release/verify_quote_app standalone
 ```
+
+**⚠️ Important**: Standalone mode requires `sudo` privileges because it needs direct access to the TPM (Trusted Platform Module) device for real attestation operations.
+
+### 4. Azure TDX Mode
+
+Run Azure TDX CVM demonstration (also requires sudo for TPM access):
+
+```bash
+# Note: Azure TDX mode also requires sudo for TPM access
+sudo ./target/release/verify_quote_app azure
+```
+
+This mode demonstrates real Azure TDX attestation features using the az-tdx-vtpm crate.
+
+## Real Collateral and Quote Files
+
+The application now includes real collateral and quote files from the [mikbras/tdtools](https://github.com/mikbras/tdtools) repository:
+
+- **collateral.bin** (13,543 bytes): Real Intel TDX collateral data including certificates, CRLs, and TCB information
+- **quote.bin** (5,006 bytes): Real TDX quote for verification testing
+- **samples/**: Directory containing additional collateral files in various formats
+
+The application automatically detects and uses these files in the following priority order:
+
+1. **Azure TDX vTPM**: Real-time attestation data from Azure TDX CVM (requires sudo)
+2. **Real collateral/quote files**: Static real files from mikbras/tdtools
+3. **Mock data**: Fallback mock data for testing when real files are not available
+
+### File Loading Paths
+
+The application searches for files in this order:
+- `./collateral.bin` and `./quote.bin` (current directory)
+- `../collateral.bin` and `../quote.bin` (parent directory)
+- `/tmp/collateral.bin` and `/tmp/quote.bin` (temp directory)
+- `samples/collateral.bin` and `samples/quote.bin` (samples directory)
 
 ### 2. Server Mode
 
@@ -130,11 +185,12 @@ Machine B:
 
 ## Security Considerations
 
-- The current implementation uses sample/mock quotes for demonstration
-- In production, replace with real quote generation and verification
-- Consider adding TLS encryption for network communication
+- **Standalone mode requires sudo**: TPM access for real attestation requires elevated privileges
+- The current implementation uses real Azure TDX attestation via az-tdx-vtpm crate
+- In production, consider adding TLS encryption for network communication
 - Implement proper authentication and authorization
 - Validate all network inputs thoroughly
+- Only run with sudo when necessary (standalone mode) - network modes don't require elevated privileges
 
 ## Dependencies
 
@@ -151,6 +207,10 @@ Same as the original application:
 2. Linux kernel with SGX/TDX drivers
 3. BIOS with SGX/TDX enabled
 4. libservtd_attest.a properly compiled and linked
+
+**For standalone mode only**:
+- Direct TPM access (requires sudo)
+- Azure TDX CVM environment for full attestation features
 
 ## Network Requirements
 
