@@ -1,17 +1,17 @@
 use std::ffi::c_void;
-use std::ptr;
+
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use az_tdx_vtpm::{vtpm, hcl};
+use az_tdx_vtpm::{vtpm, hcl, tdx, imds};
 use hex; // Add this import
 use libc; // Add this import
 use std::time::Duration;
 
 mod collateral;
 use collateral::{
-    QuoteHeader, servtd_get_quote, load_collateral_if_available, set_collateral,
+    load_collateral_if_available, set_collateral,
     load_quote_if_available, INTEL_ROOT_PUB_KEY, attest_init_heap
 };
 
@@ -261,16 +261,6 @@ enum NetworkMessage {
     },
     Ping,
     Pong,
-}
-
-impl NetworkMessage {
-    pub fn quote(&self) -> Option<&Vec<u8>> {
-        match self {
-            NetworkMessage::QuoteResponse { quote } => Some(quote),
-            NetworkMessage::VerifyQuote { quote } => Some(quote),
-            _ => None,
-        }
-    }
 }
 
 // Network communication functions
@@ -693,43 +683,57 @@ pub fn get_real_td_report() -> Result<Vec<u8>, Error> {
     }
 }
 
-/// Azure-only quote generation - only uses real Azure TDX vTPM, no fallback
-pub fn get_azure_td_quote() -> Result<Vec<u8>, Error> {
-    println!("   Getting real TD quote from Azure TDX vTPM (no fallback)...");
+pub fn get_hcl_td_quote() -> Result<Vec<u8>, Error> {
+    println!("   Attempting to get real Azure CVM HCL TD quote via az-tdx-vtpm...");
     
-    match get_real_hcl_report() {
-        Ok((hcl_bytes, _hcl_report)) => {
-            println!("   ✓ Using HCL report to generate TD quote");
-            generate_quote_from_hcl(&hcl_bytes)
-        }
+    let bytes = match vtpm::get_report() {
+        Ok(bytes) => bytes,
         Err(e) => {
-            println!("   ❌ Azure TDX vTPM not available: {:?}", e);
-            Err(e)
+            println!("   ❌ Failed to get vTPM report: {:?}", e);
+            return Err(Error::GetQuote);
         }
-    }
-}
+    };
+    
+    let hcl_report = match hcl::HclReport::new(bytes) {
+        Ok(report) => report,
+        Err(e) => {
+            println!("   ❌ Failed to parse HCL report: {:?}", e);
+            return Err(Error::InvalidOutput);
+        }
+    };
+    
+    let var_data_hash = hcl_report.var_data_sha256();
+    
+    let _ak_pub = match hcl_report.ak_pub() {
+        Ok(ak_pub) => ak_pub,
+        Err(e) => {
+            println!("   ❌ Failed to get AK public key: {:?}", e);
+            return Err(Error::GetQuote);
+        }
+    };
 
-/// Azure-only report generation - only uses real Azure TDX vTPM, no fallback  
-pub fn get_azure_td_report() -> Result<Vec<u8>, Error> {
-    println!("   Getting real TD report from Azure TDX vTPM (no fallback)...");
-    
-    match get_real_hcl_report() {
-        Ok((hcl_bytes, hcl_report)) => {
-            // Extract TD report from HCL report if available
-            let var_data = hcl_report.var_data();
-            if !var_data.is_empty() {
-                println!("   ✓ Extracted variable data from HCL report");
-                Ok(var_data.to_vec())
-            } else {
-                println!("   ✓ Using raw HCL report as TD report");
-                Ok(hcl_bytes)
-            }
-        }
+    let td_report: tdx::TdReport = match hcl_report.try_into() {
+        Ok(report) => report,
         Err(e) => {
-            println!("   ❌ Azure TDX vTPM not available: {:?}", e);
-            Err(e)
+            println!("   ❌ Failed to convert HCL report to TD report: {:?}", e);
+            return Err(Error::InvalidOutput);
         }
-    }
+    };
+    
+    assert!(var_data_hash == td_report.report_mac.reportdata[..32]);
+    println!("   ✓ vTPM AK_pub retrieved successfully");
+    println!("   ✓ Variable data hash matches TD report");
+    
+    let td_quote_bytes = match imds::get_td_quote(&td_report) {
+        Ok(quote) => quote,
+        Err(e) => {
+            println!("   ❌ Failed to get TD quote from IMDS: {:?}", e);
+            return Err(Error::GetQuote);
+        }
+    };
+    
+    println!("   ✓ Successfully retrieved TD quote ({} bytes)", td_quote_bytes.len());
+    Ok(td_quote_bytes)
 }
 
 pub fn get_real_td_quote() -> Result<Vec<u8>, Error> {
@@ -821,76 +825,7 @@ pub fn get_smart_quote_with_options(force_use_file: bool) -> Vec<u8> {
     create_mock_quote()
 }
 
-// Smart report generation - use real if available, otherwise fallback to mock
-pub fn get_smart_report() -> Vec<u8> {
-    match get_real_td_report() {
-        Ok(report) => {
-            println!("   🌟 Using real TD report from Azure TDX vTPM");
-            report
-        }
-        Err(_) => {
-            println!("   💻 Using mock report (vTPM not available)");
-            create_mock_td_report()
-        }
-    }
-}
-
 // Enhanced demo that shows Azure TDX capabilities
-pub fn demo_azure_tdx_features() {
-    println!("\n🔍 Azure TDX CVM Features (using az-tdx-vtpm crate):");
-    
-    // Demo 1: Try to get HCL report with Variable Data
-    println!("\n   📋 Getting HCL Report with Variable Data...");
-    match get_real_hcl_report() {
-        Ok((hcl_bytes, hcl_report)) => {
-            println!("      ✅ Running on Azure TDX CVM with vTPM access!");
-            let var_data_hash = hcl_report.var_data_sha256();
-            println!("      HCL report size: {} bytes", hcl_bytes.len());
-            println!("      Variable data hash: {}", hex::encode(var_data_hash));
-            
-            // Try to extract variable data
-            let var_data = hcl_report.var_data();
-            if !var_data.is_empty() {
-                println!("      ✓ Found variable data in HCL report ({} bytes)", var_data.len());
-                println!("      Variable data preview: {}", hex::encode(&var_data[..std::cmp::min(32, var_data.len())]));
-            } else {
-                println!("      ⚠️ No variable data found in HCL report");
-            }
-        }
-        Err(e) => {
-            println!("      ❌ Failed to get HCL report: {:?}", e);
-            println!("      This indicates we're not running on an Azure TDX CVM or vTPM is not accessible");
-        }
-    }
-    
-    // Demo 2: Try to get vTPM Quote with nonce
-    println!("\n   🔐 Getting vTPM Quote with nonce...");
-    let nonce = b"MigTD-verification-nonce-2025";
-    match vtpm::get_quote(nonce) {
-        Ok(_vtmp_quote) => {
-            println!("      ✅ Successfully retrieved vTPM quote");
-            // The actual API methods may differ - let's try basic access
-            println!("      Quote data retrieved successfully");
-            println!("      Used nonce: {}", String::from_utf8_lossy(nonce));
-        }
-        Err(e) => {
-            println!("      ❌ Failed to get vTPM quote: {:?}", e);
-        }
-    }
-    
-    // Demo 3: Try basic vTPM report  
-    println!("\n   � Getting basic vTPM report...");
-    match vtpm::get_report() {
-        Ok(report_bytes) => {
-            println!("      ✅ Successfully retrieved vTPM report");
-            println!("      Report size: {} bytes", report_bytes.len());
-            println!("      Report preview: {}", hex::encode(&report_bytes[..std::cmp::min(32, report_bytes.len())]));
-        }
-        Err(e) => {
-            println!("      ❌ Failed to get vTPM report: {:?}", e);
-        }
-    }
-}
 
 async fn run_azure_demo() {
     println!("=== Azure TDX CVM Demonstration Mode ===");
@@ -898,118 +833,50 @@ async fn run_azure_demo() {
     println!("🌟 Always uses real Azure TDX vTPM (no file fallback)");
     println!("⚠️  Note: This mode requires sudo for TPM access - run with: sudo ./verify_quote_app azure\n");
     
-    // Enhanced demo that shows Azure TDX capabilities using az-tdx-vtpm
-    demo_azure_tdx_features();
-    
-    println!("\n🧪 Advanced Azure TDX Testing (using az-tdx-vtpm):");
     
     // Test 1: Try to get real HCL report
     println!("\n   1. Testing real HCL report retrieval...");
-    match get_real_hcl_report() {
-        Ok((hcl_bytes, hcl_report)) => {
-            println!("      ✅ Successfully retrieved HCL report from vTPM!");
-            println!("      HCL report size: {} bytes", hcl_bytes.len());
+    let td_quote = match get_hcl_td_quote() {
+        Ok(quote) => quote,
+        Err(e) => {
+            println!("   ❌ Failed to get HCL td quote: {:?}", e);
+            return;
+        }
+    };
+    
+    // Test 2: THE MAIN DEMONSTRATION - verify_quote with real verify_quote_integrity
+    println!("\n   2. *** CALLING REAL verify_quote_integrity FUNCTION ***");
+    match verify_quote_real(&td_quote) {
+        Ok(verified_report) => {
+            println!("   ✓ Quote verification successful using REAL verify_quote_integrity!");
+            println!("   Verified report size: {} bytes", verified_report.len());
+            println!("   Verified report preview (first 32 bytes): {}", 
+                     hex::encode(&verified_report[..std::cmp::min(32, verified_report.len())]));
             
-            // Analyze the HCL report
-            let var_data_hash = hcl_report.var_data_sha256();
-            println!("      Variable data SHA256: {}", hex::encode(var_data_hash));
-            
-            // Check variable data
-            let var_data = hcl_report.var_data();
-            if !var_data.is_empty() {
-                println!("      ✅ Found variable data in HCL report ({} bytes)", var_data.len());
-                println!("      Variable data preview: {}", hex::encode(&var_data[..std::cmp::min(32, var_data.len())]));
-            } else {
-                println!("      ⚠️ No variable data found in HCL report");
+            // Show the specific ranges that were masked
+            if verified_report.len() >= 666 {
+                println!("   R_MISC_SELECT (626-629): {}", 
+                         hex::encode(&verified_report[626..630]));
+                println!("   R_ATTRIBUTES (634-649): {}", 
+                         hex::encode(&verified_report[634..650]));
             }
             
-            // Save the HCL report for analysis
-            if let Err(e) = std::fs::write("azure_hcl_report.bin", &hcl_bytes) {
-                println!("      ⚠️ Failed to save HCL report: {}", e);
+            // Save the verified report
+            let output_file = "azure_verified_report.bin";
+            if let Err(e) = std::fs::write(&output_file, &verified_report) {
+                println!("   ⚠️ Failed to save verified report: {}", e);
             } else {
-                println!("      💾 Saved HCL report to azure_hcl_report.bin");
+                println!("   💾 Saved verified report to: {}", output_file);
             }
         }
         Err(e) => {
-            println!("      ❌ Failed to get HCL report from vTPM: {:?}", e);
-            println!("      This indicates we're not running on an Azure TDX CVM with vTPM support");
+            println!("   ✗ Quote verification failed");
+            print_error(e);
         }
     }
     
-    // Test 2: Quote comparison with real data
-    println!("\n   2. Comparing mock vs real Azure TDX quotes...");
-    let mock_quote = create_mock_quote();
-    match get_azure_td_quote() {
-        Ok(real_quote) => {
-            println!("      Mock quote size: {} bytes", mock_quote.len());
-            println!("      Real Azure TDX quote size: {} bytes", real_quote.len());
-            println!("      Size difference: {} bytes", 
-                    (real_quote.len() as i32 - mock_quote.len() as i32).abs());
-                    
-            // Save the real quote for analysis
-            if let Err(e) = std::fs::write("azure_real_quote.bin", &real_quote) {
-                println!("      ⚠️ Failed to save real quote: {}", e);
-            } else {
-                println!("      💾 Saved real Azure TDX quote to azure_real_quote.bin");
-            }
-        }
-        Err(e) => println!("      ❌ Failed to get real Azure TDX quote: {:?}", e),
-    }
-    
-    // Test 3: Report comparison with real data
-    println!("\n   3. Comparing mock vs real Azure TDX reports...");
-    let mock_report = create_mock_td_report();
-    match get_azure_td_report() {
-        Ok(real_report) => {
-            println!("      Mock report size: {} bytes", mock_report.len());
-            println!("      Real Azure TDX report size: {} bytes", real_report.len());
-            println!("      Size difference: {} bytes", 
-                    (real_report.len() as i32 - mock_report.len() as i32).abs());
-                    
-            // Save the real report for analysis
-            if let Err(e) = std::fs::write("azure_real_report.bin", &real_report) {
-                println!("      ⚠️ Failed to save real report: {}", e);
-            } else {
-                println!("      💾 Saved real Azure TDX report to azure_real_report.bin");
-            }
-        }
-        Err(e) => println!("      ❌ Failed to get real Azure TDX report: {:?}", e),
-    }
-    
-    // Test 4: Try to verify real Azure TDX quote with MigTD attestation lib
-    println!("\n   4. Testing real Azure TDX quote with MigTD verification...");
-    match get_azure_td_quote() {
-        Ok(real_quote) => {
-            match verify_quote_real(&real_quote) {
-                Ok(verified_report) => {
-                    println!("      ✅ Real Azure TDX quote verified successfully!");
-                    println!("      Verified report size: {} bytes", verified_report.len());
-                    
-                    // Save the verified report
-                    if let Err(e) = std::fs::write("azure_verified_report.bin", &verified_report) {
-                        println!("      ⚠️ Failed to save verified report: {}", e);
-                    } else {
-                        println!("      💾 Saved verified report to azure_verified_report.bin");
-                    }
-                }
-                Err(e) => {
-                    println!("      ⚠️ Real Azure TDX quote verification failed: {:?}", e);
-                    println!("      This may be expected if the MigTD verification library");
-                    println!("      is not fully compatible with Azure TDX quote format");
-                }
-            }
-        }
-        Err(e) => println!("      ❌ Failed to get real Azure TDX quote: {:?}", e),
-    }
-    
-    println!("\n=== Azure TDX Demo Complete ===");
-    println!("Files created (if successful on Azure TDX CVM):");
-    println!("  - azure_hcl_report.bin: Raw HCL report from Azure TDX vTPM");
-    println!("  - azure_real_quote.bin: Real TD quote from Azure TDX vTPM");
-    println!("  - azure_real_report.bin: Real TD report from Azure TDX vTPM");
-    println!("  - azure_verified_report.bin: Verified report (if verification succeeded)");
-    println!("\n💡 Note: This mode only works on Azure TDX CVMs with vTPM access.");
-    println!("   Run with sudo for full functionality.");
+
+    println!("\n=== AZURE TDX DEMO COMPLETE ===");
 }
 
 #[tokio::main]
