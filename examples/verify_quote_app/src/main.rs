@@ -5,6 +5,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use az_tdx_vtpm::{vtpm, hcl};
+use hex; // Add this import
+use libc; // Add this import
+use std::time::Duration;
 
 mod collateral;
 use collateral::{
@@ -78,7 +81,7 @@ extern "C" {
 // They should be linked via build.rs or compiler flags, not implemented in Rust
 
 pub fn get_sample_quote() -> Vec<u8> {
-    get_smart_quote()
+    get_smart_quote_with_options(false) // Fix: call the function that actually exists
 }
 
 /// Create a basic mock quote for fallback when no real data is available
@@ -199,7 +202,7 @@ fn print_error(error: Error) {
 // Command line interface structure
 #[derive(Parser)]
 #[command(name = "verify_quote_app")]
-#[command(about = "MigTD Quote Verification App with Networking")]
+#[command(about = "MigTD Quote Verification App - supports networking and file verification")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -231,18 +234,14 @@ enum Commands {
         #[arg(long)]
         request_quote: bool,
     },
-    /// Run standalone verification (original behavior) - requires sudo for TPM access
-    Standalone {
-        /// Force use of quote.bin file instead of Azure TDX vTPM
-        #[arg(long)]
-        use_quote_file: bool,
+    /// Verify a quote from a local file - requires sudo for TPM access
+    File {
+        /// Path to the quote file to verify (default: ./quote.bin)
+        #[arg(short, long, default_value = "quote.bin")]
+        quote_file: String,
     },
     /// Azure TDX CVM demonstration mode - requires sudo for TPM access
-    Azure {
-        /// Force use of quote.bin file instead of Azure TDX vTPM
-        #[arg(long)]
-        use_quote_file: bool,
-    },
+    Azure,
 }
 
 // Network message protocol
@@ -276,31 +275,87 @@ impl NetworkMessage {
 
 // Network communication functions
 async fn send_message(stream: &mut TcpStream, message: &NetworkMessage) -> Result<(), String> {
-    let json = serde_json::to_string(message).map_err(|e| e.to_string())?;
+    let json = match serde_json::to_string(message) {
+        Ok(json) => json,
+        Err(e) => {
+            println!("   ❌ JSON serialization failed: {}", e);
+            return Err(format!("Serialization error: {}", e));
+        }
+    };
+    
     let len = json.len() as u32;
+    println!("   📤 Sending message: {} bytes", len);
     
     // Send length first (4 bytes)
-    stream.write_all(&len.to_be_bytes()).await.map_err(|e| e.to_string())?;
-    // Send JSON message
-    stream.write_all(json.as_bytes()).await.map_err(|e| e.to_string())?;
-    stream.flush().await.map_err(|e| e.to_string())?;
+    if let Err(e) = stream.write_all(&len.to_be_bytes()).await {
+        println!("   ❌ Failed to send length: {}", e);
+        return Err(format!("Failed to send length: {}", e));
+    }
     
+    // Send JSON message
+    if let Err(e) = stream.write_all(json.as_bytes()).await {
+        println!("   ❌ Failed to send message body: {}", e);
+        return Err(format!("Failed to send message: {}", e));
+    }
+    
+    if let Err(e) = stream.flush().await {
+        println!("   ❌ Failed to flush stream: {}", e);
+        return Err(format!("Failed to flush: {}", e));
+    }
+    
+    println!("   ✓ Message sent successfully");
     Ok(())
 }
 
 async fn receive_message(stream: &mut TcpStream) -> Result<NetworkMessage, String> {
+    println!("   📥 Waiting for message...");
+    
     // Read length first (4 bytes)
     let mut len_bytes = [0u8; 4];
-    stream.read_exact(&mut len_bytes).await.map_err(|e| e.to_string())?;
+    if let Err(e) = stream.read_exact(&mut len_bytes).await {
+        println!("   ❌ Failed to read message length: {}", e);
+        return Err(format!("Failed to read message length: {}", e));
+    }
+    
     let len = u32::from_be_bytes(len_bytes) as usize;
+    println!("   📥 Expecting message of {} bytes", len);
+    
+    // Validate message size
+    if len > 100_000_000 { // 100MB limit
+        println!("   ❌ Message too large: {} bytes", len);
+        return Err(format!("Message too large: {} bytes", len));
+    }
+    
+    if len == 0 {
+        println!("   ❌ Zero-length message received");
+        return Err("Zero-length message".to_string());
+    }
     
     // Read JSON message
     let mut buffer = vec![0u8; len];
-    stream.read_exact(&mut buffer).await.map_err(|e| e.to_string())?;
+    if let Err(e) = stream.read_exact(&mut buffer).await {
+        println!("   ❌ Failed to read message body: {}", e);
+        return Err(format!("Failed to read message body: {}", e));
+    }
     
-    let json = String::from_utf8(buffer).map_err(|e| e.to_string())?;
-    let message: NetworkMessage = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let json = match String::from_utf8(buffer) {
+        Ok(json) => json,
+        Err(e) => {
+            println!("   ❌ Invalid UTF-8 in message: {}", e);
+            return Err(format!("Invalid UTF-8: {}", e));
+        }
+    };
     
+    let message: NetworkMessage = match serde_json::from_str(&json) {
+        Ok(msg) => msg,
+        Err(e) => {
+            println!("   ❌ JSON deserialization failed: {}", e);
+            println!("   Raw JSON: {}", json);
+            return Err(format!("JSON error: {}", e));
+        }
+    };
+    
+    println!("   ✓ Message received successfully");
     Ok(message)
 }
 
@@ -336,6 +391,8 @@ async fn run_server(bind_addr: String, port: u16) -> Result<(), String> {
 }
 
 async fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
+    println!("📨 Handling new client connection");
+    
     loop {
         match receive_message(stream).await {
             Ok(message) => {
@@ -343,30 +400,39 @@ async fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
                 
                 match message {
                     NetworkMessage::Ping => {
-                        send_message(stream, &NetworkMessage::Pong).await?;
-                        println!("📤 Sent: Pong");
+                        println!("🏓 Responding to ping");
+                        if let Err(e) = send_message(stream, &NetworkMessage::Pong).await {
+                            println!("❌ Failed to send pong: {}", e);
+                            return Err(e);
+                        }
+                        println!("✓ Pong sent");
                     }
                     NetworkMessage::QuoteRequest => {
+                        println!("📋 Generating quote for client");
                         let quote = get_sample_quote();
                         let response = NetworkMessage::QuoteResponse { quote };
-                        send_message(stream, &response).await?;
-                        if let Some(quote) = response.quote() {
-                            println!("📤 Sent quote ({} bytes)", quote.len());
+                        if let Err(e) = send_message(stream, &response).await {
+                            println!("❌ Failed to send quote: {}", e);
+                            return Err(e);
                         }
+                        println!("✓ Quote sent to client");
                     }
                     NetworkMessage::VerifyQuote { quote } => {
-                        println!("🔍 Verifying received quote ({} bytes)", quote.len());
+                        println!("🔍 Verifying quote from client ({} bytes)", quote.len());
                         
                         match verify_quote_real(&quote) {
                             Ok(verified_report) => {
-                                println!("✅ Quote verification successful!");
+                                println!("✅ Quote verification successful");
                                 let response = NetworkMessage::VerificationResult {
                                     success: true,
                                     verified_report: Some(verified_report),
                                     error: None,
                                 };
-                                send_message(stream, &response).await?;
-                                println!("📤 Sent verification result (success)");
+                                if let Err(e) = send_message(stream, &response).await {
+                                    println!("❌ Failed to send verification result: {}", e);
+                                    return Err(e);
+                                }
+                                println!("✓ Verification result sent");
                             }
                             Err(e) => {
                                 println!("❌ Quote verification failed: {:?}", e);
@@ -375,23 +441,30 @@ async fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
                                     verified_report: None,
                                     error: Some(format!("{:?}", e)),
                                 };
-                                send_message(stream, &response).await?;
-                                println!("📤 Sent verification result (failure)");
+                                if let Err(e) = send_message(stream, &response).await {
+                                    println!("❌ Failed to send error result: {}", e);
+                                    return Err(e);
+                                }
+                                println!("✓ Error result sent");
                             }
                         }
                     }
                     _ => {
-                        println!("⚠️ Unexpected message type in server mode");
+                        println!("⚠️ Unexpected message type");
                     }
                 }
             }
             Err(e) => {
-                println!("❌ Connection error: {}", e);
-                break;
+                if e.contains("early eof") || e.contains("UnexpectedEof") {
+                    println!("ℹ️ Client disconnected");
+                    return Ok(()); // Normal disconnect
+                } else {
+                    println!("❌ Connection error: {}", e);
+                    return Err(e);
+                }
             }
         }
     }
-    Ok(())
 }
 
 // Client mode implementation
@@ -399,56 +472,70 @@ async fn run_client(server_addr: String, port: u16, send_quote: bool, request_qu
     println!("=== MigTD Quote Verification Client ===");
     println!("Connecting to server at {}:{}", server_addr, port);
     
-    let mut stream = TcpStream::connect(format!("{}:{}", server_addr, port)).await
-        .map_err(|e| format!("Failed to connect to {}:{}: {}", server_addr, port, e))?;
-    println!("✓ Connected to server");
-    
-    // Initialize attestation heap for local operations
-    match attest_init_heap() {
-        Some(heap_size) => println!("✓ Heap initialized successfully (size: {} bytes)", heap_size),
-        None => {
-            println!("⚠️ Failed to initialize heap (may affect local operations)");
+    // Connect with retry logic
+    let mut stream = None;
+    for attempt in 1..=3 {
+        println!("Connection attempt {}/3...", attempt);
+        
+        let connect_future = TcpStream::connect(format!("{}:{}", server_addr, port));
+        match tokio::time::timeout(Duration::from_secs(5), connect_future).await {
+            Ok(Ok(tcp_stream)) => {
+                println!("✓ Connected successfully on attempt {}", attempt);
+                stream = Some(tcp_stream);
+                break;
+            }
+            Ok(Err(e)) => {
+                println!("❌ Connection attempt {} failed: {}", attempt, e);
+                if attempt < 3 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+            Err(_) => {
+                println!("❌ Connection attempt {} timed out", attempt);
+                if attempt < 3 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
         }
     }
     
-    // Send ping to test connection
-    println!("\n🏓 Testing connection with ping...");
-    send_message(&mut stream, &NetworkMessage::Ping).await?;
-    match receive_message(&mut stream).await? {
-        NetworkMessage::Pong => println!("✅ Connection test successful (received pong)"),
-        _ => println!("⚠️ Unexpected response to ping"),
+    let mut stream = stream.ok_or("Failed to connect after 3 attempts")?;
+    
+    // Initialize heap (optional)
+    match attest_init_heap() {
+        Some(heap_size) => println!("✓ Client heap initialized (size: {} bytes)", heap_size),
+        None => println!("⚠️ Failed to initialize attestation heap - continuing"),
     }
     
+    // Test connection with ping
+    println!("\n🏓 Testing connection...");
+    send_message(&mut stream, &NetworkMessage::Ping).await
+        .map_err(|e| format!("Failed to send ping: {}", e))?;
+    
+    match receive_message(&mut stream).await {
+        Ok(NetworkMessage::Pong) => println!("✓ Connection test successful"),
+        Ok(other) => println!("⚠️ Unexpected response to ping: {:?}", other),
+        Err(e) => return Err(format!("Failed to receive pong: {}", e)),
+    }
+    
+    // Execute requested operations
     if request_quote {
         println!("\n📞 Requesting quote from server...");
         send_message(&mut stream, &NetworkMessage::QuoteRequest).await?;
         
         match receive_message(&mut stream).await? {
             NetworkMessage::QuoteResponse { quote } => {
-                println!("✅ Received quote from server ({} bytes)", quote.len());
-                println!("   Quote preview: {}", hex::encode(&quote[..std::cmp::min(32, quote.len())]));
-                
-                // Optionally verify the received quote locally
-                println!("🔍 Verifying received quote locally...");
-                match verify_quote_real(&quote) {
-                    Ok(verified_report) => {
-                        println!("✅ Local verification successful!");
-                        println!("   Verified report size: {} bytes", verified_report.len());
-                    }
-                    Err(e) => {
-                        println!("❌ Local verification failed: {:?}", e);
-                    }
-                }
+                println!("✅ Received quote ({} bytes)", quote.len());
+                println!("   Preview: {}", hex::encode(&quote[..std::cmp::min(32, quote.len())]));
             }
-            _ => println!("⚠️ Unexpected response to quote request"),
+            other => println!("⚠️ Unexpected response: {:?}", other),
         }
     }
     
     if send_quote {
-        println!("\n📤 Sending quote to server for verification...");
+        println!("\n📤 Sending quote for verification...");
         let quote = get_sample_quote();
         println!("   Generated local quote ({} bytes)", quote.len());
-        
         let message = NetworkMessage::VerifyQuote { quote };
         send_message(&mut stream, &message).await?;
         
@@ -457,8 +544,7 @@ async fn run_client(server_addr: String, port: u16, send_quote: bool, request_qu
                 if success {
                     println!("✅ Server verification successful!");
                     if let Some(report) = verified_report {
-                        println!("   Verified report size: {} bytes", report.len());
-                        println!("   Report preview: {}", hex::encode(&report[..std::cmp::min(32, report.len())]));
+                        println!("   Report size: {} bytes", report.len());
                     }
                 } else {
                     println!("❌ Server verification failed");
@@ -467,7 +553,7 @@ async fn run_client(server_addr: String, port: u16, send_quote: bool, request_qu
                     }
                 }
             }
-            _ => println!("⚠️ Unexpected response to verification request"),
+            other => println!("⚠️ Unexpected response: {:?}", other),
         }
     }
     
@@ -475,13 +561,11 @@ async fn run_client(server_addr: String, port: u16, send_quote: bool, request_qu
     Ok(())
 }
 
-async fn run_standalone(use_quote_file: bool) {
-    println!("=== MigTD Attestation verify_quote_integrity REAL FUNCTION Test ===");
-    println!("This application demonstrates the REAL verify_quote_integrity function call");
-    if use_quote_file {
-        println!("🔧 Mode: Using quote.bin file (--use-quote-file specified)");
-    }
-    println!("⚠️  Note: This mode requires sudo for TPM access - run with: sudo ./verify_quote_app standalone\n");
+async fn run_file_verification(quote_file_path: String) {
+    println!("=== MigTD Quote File Verification ===");
+    println!("This application verifies a quote from a local file using the REAL verify_quote_integrity function");
+    println!("� Quote file: {}", quote_file_path);
+    println!("⚠️  Note: This mode requires sudo for TPM access - run with: sudo ./verify_quote_app file\n");
    
     // Initialize collateral for servtd_get_quote
     println!("0. Initializing collateral for servtd_get_quote...");
@@ -494,9 +578,7 @@ async fn run_standalone(use_quote_file: bool) {
         println!("   ⚠️ No collateral data available - servtd_get_quote may fail");
     }
     
-    // Azure TDX CVM Detection and Demo
-    demo_azure_tdx_features();
-   
+  
     // Step 1: Initialize attestation heap
     println!("\n1. Initializing attestation heap...");
     match attest_init_heap() {
@@ -507,23 +589,28 @@ async fn run_standalone(use_quote_file: bool) {
         }
     }
     
-    // Step 2: Setup Intel Root CA public key
-    println!("\n2. Setting up Intel Root CA public key...");
-    println!("   ✓ Using Intel Root CA public key directly");
-    println!("   Public key size: {} bytes", INTEL_ROOT_PUB_KEY.len());
+   
+    // Step 2: Load quote from specified file
+    println!("\n2. Loading quote from file: {}", quote_file_path);
+    let quote = match std::fs::read(&quote_file_path) {
+        Ok(data) => {
+            println!("   ✓ Successfully loaded quote from file ({} bytes)", data.len());
+            println!("   Quote preview (first 32 bytes): {}", 
+                     hex::encode(&data[..std::cmp::min(32, data.len())]));
+            data
+        }
+        Err(e) => {
+            println!("   ✗ Failed to read quote file: {}", e);
+            println!("   ⚠️ Falling back to smart quote generation...");
+            
+            let smart_quote = get_smart_quote_with_options(false);
+            println!("   Generated smart quote ({} bytes)", smart_quote.len());
+            smart_quote
+        }
+    };
     
-    // Step 3: Generate sample TD quote (smart detection)
-    println!("\n3. Generating TD quote and report...");
-    let td_report = get_smart_report();
-    println!("   Generated TD report ({} bytes)", td_report.len());
-    
-    let quote = get_smart_quote_with_options(use_quote_file);
-    println!("   ✓ Generated quote ({} bytes)", quote.len());
-    println!("   Quote preview (first 32 bytes): {}", 
-             hex::encode(&quote[..std::cmp::min(32, quote.len())]));
-    
-    // Step 4: THE MAIN DEMONSTRATION - verify_quote with stubbed verify_quote_integrity
-    println!("\n4. *** CALLING REAL verify_quote_integrity FUNCTION ***");
+    // Step 3: THE MAIN DEMONSTRATION - verify_quote with real verify_quote_integrity
+    println!("\n3. *** CALLING REAL verify_quote_integrity FUNCTION ***");
     match verify_quote_real(&quote) {
         Ok(verified_report) => {
             println!("   ✓ Quote verification successful using REAL verify_quote_integrity!");
@@ -538,6 +625,14 @@ async fn run_standalone(use_quote_file: bool) {
                 println!("   R_ATTRIBUTES (634-649): {}", 
                          hex::encode(&verified_report[634..650]));
             }
+            
+            // Save the verified report
+            let output_file = format!("{}.verified", quote_file_path);
+            if let Err(e) = std::fs::write(&output_file, &verified_report) {
+                println!("   ⚠️ Failed to save verified report: {}", e);
+            } else {
+                println!("   💾 Saved verified report to: {}", output_file);
+            }
         }
         Err(e) => {
             println!("   ✗ Quote verification failed");
@@ -545,92 +640,9 @@ async fn run_standalone(use_quote_file: bool) {
         }
     }
     
-    // Step 5: Test error conditions with stubbed functions
-    println!("\n5. Testing error conditions...");
-    
-    // Test with empty quote
-    println!("\n   Testing with empty quote...");
-    let empty_quote = vec![];
-    match verify_quote_real(&empty_quote) {
-        Ok(_) => println!("   ! Empty quote verification unexpectedly succeeded"),
-        Err(e) => {
-            println!("   ✓ Empty quote correctly failed");
-            print_error(e);
-        }
-    }
-    
-    // Test with oversized quote
-    println!("\n   Testing with oversized quote...");
-    let large_quote = vec![0xAB; TD_QUOTE_SIZE + 1000];
-    match verify_quote_real(&large_quote) {
-        Ok(verified_report) => {
-            println!("   ! Large quote verification succeeded (size: {} bytes)", verified_report.len());
-        }
-        Err(e) => {
-            println!("   ✓ Large quote correctly failed");
-            print_error(e);
-        }
-    }
-    
-    // Step 6: Test servtd_get_quote callback with proper QuoteHeader
-    println!("\n6. Testing servtd_get_quote callback...");
-    
-    // Create a proper QuoteHeader structure for testing
-    let quote_header = QuoteHeader {
-        version: 1,
-        status: 0,
-        in_len: 0,
-        out_len: 0,
-        data: [],
-    };
-    
-    // Allocate buffer for the quote header and response data
-    let buffer_size = 4096; // Large enough for response
-    let mut buffer = vec![0u8; buffer_size];
-    
-    // Set up the quote header in the buffer
-    unsafe {
-        let header_ptr = buffer.as_mut_ptr() as *mut QuoteHeader;
-        ptr::write(header_ptr, quote_header);
-        
-        let result = servtd_get_quote(header_ptr, buffer_size as u64);
-        println!("   servtd_get_quote returned: {}", result);
-        
-        if result == 0 {
-            let updated_header = ptr::read(header_ptr);
-            println!("   ✓ Quote header updated - out_len: {}", updated_header.out_len);
-        } else {
-            println!("   ⚠️ servtd_get_quote failed with code: {}", result);
-        }
-    }
-    
-    println!("\n=== REAL FUNCTION DEMONSTRATION COMPLETE ===");
-    println!("\nThis application successfully demonstrated:");
-    println!("1. ✓ Real init_heap() function call");
-    println!("2. ✓ Real verify_quote_integrity() function call");
-    println!("3. ✓ Complete attestation flow with:");
-    println!("   - Real certificate loading (with fallback to mock)");
-    println!("   - Sample quote data generation");
-    println!("   - Real public key extraction from certificate");
-    println!("   - Proper error handling for edge cases");
-    println!("   - Real masking operations on verified reports");
-    println!("   - servtd_get_quote callback functionality");
-    println!("\n🔧 IMPLEMENTATION STATUS:");
-    println!("   ○ FFI Interface: ✓ Complete (real C library)");
-    println!("   ○ Data Structures: ✓ Complete (AttestLibError, Error enums)");
-    println!("   ○ Memory Management: ✓ Complete (heap allocation)");
-    println!("   ○ Quote Processing: ✓ Complete (sample data + verification)");
-    println!("   ○ Certificate Handling: ✓ Complete (real file + mock fallback)");
-    println!("   ○ Error Scenarios: ✓ Complete (empty/oversized quotes)");
-    println!("   ○ Report Masking: ✓ Complete (R_MISC_SELECT, R_ATTRIBUTES)");
-    println!("\n📋 NOTE: This version uses the REAL verify_quote_integrity");
-    println!("function from libservtd_attest.a and requires Intel SGX/TDX");
-    println!("hardware support to run without 'illegal instruction' errors.");
-    println!("\n🚀 HARDWARE REQUIREMENTS:");
-    println!("1. Intel processor with SGX/TDX support");
-    println!("2. Linux kernel with SGX/TDX drivers");
-    println!("3. BIOS with SGX/TDX enabled");
-    println!("4. libservtd_attest.a properly compiled and linked");
+
+    println!("\n=== QUOTE FILE VERIFICATION COMPLETE ===");
+    println!("Verified quote from: {}", quote_file_path);
 }
 
 // Functions using az-tdx-vtpm crate for real Azure TDX attestation
@@ -677,6 +689,45 @@ pub fn get_real_td_report() -> Result<Vec<u8>, Error> {
         Err(_) => {
             println!("   ⚠️ Real vTPM not available, falling back to mock TD report");
             Ok(create_mock_td_report())
+        }
+    }
+}
+
+/// Azure-only quote generation - only uses real Azure TDX vTPM, no fallback
+pub fn get_azure_td_quote() -> Result<Vec<u8>, Error> {
+    println!("   Getting real TD quote from Azure TDX vTPM (no fallback)...");
+    
+    match get_real_hcl_report() {
+        Ok((hcl_bytes, _hcl_report)) => {
+            println!("   ✓ Using HCL report to generate TD quote");
+            generate_quote_from_hcl(&hcl_bytes)
+        }
+        Err(e) => {
+            println!("   ❌ Azure TDX vTPM not available: {:?}", e);
+            Err(e)
+        }
+    }
+}
+
+/// Azure-only report generation - only uses real Azure TDX vTPM, no fallback  
+pub fn get_azure_td_report() -> Result<Vec<u8>, Error> {
+    println!("   Getting real TD report from Azure TDX vTPM (no fallback)...");
+    
+    match get_real_hcl_report() {
+        Ok((hcl_bytes, hcl_report)) => {
+            // Extract TD report from HCL report if available
+            let var_data = hcl_report.var_data();
+            if !var_data.is_empty() {
+                println!("   ✓ Extracted variable data from HCL report");
+                Ok(var_data.to_vec())
+            } else {
+                println!("   ✓ Using raw HCL report as TD report");
+                Ok(hcl_bytes)
+            }
+        }
+        Err(e) => {
+            println!("   ❌ Azure TDX vTPM not available: {:?}", e);
+            Err(e)
         }
     }
 }
@@ -841,12 +892,10 @@ pub fn demo_azure_tdx_features() {
     }
 }
 
-async fn run_azure_demo(use_quote_file: bool) {
+async fn run_azure_demo() {
     println!("=== Azure TDX CVM Demonstration Mode ===");
     println!("This mode demonstrates real Azure TDX CVM capabilities using az-tdx-vtpm crate");
-    if use_quote_file {
-        println!("🔧 Mode: Using quote.bin file (--use-quote-file specified)");
-    }
+    println!("🌟 Always uses real Azure TDX vTPM (no file fallback)");
     println!("⚠️  Note: This mode requires sudo for TPM access - run with: sudo ./verify_quote_app azure\n");
     
     // Enhanced demo that shows Azure TDX capabilities using az-tdx-vtpm
@@ -888,12 +937,12 @@ async fn run_azure_demo(use_quote_file: bool) {
     }
     
     // Test 2: Quote comparison with real data
-    println!("\n   2. Comparing mock vs real quotes...");
-    let mock_quote = get_smart_quote_with_options(use_quote_file);
-    match get_real_td_quote() {
+    println!("\n   2. Comparing mock vs real Azure TDX quotes...");
+    let mock_quote = create_mock_quote();
+    match get_azure_td_quote() {
         Ok(real_quote) => {
             println!("      Mock quote size: {} bytes", mock_quote.len());
-            println!("      Real quote size: {} bytes", real_quote.len());
+            println!("      Real Azure TDX quote size: {} bytes", real_quote.len());
             println!("      Size difference: {} bytes", 
                     (real_quote.len() as i32 - mock_quote.len() as i32).abs());
                     
@@ -901,19 +950,19 @@ async fn run_azure_demo(use_quote_file: bool) {
             if let Err(e) = std::fs::write("azure_real_quote.bin", &real_quote) {
                 println!("      ⚠️ Failed to save real quote: {}", e);
             } else {
-                println!("      💾 Saved real quote to azure_real_quote.bin");
+                println!("      💾 Saved real Azure TDX quote to azure_real_quote.bin");
             }
         }
-        Err(e) => println!("      ❌ Failed to get real quote: {:?}", e),
+        Err(e) => println!("      ❌ Failed to get real Azure TDX quote: {:?}", e),
     }
     
     // Test 3: Report comparison with real data
-    println!("\n   3. Comparing mock vs real TD reports...");
+    println!("\n   3. Comparing mock vs real Azure TDX reports...");
     let mock_report = create_mock_td_report();
-    match get_real_td_report() {
+    match get_azure_td_report() {
         Ok(real_report) => {
             println!("      Mock report size: {} bytes", mock_report.len());
-            println!("      Real report size: {} bytes", real_report.len());
+            println!("      Real Azure TDX report size: {} bytes", real_report.len());
             println!("      Size difference: {} bytes", 
                     (real_report.len() as i32 - mock_report.len() as i32).abs());
                     
@@ -921,15 +970,15 @@ async fn run_azure_demo(use_quote_file: bool) {
             if let Err(e) = std::fs::write("azure_real_report.bin", &real_report) {
                 println!("      ⚠️ Failed to save real report: {}", e);
             } else {
-                println!("      💾 Saved real report to azure_real_report.bin");
+                println!("      💾 Saved real Azure TDX report to azure_real_report.bin");
             }
         }
-        Err(e) => println!("      ❌ Failed to get real report: {:?}", e),
+        Err(e) => println!("      ❌ Failed to get real Azure TDX report: {:?}", e),
     }
     
-    // Test 4: Try to verify real quote with MigTD attestation lib
-    println!("\n   4. Testing real quote with MigTD verification...");
-    match get_real_td_quote() {
+    // Test 4: Try to verify real Azure TDX quote with MigTD attestation lib
+    println!("\n   4. Testing real Azure TDX quote with MigTD verification...");
+    match get_azure_td_quote() {
         Ok(real_quote) => {
             match verify_quote_real(&real_quote) {
                 Ok(verified_report) => {
@@ -944,21 +993,23 @@ async fn run_azure_demo(use_quote_file: bool) {
                     }
                 }
                 Err(e) => {
-                    println!("      ⚠️ Real quote verification failed: {:?}", e);
+                    println!("      ⚠️ Real Azure TDX quote verification failed: {:?}", e);
                     println!("      This may be expected if the MigTD verification library");
                     println!("      is not fully compatible with Azure TDX quote format");
                 }
             }
         }
-        Err(e) => println!("      ❌ Failed to get real quote: {:?}", e),
+        Err(e) => println!("      ❌ Failed to get real Azure TDX quote: {:?}", e),
     }
     
     println!("\n=== Azure TDX Demo Complete ===");
-    println!("Files created (if successful):");
-    println!("  - azure_hcl_report.bin: Raw HCL report from vTPM");
-    println!("  - azure_real_quote.bin: Real TD quote extracted/generated");
-    println!("  - azure_real_report.bin: Real TD report extracted/generated");
+    println!("Files created (if successful on Azure TDX CVM):");
+    println!("  - azure_hcl_report.bin: Raw HCL report from Azure TDX vTPM");
+    println!("  - azure_real_quote.bin: Real TD quote from Azure TDX vTPM");
+    println!("  - azure_real_report.bin: Real TD report from Azure TDX vTPM");
     println!("  - azure_verified_report.bin: Verified report (if verification succeeded)");
+    println!("\n💡 Note: This mode only works on Azure TDX CVMs with vTPM access.");
+    println!("   Run with sudo for full functionality.");
 }
 
 #[tokio::main]
@@ -967,14 +1018,14 @@ async fn main() {
     
     // Check for sudo requirement for modes that need TPM access
     match cli.command {
-        Commands::Standalone { .. } | Commands::Azure { .. } => {
+        Commands::File { .. } | Commands::Azure => {
             // Check if running with elevated privileges
             if unsafe { libc::geteuid() } != 0 {
                 eprintln!("⚠️  WARNING: Running without sudo - TPM access may fail!");
                 eprintln!("   For full functionality, run with: sudo ./verify_quote_app {}", 
                     match cli.command {
-                        Commands::Standalone { .. } => "standalone",
-                        Commands::Azure { .. } => "azure",
+                        Commands::File { .. } => "file",
+                        Commands::Azure => "azure",
                         _ => unreachable!()
                     }
                 );
@@ -996,12 +1047,12 @@ async fn main() {
             }
             run_client(server, port, send_quote, request_quote).await
         }
-        Commands::Standalone { use_quote_file } => {
-            run_standalone(use_quote_file).await;
+        Commands::File { quote_file } => {
+            run_file_verification(quote_file).await;
             return;
         }
-        Commands::Azure { use_quote_file } => {
-            run_azure_demo(use_quote_file).await;
+        Commands::Azure => {
+            run_azure_demo().await;
             return;
         }
     };
