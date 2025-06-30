@@ -1,5 +1,5 @@
 use std::fs;
-use std::ffi::c_void;
+
 use std::sync::Mutex;
 use std::ptr;
 use std::mem::size_of;
@@ -10,9 +10,6 @@ use std::mem::size_of;
 
 /// Global collateral storage for the servtd_get_quote function
 static COLLATERAL: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-
-/// Constants for attestation library
-pub const ATTEST_HEAP_SIZE: usize = 0x80000;
 
 /// Quote header structure for servtd_get_quote
 #[repr(C)]
@@ -65,22 +62,6 @@ pub struct PackedCollateral {
     pub data: [u8; 0], // flexible array
 }
 
-// External C function for heap initialization
-extern "C" {
-    fn init_heap(p_td_heap_base: *const c_void, td_heap_size: u32) -> u32;
-}
-
-/// Initialize heap for attestation library using dynamic allocation (original approach)
-pub fn attest_init_heap() -> Option<usize> {
-    unsafe {
-        let heap_base =
-            std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(ATTEST_HEAP_SIZE, 0x1000).ok()?);
-
-        init_heap(heap_base as *const c_void, ATTEST_HEAP_SIZE as u32);
-    }
-
-    Some(ATTEST_HEAP_SIZE)
-}
 
 /// Set collateral data for use by servtd_get_quote
 pub fn set_collateral(collateral_data: Vec<u8>) -> Result<(), String> {
@@ -115,15 +96,6 @@ pub fn set_collateral(collateral_data: Vec<u8>) -> Result<(), String> {
 pub unsafe extern "C" fn servtd_get_quote(blob: *mut QuoteHeader, _len: u64) -> i32 {
     println!("Real servtd_get_quote called...");
     
-    // Ensure heap is initialized using dynamic allocation (original approach)
-    static HEAP_INIT: std::sync::Once = std::sync::Once::new();
-    HEAP_INIT.call_once(|| {
-        if attest_init_heap().is_none() {
-            eprintln!("Failed to initialize attestation heap");
-        } else {
-            println!("Attestation heap initialized successfully");
-        }
-    });
     
     let data = (*blob).data.as_ptr() as *mut u8;
 
@@ -188,38 +160,7 @@ pub unsafe extern "C" fn servtd_get_quote(blob: *mut QuoteHeader, _len: u64) -> 
     0
 }
 
-/// Intel Root CA public key (from mikbras/tdtools)
-pub const INTEL_ROOT_PUB_KEY: [u8; 65] = [
-    0x04, 0x0b, 0xa9, 0xc4, 0xc0, 0xc0, 0xc8, 0x61,
-    0x93, 0xa3, 0xfe, 0x23, 0xd6, 0xb0, 0x2c, 0xda,
-    0x10, 0xa8, 0xbb, 0xd4, 0xe8, 0x8e, 0x48, 0xb4,
-    0x45, 0x85, 0x61, 0xa3, 0x6e, 0x70, 0x55, 0x25,
-    0xf5, 0x67, 0x91, 0x8e, 0x2e, 0xdc, 0x88, 0xe4,
-    0x0d, 0x86, 0x0b, 0xd0, 0xcc, 0x4e, 0xe2, 0x6a,
-    0xac, 0xc9, 0x88, 0xe5, 0x05, 0xa9, 0x53, 0x55,
-    0x8c, 0x45, 0x3f, 0x6b, 0x09, 0x04, 0xae, 0x73,
-    0x94,
-];
 
-/// Load quote data from file if available
-pub fn load_quote_if_available() -> Option<Vec<u8>> {
-    // Try to load quote from common locations
-    let possible_paths = [
-        "quote.bin",
-        "../quote.bin", 
-        "/tmp/quote.bin",
-        "samples/quote.bin",
-    ];
-    
-    for path in &possible_paths {
-        if let Ok(data) = fs::read(path) {
-            println!("Loaded quote from: {}", path);
-            return Some(data);
-        }
-    }
-    
-    None
-}
 
 /// Load collateral data from file if available
 pub fn load_collateral_if_available() -> Option<Vec<u8>> {

@@ -1,19 +1,16 @@
+use az_tdx_vtpm::{hcl, imds, tdx, vtpm};
 use std::ffi::c_void;
+use hex;
+use std::time::Duration;
+use std::fs;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use az_tdx_vtpm::{vtpm, hcl, tdx, imds};
-use hex; // Add this import
-use libc; // Add this import
-use std::time::Duration;
 
 mod collateral;
-use collateral::{
-    load_collateral_if_available, set_collateral,
-    load_quote_if_available, INTEL_ROOT_PUB_KEY, attest_init_heap
-};
+use collateral::{load_collateral_if_available, set_collateral};
 
 // Direct reproduction of the AttestLibError enum from the real attestation library
 #[repr(C)]
@@ -46,9 +43,23 @@ pub enum Error {
 }
 
 // Constants matching the real attestation library
-const TD_QUOTE_SIZE: usize = 0x2000;
-const TD_REPORT_SIZE: usize = 1024;
 const TD_VERIFIED_REPORT_SIZE: usize = 734;
+
+/// Constants for attestation library
+pub const ATTEST_HEAP_SIZE: usize = 0x80000;
+
+/// Intel Root CA public key (from mikbras/tdtools)
+pub const INTEL_ROOT_PUB_KEY: [u8; 65] = [
+    0x04, 0x0b, 0xa9, 0xc4, 0xc0, 0xc0, 0xc8, 0x61,
+    0x93, 0xa3, 0xfe, 0x23, 0xd6, 0xb0, 0x2c, 0xda,
+    0x10, 0xa8, 0xbb, 0xd4, 0xe8, 0x8e, 0x48, 0xb4,
+    0x45, 0x85, 0x61, 0xa3, 0x6e, 0x70, 0x55, 0x25,
+    0xf5, 0x67, 0x91, 0x8e, 0x2e, 0xdc, 0x88, 0xe4,
+    0x0d, 0x86, 0x0b, 0xd0, 0xcc, 0x4e, 0xe2, 0x6a,
+    0xac, 0xc9, 0x88, 0xe5, 0x05, 0xa9, 0x53, 0x55,
+    0x8c, 0x45, 0x3f, 0x6b, 0x09, 0x04, 0xae, 0x73,
+    0x94,
+];
 
 // This is the EXACT signature of the real verify_quote_integrity function
 // from src/attestation/src/binding.rs
@@ -73,42 +84,49 @@ extern "C" {
         p_tdx_report_verify: *mut c_void,
         p_tdx_report_verify_size: *mut u32,
     ) -> AttestLibError;
+    // External C function for heap initialization
+    fn init_heap(p_td_heap_base: *const c_void, td_heap_size: u32) -> u32;
 }
 
+/// Initialize heap for attestation library using dynamic allocation (original approach)
+pub fn attest_init_heap() -> Option<usize> {
+    unsafe {
+        let heap_base =
+            std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(ATTEST_HEAP_SIZE, 0x1000).ok()?);
 
+        init_heap(heap_base as *const c_void, ATTEST_HEAP_SIZE as u32);
+    }
 
+    Some(ATTEST_HEAP_SIZE)
+}
+
+/// Load quote data from file if available
+pub fn load_quote_if_available() -> Option<Vec<u8>> {
+    // Try to load quote from common locations
+    let possible_paths = [
+        "quote.bin",
+        "../quote.bin", 
+        "/tmp/quote.bin",
+        "samples/quote.bin",
+    ];
+    
+    for path in &possible_paths {
+        if let Ok(data) = fs::read(path) {
+            println!("Loaded quote from: {}", path);
+            return Some(data);
+        }
+    }
+    
+    None
+}
 // NOTE: These functions are provided by the external C attestation library
 // They should be linked via build.rs or compiler flags, not implemented in Rust
 
 pub fn get_sample_quote() -> Vec<u8> {
-    get_smart_quote_with_options(false) // Fix: call the function that actually exists
-}
-
-/// Create a basic mock quote for fallback when no real data is available
-fn create_mock_quote() -> Vec<u8> {
-    // Create a TD quote structure similar to real format
-    let mut quote = Vec::with_capacity(TD_QUOTE_SIZE);
-    
-    // Basic TD quote header (simplified)
-    quote.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]); // Version
-    quote.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]); // Type: TDX quote
-    quote.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Reserved
-    quote.extend_from_slice(&[0x10, 0x00, 0x00, 0x00]); // Header size
-    
-    // Add some sample TD report data
-    let mut td_report_sample = create_mock_td_report();
-    td_report_sample.resize(TD_REPORT_SIZE, 0);
-    quote.extend_from_slice(&td_report_sample);
-    
-    // Add signature and other quote components
-    quote.resize(TD_QUOTE_SIZE, 0xAB); // Fill rest with pattern
-    
-    // Set a recognizable quote signature at the end
-    let signature_offset = quote.len() - 64;
-    for (i, byte) in quote[signature_offset..].iter_mut().enumerate() {
-        *byte = (i % 256) as u8;
+    let quote = get_smart_quote_with_options(false);
+    if quote.is_empty() {
+        println!("⚠️ No real quote data available for sample");
     }
-    
     quote
 }
 
@@ -172,21 +190,6 @@ fn mask_verified_report_values(report: &mut [u8]) {
     }
 }
 
-fn create_mock_td_report() -> Vec<u8> {
-    // Create a mock TD report for testing when real Azure TDX vTPM is not available
-    let mut td_report = vec![0u8; TD_REPORT_SIZE];
-    
-    // Fill with recognizable pattern
-    for (i, byte) in td_report.iter_mut().enumerate() {
-        *byte = (i % 256) as u8;
-    }
-    
-    // Set TD Report magic header
-    td_report[0..4].copy_from_slice(&[0x54, 0x44, 0x52, 0x30]); // "TDR0"
-    
-    td_report
-}
-
 fn print_error(error: Error) {
     match error {
         Error::InvalidRootCa => println!("Error: Invalid Root CA"),
@@ -234,14 +237,16 @@ enum Commands {
         #[arg(long)]
         request_quote: bool,
     },
-    /// Verify a quote from a local file - requires sudo for TPM access
+    /// Verify a quote from a local file
     File {
         /// Path to the quote file to verify (default: ./quote.bin)
         #[arg(short, long, default_value = "quote.bin")]
         quote_file: String,
     },
-    /// Azure TDX CVM demonstration mode - requires sudo for TPM access
+    /// Azure TDX CVM demonstration mode
     Azure,
+    /// Simple IMDS test mode
+    Simple,
 }
 
 // Network message protocol
@@ -551,11 +556,10 @@ async fn run_client(server_addr: String, port: u16, send_quote: bool, request_qu
     Ok(())
 }
 
-async fn run_file_verification(quote_file_path: String) {
+fn run_file_verification(quote_file_path: String) {
     println!("=== MigTD Quote File Verification ===");
     println!("This application verifies a quote from a local file using the REAL verify_quote_integrity function");
-    println!("� Quote file: {}", quote_file_path);
-    println!("⚠️  Note: This mode requires sudo for TPM access - run with: sudo ./verify_quote_app file\n");
+    println!("📄 Quote file: {}", quote_file_path);
    
     // Initialize collateral for servtd_get_quote
     println!("0. Initializing collateral for servtd_get_quote...");
@@ -594,6 +598,10 @@ async fn run_file_verification(quote_file_path: String) {
             println!("   ⚠️ Falling back to smart quote generation...");
             
             let smart_quote = get_smart_quote_with_options(false);
+            if smart_quote.is_empty() {
+                println!("   ✗ Smart quote generation failed - no quote data available");
+                return;
+            }
             println!("   Generated smart quote ({} bytes)", smart_quote.len());
             smart_quote
         }
@@ -701,8 +709,8 @@ pub fn get_smart_quote_with_options(force_use_file: bool) -> Vec<u8> {
             println!("   📁 Using real quote from file (forced by --use-quote-file)");
             return quote;
         } else {
-            println!("   ⚠️ --use-quote-file specified but no quote.bin found, falling back to mock");
-            return create_mock_quote();
+            println!("   ❌ --use-quote-file specified but no quote.bin found");
+            return Vec::new();
         }
     }
     
@@ -713,22 +721,44 @@ pub fn get_smart_quote_with_options(force_use_file: bool) -> Vec<u8> {
         return quote;
     }
     
-    // Third try: Mock quote generation
-    println!("   💻 Using mock quote (no real data available)");
-    create_mock_quote()
+    // No fallback - return empty vector
+    println!("   ❌ No real quote data available (no mock fallback)");
+    Vec::new()
 }
 
 // Enhanced demo that shows Azure TDX capabilities
 
-async fn run_azure_demo() {
+fn run_azure_demo() {
     println!("=== Azure TDX CVM Demonstration Mode ===");
     println!("This mode demonstrates real Azure TDX CVM capabilities using az-tdx-vtpm crate");
-    println!("🌟 Always uses real Azure TDX vTPM (no file fallback)");
-    println!("⚠️  Note: This mode requires sudo for TPM access - run with: sudo ./verify_quote_app azure\n");
+    println!("🌟 Always uses real Azure TDX vTPM (no file fallback)\n");
+
+    // Initialize collateral for servtd_get_quote
+    println!("0. Initializing collateral for servtd_get_quote...");
+    if let Some(collateral_data) = load_collateral_if_available() {
+        match set_collateral(collateral_data) {
+            Ok(()) => println!("   ✓ Collateral data loaded successfully"),
+            Err(e) => println!("   ⚠️ Failed to set collateral: {}", e),
+        }
+    } else {
+        println!("   ⚠️ No collateral data available - servtd_get_quote may fail");
+    }
     
+  
+    // Step 1: Initialize attestation heap
+    println!("\n1. Initializing attestation heap...");
+    match attest_init_heap() {
+        Some(heap_size) => println!("   ✓ Heap initialized successfully (size: {} bytes)", heap_size),
+        None => {
+            println!("   ✗ Failed to initialize heap");
+            return;
+        }
+    }
+      
     
     // Test 1: Try to get real HCL report
     println!("\n   1. Testing real HCL report retrieval...");
+    //run_simple_inner();
     let td_quote = match get_hcl_td_quote() {
         Ok(quote) => quote,
         Err(e) => {
@@ -772,28 +802,65 @@ async fn run_azure_demo() {
     println!("\n=== AZURE TDX DEMO COMPLETE ===");
 }
 
+fn run_simple() {
+    println!("=== Simple IMDS Test Mode ===");
+    println!("This mode runs the basic az-tdx-vtpm example\n");
+    
+    match run_simple_inner() {
+        Ok(()) => println!("✅ Simple IMDS test completed successfully!"),
+        Err(e) => println!("❌ Simple IMDS test failed: {}", e),
+    }
+}
+
+fn run_simple_inner() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Step 1: Getting vTPM report...");
+    let bytes = vtpm::get_report()?;
+    println!("✓ Got vTPM report ({} bytes)", bytes.len());
+    
+    println!("Step 2: Creating HCL report...");
+    let hcl_report = hcl::HclReport::new(bytes)?;
+    let var_data_hash = hcl_report.var_data_sha256();
+    let ak_pub = hcl_report.ak_pub()?;
+    println!("✓ HCL report created, var_data_hash: {}", hex::encode(&var_data_hash));
+
+    println!("Step 3: Converting to TD report...");
+    let td_report: tdx::TdReport = hcl_report.try_into()?;
+    assert!(var_data_hash == td_report.report_mac.reportdata[..32]);
+    println!("✓ TD report conversion successful");
+    println!("vTPM AK_pub: {:?}", ak_pub);
+    
+    println!("Step 4: Attempting to get TD quote from IMDS...");
+    let td_quote_bytes = match imds::get_td_quote(&td_report) {
+        Ok(quote) => {
+            println!("✓ Successfully got TD quote from IMDS");
+            quote
+        }
+        Err(e) => {
+            println!("❌ IMDS call failed (expected outside Azure): {:?}", e);
+            return Err(Box::new(e));
+        }
+    };
+    
+    println!("Step 5: Displaying quote information...");
+    println!("TD Quote size: {} bytes", td_quote_bytes.len());
+    println!("TD Quote preview (first 64 bytes): {}", 
+             hex::encode(&td_quote_bytes[..std::cmp::min(64, td_quote_bytes.len())]));
+    
+    if td_quote_bytes.len() >= 128 {
+        println!("TD Quote middle section (bytes 64-128): {}", 
+                 hex::encode(&td_quote_bytes[64..std::cmp::min(128, td_quote_bytes.len())]));
+    }
+    
+    println!("Step 6: Writing quote to file...");
+    std::fs::write("td_quote.bin", &td_quote_bytes)?;
+    println!("✓ TD quote saved to td_quote.bin");
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    
-    // Check for sudo requirement for modes that need TPM access
-    match cli.command {
-        Commands::File { .. } | Commands::Azure => {
-            // Check if running with elevated privileges
-            if unsafe { libc::geteuid() } != 0 {
-                eprintln!("⚠️  WARNING: Running without sudo - TPM access may fail!");
-                eprintln!("   For full functionality, run with: sudo ./verify_quote_app {}", 
-                    match cli.command {
-                        Commands::File { .. } => "file",
-                        Commands::Azure => "azure",
-                        _ => unreachable!()
-                    }
-                );
-                eprintln!("   Continuing anyway - some features may not work...\n");
-            }
-        }
-        _ => {} // Server and client modes don't need sudo
-    }
     
     let result = match cli.command {
         Commands::Server { port, bind } => {
@@ -808,11 +875,15 @@ async fn main() {
             run_client(server, port, send_quote, request_quote).await
         }
         Commands::File { quote_file } => {
-            run_file_verification(quote_file).await;
+            run_file_verification(quote_file);
             return;
         }
         Commands::Azure => {
-            run_azure_demo().await;
+            run_azure_demo();
+            return;
+        }
+        Commands::Simple => {
+            run_simple();
             return;
         }
     };
