@@ -276,19 +276,3 @@ pub fn generate_mock_collateral() -> Option<Vec<u8>> {
     Some(collateral)
 }
 
-/// Initialize the real Intel Root CA certificate and collateral
-pub fn init_root_ca_and_collateral() -> Result<(), String> {
-    // Use the Intel Root CA public key directly
-    println!("✓ Using Intel Root CA public key directly");
-    
-    // Load collateral data from file or generate mock
-    let collateral_data = load_collateral_if_available().unwrap_or_else(|| {
-        println!("Using generated mock collateral");
-        generate_mock_collateral().unwrap()
-    });
-    
-    // Set the collateral data for the attestation library
-    set_collateral(collateral_data)?;
-    
-    Ok(())
-}

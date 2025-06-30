@@ -635,54 +635,6 @@ async fn run_file_verification(quote_file_path: String) {
     println!("Verified quote from: {}", quote_file_path);
 }
 
-// Functions using az-tdx-vtpm crate for real Azure TDX attestation
-pub fn get_real_hcl_report() -> Result<(Vec<u8>, hcl::HclReport), Error> {
-    println!("   Getting real HCL report from vTPM...");
-    
-    match vtpm::get_report() {
-        Ok(hcl_bytes) => {
-            match hcl::HclReport::new(hcl_bytes.clone()) {
-                Ok(hcl_report) => {
-                    println!("   ✓ Retrieved and parsed HCL report ({} bytes)", hcl_bytes.len());
-                    Ok((hcl_bytes, hcl_report))
-                }
-                Err(e) => {
-                    println!("   ✗ Failed to parse HCL report: {:?}", e);
-                    Err(Error::InvalidOutput)
-                }
-            }
-        }
-        Err(e) => {
-            println!("   ✗ Failed to get HCL report from vTPM: {:?}", e);
-            Err(Error::GetQuote)
-        }
-    }
-}
-
-// Try to get real TD report and quote using az-tdx-vtpm, fallback to mock if not available
-pub fn get_real_td_report() -> Result<Vec<u8>, Error> {
-    println!("   Attempting to get real TD report via az-tdx-vtpm...");
-    
-    match get_real_hcl_report() {
-        Ok((hcl_bytes, hcl_report)) => {
-            // Extract TD report from HCL report if available
-            let var_data = hcl_report.var_data();
-            if !var_data.is_empty() {
-                // Use the variable data if available, or fall back to raw HCL bytes
-                println!("   ✓ Extracted variable data from HCL report, using as TD report");
-                Ok(var_data.to_vec())
-            } else {
-                println!("   ⚠️ No variable data in HCL report, using raw HCL report");
-                Ok(hcl_bytes)
-            }
-        }
-        Err(_) => {
-            println!("   ⚠️ Real vTPM not available, falling back to mock TD report");
-            Ok(create_mock_td_report())
-        }
-    }
-}
-
 pub fn get_hcl_td_quote() -> Result<Vec<u8>, Error> {
     println!("   Attempting to get real Azure CVM HCL TD quote via az-tdx-vtpm...");
     
@@ -736,57 +688,6 @@ pub fn get_hcl_td_quote() -> Result<Vec<u8>, Error> {
     Ok(td_quote_bytes)
 }
 
-pub fn get_real_td_quote() -> Result<Vec<u8>, Error> {
-    println!("   Attempting to get real TD quote via az-tdx-vtpm...");
-    
-    match get_real_hcl_report() {
-        Ok((hcl_bytes, _hcl_report)) => {
-            // For now, generate a quote from the HCL report data
-            // The exact method may depend on the specific HCL structure
-            println!("   ✓ Using HCL report to generate TD quote");
-            generate_quote_from_hcl(&hcl_bytes)
-        }
-        Err(_) => {
-            println!("   ⚠️ Real vTPM not available, falling back to mock TD quote");
-            Ok(get_sample_quote())
-        }
-    }
-}
-
-fn generate_quote_from_hcl(hcl_data: &[u8]) -> Result<Vec<u8>, Error> {
-    // Create a TD quote structure from HCL data
-    let mut quote = Vec::with_capacity(8192);
-    
-    // Basic TD quote header
-    quote.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]); // Version
-    quote.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]); // Type: TDX quote
-    
-    // Include HCL data hash as quote payload
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    
-    let mut hasher = DefaultHasher::new();
-    hcl_data.hash(&mut hasher);
-    let hcl_hash = hasher.finish();
-    quote.extend_from_slice(&hcl_hash.to_le_bytes());
-    
-    // Add timestamp
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    quote.extend_from_slice(&timestamp.to_le_bytes());
-    
-    // Include a portion of the actual HCL data
-    let hcl_sample_size = std::cmp::min(hcl_data.len(), 1024);
-    quote.extend_from_slice(&hcl_data[..hcl_sample_size]);
-    
-    // Pad to standard quote size
-    quote.resize(4096, 0);
-    
-    Ok(quote)
-}
-
 // Smart quote generation - use real if available, otherwise fallback to file, then mock
 pub fn get_smart_quote() -> Vec<u8> {
     get_smart_quote_with_options(false)
@@ -805,14 +706,6 @@ pub fn get_smart_quote_with_options(force_use_file: bool) -> Vec<u8> {
         }
     }
     
-    // First try: Azure TDX vTPM real quote
-    match get_real_td_quote() {
-        Ok(quote) => {
-            println!("   🌟 Using real TD quote from Azure TDX vTPM");
-            return quote;
-        }
-        Err(_) => {} // Continue to next option
-    }
     
     // Second try: Real quote from file (from mikbras/tdtools)
     if let Some(quote) = load_quote_if_available() {
