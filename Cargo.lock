@@ -708,7 +708,9 @@ dependencies = [
  "serde",
  "serde_json",
  "td-shim",
+ "td-shim-emu",
  "td-shim-interface",
+ "td-shim-interface-emu",
 ]
 
 [[package]]
@@ -1131,6 +1133,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "td-shim-emu"
+version = "0.1.0-emu"
+dependencies = [
+ "cc-measurement",
+]
+
+[[package]]
 name = "td-shim-interface"
 version = "0.1.1"
 dependencies = [
@@ -1138,6 +1147,13 @@ dependencies = [
  "r-efi",
  "scroll",
  "zerocopy",
+]
+
+[[package]]
+name = "td-shim-interface-emu"
+version = "0.1.0-emu"
+dependencies = [
+ "scroll",
 ]
 
 [[package]]

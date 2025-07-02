@@ -9,7 +9,13 @@ use cc_measurement::{
     log::CcEventLogReader, CcEventHeader, EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_PLATFORM_CONFIG_FLAGS,
 };
 use crypto::hash::digest_sha384;
+
+#[cfg(not(feature = "AzCVMEmu"))]
 use td_shim::event_log::{
+    PLATFORM_CONFIG_SECURE_AUTHORITY, PLATFORM_CONFIG_SVN, PLATFORM_FIRMWARE_BLOB2_PAYLOAD,
+};
+#[cfg(feature = "AzCVMEmu")]
+use td_shim_emu::event_log::{
     PLATFORM_CONFIG_SECURE_AUTHORITY, PLATFORM_CONFIG_SVN, PLATFORM_FIRMWARE_BLOB2_PAYLOAD,
 };
 
@@ -1324,26 +1330,46 @@ mod tests {
         let mut writter = CcEventLogWriter::new(&mut event_log, Box::new(extender)).unwrap();
 
         // Log the payload binary
+        #[cfg(not(feature = "AzCVMEmu"))]
         td_shim::event_log::log_payload_binary(payload, &mut writter);
+        #[cfg(feature = "AzCVMEmu")]
+        td_shim_emu::event_log::log_payload_binary(payload, &mut writter);
+        
         // Log the trust_anchor (secure boot public key hash)
         trust_anchor.and_then(|anchor| {
-            td_shim::event_log::create_event_log_platform_config(
+            #[cfg(not(feature = "AzCVMEmu"))]
+            let result = td_shim::event_log::create_event_log_platform_config(
                 &mut writter,
                 1,
                 PLATFORM_CONFIG_SECURE_AUTHORITY,
                 anchor,
-            )
-            .ok()
+            );
+            #[cfg(feature = "AzCVMEmu")]
+            let result = td_shim_emu::event_log::create_event_log_platform_config(
+                &mut writter,
+                1,
+                PLATFORM_CONFIG_SECURE_AUTHORITY,
+                anchor,
+            );
+            result.ok()
         });
         // Log the payload svn
         payload_svn.and_then(|svn| {
-            td_shim::event_log::create_event_log_platform_config(
+            #[cfg(not(feature = "AzCVMEmu"))]
+            let result = td_shim::event_log::create_event_log_platform_config(
                 &mut writter,
                 1,
                 PLATFORM_CONFIG_SVN,
                 svn,
-            )
-            .ok()
+            );
+            #[cfg(feature = "AzCVMEmu")]
+            let result = td_shim_emu::event_log::create_event_log_platform_config(
+                &mut writter,
+                1,
+                PLATFORM_CONFIG_SVN,
+                svn,
+            );
+            result.ok()
         });
 
         // Log the migration policy
