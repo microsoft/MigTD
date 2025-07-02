@@ -1,0 +1,13 @@
+[package]
+name = "tcp_transport"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core2 = { version = "0.4", default-features = false, features = ["alloc"] }
+async_io = { path = "../../async/async_io" }
+
+[features]
+default = []
+AzCVMEmu = ["std"]
+std = ["core2/std"]

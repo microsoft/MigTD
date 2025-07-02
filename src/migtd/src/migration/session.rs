@@ -410,6 +410,27 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
 
     let transport;
 
+    #[cfg(feature = "AzCVMEmu")]
+    {
+        use tcp_transport::TcpStream;
+        
+        // For AzCVMEmu, use TCP transport with a fixed port based on migration ID
+        let tcp_port = 8000u16.saturating_add(info.mig_info.mig_request_id as u16 % 1000);
+        
+        if info.is_src() {
+            // Source MigTD connects to destination
+            transport = TcpStream::connect_to("127.0.0.1", tcp_port)
+                .await
+                .map_err(|_e| MigrationResult::InvalidParameter)?;
+        } else {
+            // Destination MigTD listens for connection
+            transport = TcpStream::accept_on(tcp_port)
+                .await
+                .map_err(|_e| MigrationResult::InvalidParameter)?;
+        }
+    }
+
+    #[cfg(not(feature = "AzCVMEmu"))]
     #[cfg(feature = "vmcall-raw")]
     {
         use vmcall_raw::stream::VmcallRaw;
@@ -423,6 +444,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         transport = vmcall_raw_instance;
     }
 
+    #[cfg(not(feature = "AzCVMEmu"))]
     #[cfg(feature = "virtio-serial")]
     {
         use virtio_serial::VirtioSerialPort;
@@ -433,6 +455,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         transport = port;
     };
 
+    #[cfg(not(feature = "AzCVMEmu"))]
     #[cfg(not(feature = "virtio-serial"))]
     #[cfg(not(feature = "vmcall-raw"))]
     {
@@ -480,9 +503,15 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         if size < size_of::<ExchangeInformation>() {
             return Err(MigrationResult::NetworkError);
         }
+        #[cfg(feature = "AzCVMEmu")]
+        ratls_client.transport_mut().shutdown().await
+            .map_err(|_e| MigrationResult::InvalidParameter)?;
+
+        #[cfg(not(feature = "AzCVMEmu"))]
         #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
         ratls_client.transport_mut().shutdown().await?;
 
+        #[cfg(not(feature = "AzCVMEmu"))]
         #[cfg(feature = "vmcall-raw")]
         ratls_client
             .transport_mut()
@@ -507,9 +536,15 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         if size < size_of::<ExchangeInformation>() {
             return Err(MigrationResult::NetworkError);
         }
+        #[cfg(feature = "AzCVMEmu")]
+        ratls_server.transport_mut().shutdown().await
+            .map_err(|_e| MigrationResult::InvalidParameter)?;
+
+        #[cfg(not(feature = "AzCVMEmu"))]
         #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
         ratls_server.transport_mut().shutdown().await?;
 
+        #[cfg(not(feature = "AzCVMEmu"))]
         #[cfg(feature = "vmcall-raw")]
         ratls_server
             .transport_mut()
