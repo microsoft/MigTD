@@ -4,4 +4,6 @@
 
 fn main() {
     println!("cargo:rustc-link-arg=-defsym=__ImageBase=0");
+    #[cfg(feature = "AzCVMEmu")]
+    println!("cargo:rustc-link-arg=-lservtd_attest");
 }

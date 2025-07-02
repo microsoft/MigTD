@@ -16,3 +16,4 @@ td-payload = { path = "../../deps/td-shim/td-payload", features = ["tdx"] }
 [features]
 default = []
 test = []
+AzCVMEmu = []

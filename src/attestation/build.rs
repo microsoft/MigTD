@@ -51,5 +51,11 @@ fn main() {
     );
 
     println!("cargo:rustc-link-search=native={}", search_dir);
+    
+    // Use different linking approach based on feature
+    #[cfg(feature = "AzCVMEmu")]
+    println!("cargo:rustc-link-arg=-lservtd_attest");
+    
+    #[cfg(not(feature = "AzCVMEmu"))]
     println!("cargo:rustc-link-lib=static=servtd_attest");
 }

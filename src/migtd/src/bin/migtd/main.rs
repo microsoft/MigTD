@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "AzCVMEmu"), no_std)]
+#![cfg_attr(not(feature = "AzCVMEmu"), no_main)]
 
 extern crate alloc;
 
@@ -18,6 +18,13 @@ use migtd::migration::MigrationResult;
 use migtd::{config, event_log, migration};
 use spin::Mutex;
 
+#[cfg(feature = "AzCVMEmu")]
+use migtd::migration::MigtdMigrationInformation;
+#[cfg(feature = "AzCVMEmu")]
+use std::process;
+#[cfg(feature = "AzCVMEmu")]
+use std::env;
+
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Event IDs that will be used to tag the event log
@@ -25,43 +32,12 @@ const TAGGED_EVENT_ID_POLICY: u32 = 0x1;
 const TAGGED_EVENT_ID_ROOT_CA: u32 = 0x2;
 const TAGGED_EVENT_ID_TEST: u32 = 0x32;
 
+#[cfg(not(feature = "AzCVMEmu"))]
 #[no_mangle]
 pub extern "C" fn main() {
     #[cfg(feature = "test_stack_size")]
     {
         td_benchmark::StackProfiling::init(0x5a5a_5a5a_5a5a_5a5a, 0xd000);
-    }
-
-    // Initialize file-based configuration for AzCVMEmu mode
-    #[cfg(feature = "AzCVMEmu")]
-    {
-        // Initialize event log emulation
-        td_shim_emu::event_log::init_event_log();
-
-        // Define file paths for policy and root CA
-        const POLICY_FILE_PATH: &str = "/tmp/migtd_policy.bin";
-        const ROOT_CA_FILE_PATH: &str = "/tmp/migtd_root_ca.bin";
-        
-        // Initialize file-based emulation with real file access
-        let result = td_shim_interface_emu::init_file_based_emulation_with_real_files(
-            POLICY_FILE_PATH, 
-            ROOT_CA_FILE_PATH
-        );
-        
-        if result {
-            log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:");
-            log::info!("  Policy: {}", POLICY_FILE_PATH);
-            log::info!("  Root CA: {}", ROOT_CA_FILE_PATH);
-        } else {
-            log::warn!("Failed to initialize file-based emulation, using fallback data");
-            
-            // If initialization fails, load default test data directly via emulation layer
-            let default_policy = b"AzCVMEmu hardcoded policy data";
-            let default_root_ca = b"AzCVMEmu hardcoded root CA data";
-
-            td_shim_interface_emu::load_policy_data(default_policy);
-            td_shim_interface_emu::load_root_ca_data(default_root_ca);
-        }
     }
 
     runtime_main()
@@ -227,6 +203,48 @@ fn sleep() {
 
 #[cfg(test)]
 fn main() {}
+
+// AzCVMEmu entry point - standard Rust main function
+#[cfg(feature = "AzCVMEmu")]
+fn main() {
+    println!("MigTD Version - {}", MIGTD_VERSION);
+    
+    // Initialize event log emulation
+    td_shim_emu::event_log::init_event_log();
+
+    // Define file paths for policy and root CA
+    const POLICY_FILE_PATH: &str = "/tmp/migtd_policy.bin";
+    const ROOT_CA_FILE_PATH: &str = "/tmp/migtd_root_ca.bin";
+    
+    // Initialize file-based emulation with real file access
+    let result = td_shim_interface_emu::init_file_based_emulation_with_real_files(
+        POLICY_FILE_PATH, 
+        ROOT_CA_FILE_PATH
+    );
+    
+    if result {
+        log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:");
+        log::info!("  Policy: {}", POLICY_FILE_PATH);
+        log::info!("  Root CA: {}", ROOT_CA_FILE_PATH);
+    } else {
+        log::warn!("Failed to initialize file-based emulation, using fallback data");
+        
+        // If initialization fails, load default test data directly via emulation layer
+        let default_policy = b"AzCVMEmu hardcoded policy data";
+        let default_root_ca = b"AzCVMEmu hardcoded root CA data";
+
+        td_shim_interface_emu::load_policy_data(default_policy);
+        td_shim_interface_emu::load_root_ca_data(default_root_ca);
+    }
+    
+    // Parse command-line arguments for AzCVMEmu mode
+    if let Some(mig_info) = parse_commandline_args() {
+        runtime_main_azcvmemu(mig_info);
+    } else {
+        // If argument parsing failed, exit with error
+        std::process::exit(1);
+    }
+}
 // FIXME: remove when https://github.com/Amanieu/minicov/issues/12 is fixed.
 #[cfg(all(feature = "coverage", target_os = "none"))]
 #[no_mangle]
@@ -243,5 +261,222 @@ fn test_memory() {
     {
         let value = td_benchmark::HeapProfiling::heap_usage().unwrap();
         td_payload::println!("max heap usage: {}", value);
+    }
+}
+
+#[cfg(feature = "AzCVMEmu")]
+fn parse_commandline_args() -> Option<MigrationInformation> {
+    use std::env;
+    
+    println!("Parsing command-line arguments for AzCVMEmu mode");
+    
+    let args: Vec<String> = env::args().collect();
+    
+    // Default values
+    let mut mig_request_id = 1;
+    let mut is_source = true;
+    let mut target_td_uuid = [1, 2, 3, 4];
+    let mut binding_handle = 0x1234;
+    let mut policy_id = 0u64;
+    let mut comm_id = 0u64;
+    let mut help_requested = false;
+    
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--request-id" | "-r" if i + 1 < args.len() => {
+                if let Ok(id) = args[i + 1].parse::<u64>() {
+                    mig_request_id = id;
+                    i += 2;
+                } else {
+                    println!("Invalid request ID value: {}", args[i + 1]);
+                    return None;
+                }
+            }
+            "--role" | "-m" if i + 1 < args.len() => {
+                match args[i + 1].to_lowercase().as_str() {
+                    "source" | "src" => {
+                        is_source = true;
+                        i += 2;
+                    }
+                    "destination" | "dst" | "target" => {
+                        is_source = false;
+                        i += 2;
+                    }
+                    _ => {
+                        println!("Invalid role value: {}. Use 'source' or 'destination'", args[i + 1]);
+                        return None;
+                    }
+                }
+            }
+            "--uuid" | "-u" if i + 4 < args.len() => {
+                if let (Ok(u1), Ok(u2), Ok(u3), Ok(u4)) = (
+                    args[i + 1].parse::<u32>(),
+                    args[i + 2].parse::<u32>(),
+                    args[i + 3].parse::<u32>(),
+                    args[i + 4].parse::<u32>(),
+                ) {
+                    target_td_uuid = [u1, u2, u3, u4];
+                    i += 5;
+                } else {
+                    println!("Invalid UUID values. Expected 4 unsigned integers");
+                    return None;
+                }
+            }
+            "--binding" | "-b" if i + 1 < args.len() => {
+                // Try to parse as hex (with 0x prefix) or decimal
+                let handle_result = if args[i + 1].starts_with("0x") || args[i + 1].starts_with("0X") {
+                    u64::from_str_radix(&args[i + 1][2..], 16)
+                } else {
+                    args[i + 1].parse::<u64>()
+                };
+                
+                if let Ok(handle) = handle_result {
+                    binding_handle = handle;
+                    i += 2;
+                } else {
+                    println!("Invalid binding handle value: {}", args[i + 1]);
+                    return None;
+                }
+            }
+            "--policy-id" | "-p" if i + 1 < args.len() => {
+                if let Ok(id) = args[i + 1].parse::<u64>() {
+                    policy_id = id;
+                    i += 2;
+                } else {
+                    println!("Invalid policy ID value: {}", args[i + 1]);
+                    return None;
+                }
+            }
+            "--comm-id" | "-c" if i + 1 < args.len() => {
+                if let Ok(id) = args[i + 1].parse::<u64>() {
+                    comm_id = id;
+                    i += 2;
+                } else {
+                    println!("Invalid communication ID value: {}", args[i + 1]);
+                    return None;
+                }
+            }
+            "--help" | "-h" => {
+                help_requested = true;
+                i += 1;
+            }
+            _ => {
+                println!("Unknown argument: {}", args[i]);
+                help_requested = true;
+                i += 1;
+            }
+        }
+    }
+    
+    if help_requested {
+        print_usage();
+        return None;
+    }
+    
+    // Create migration information using the same pattern as in data.rs
+    let mig_info = unsafe {
+        // Create a zero-initialized structure and then set the fields
+        let mut info: MigtdMigrationInformation = core::mem::zeroed();
+        info.mig_request_id = mig_request_id;
+        info.migration_source = if is_source { 1 } else { 0 };
+        info.target_td_uuid = [target_td_uuid[0] as u64, target_td_uuid[1] as u64, target_td_uuid[2] as u64, target_td_uuid[3] as u64];
+        info.binding_handle = binding_handle;
+        info.mig_policy_id = policy_id;
+        info.communication_id = comm_id;
+        info
+    };
+    
+    println!("Migration information:");
+    println!("  Request ID: {}", mig_request_id);
+    println!("  Role: {}", if is_source { "Source" } else { "Destination" });
+    println!("  Target TD UUID: {:?}", target_td_uuid);
+    println!("  Binding Handle: {:#x}", binding_handle);
+    println!("  Policy ID: {}", policy_id);
+    println!("  Communication ID: {}", comm_id);
+    
+    #[cfg(feature = "vmcall-raw")]
+    {
+        Some(MigrationInformation { mig_info })
+    }
+    
+    #[cfg(all(not(feature = "vmcall-raw"), any(feature = "vmcall-vsock", feature = "virtio-vsock")))]
+    {
+        Some(MigrationInformation { 
+            mig_info,
+            mig_socket_info: migtd::migration::MigtdStreamSocketInfo {
+                communication_id: comm_id,
+                mig_td_cid: 0,
+                mig_channel_port: 0,
+                quote_service_port: 0,
+            }, 
+            mig_policy: None 
+        })
+    }
+    
+    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "vmcall-vsock"), not(feature = "virtio-vsock")))]
+    {
+        Some(MigrationInformation { 
+            mig_info,
+            mig_policy: None 
+        })
+    }
+}
+
+#[cfg(feature = "AzCVMEmu")]
+fn print_usage() {
+    println!("MigTD AzCVMEmu Mode Usage:");
+    println!("  --request-id, -r ID        Set migration request ID (default: 1)");
+    println!("  --role, -m ROLE            Set role as 'source' or 'destination' (default: source)");
+    println!("  --uuid, -u U1 U2 U3 U4     Set target TD UUID as four integers (default: 1 2 3 4)");
+    println!("  --binding, -b HANDLE       Set binding handle as hex or decimal (default: 0x1234)");
+    println!("  --policy-id, -p ID         Set migration policy ID (default: 0)");
+    println!("  --comm-id, -c ID           Set communication ID (default: 0)");
+    println!("  --help, -h                 Show this help message");
+    println!();
+    println!("Examples:");
+    println!("  ./migtd --role source --request-id 42");
+    println!("  ./migtd -m destination -r 42 -b 0x5678");
+}
+
+#[cfg(feature = "AzCVMEmu")]
+fn runtime_main_azcvmemu(mig_info: MigrationInformation) {
+    println!("Starting MigTD in AzCVMEmu mode...");
+    
+    // Handle the migration directly without TDX-specific initialization
+    handle_migration_azcvmemu(mig_info);
+}
+
+#[cfg(feature = "AzCVMEmu")]
+fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
+    println!("Starting migration in AzCVMEmu mode with request ID: {}", mig_info.mig_info.mig_request_id);
+    
+    let is_source = mig_info.mig_info.migration_source != 0;
+    println!("Role: {}", if is_source { "Source" } else { "Destination" });
+    
+    // Add the request ID to the tracking set for proper session management
+    REQUESTS.lock().insert(mig_info.mig_info.mig_request_id);
+    
+    // For AzCVMEmu, we'll create a simple sync wrapper around the async function
+    // Since we're in an emulated environment, we can avoid the complexity of async_runtime
+    println!("Creating Tokio runtime...");
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    
+    println!("Running migration key exchange...");
+    let result = rt.block_on(async {
+        exchange_msk(&mig_info).await
+    });
+    
+    // Process the result and exit with appropriate status code
+    match result {
+        Ok(_) => {
+            println!("Migration key exchange successful!");
+            process::exit(0);
+        }
+        Err(e) => {
+            let status_code = e as u8;
+            println!("Migration key exchange failed with code: {}", status_code);
+            process::exit(status_code as i32);
+        }
     }
 }
