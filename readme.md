@@ -117,6 +117,55 @@ To use virtio-serial instead of virtio-vsock for the guest-host communication:
 cargo image --no-default-features --features stack-guard,virtio-serial
 ```
 
+### Build for Azure CVM Emulation (AzCVMEmu)
+
+For development and testing in Azure Confidential VM environments where TDX hardware is not available, you can build MigTD with emulation support:
+
+```
+cargo build --features "main,AzCVMEmu" --bin migtd
+```
+
+Note: The `main` feature enables the main MigTD functionality, and `AzCVMEmu` enables emulation support. The `--bin migtd` flag ensures the main MigTD binary is built. You can also use:
+
+```
+cargo build --features "main,AzCVMEmu"
+```
+
+This will build all binaries in the workspace.
+
+This enables MigTD to run as a standard command-line application with:
+- Standard library support (std)
+- File-based configuration for policy and root CA data
+- TCP transport for source/destination communication
+- Command-line argument parsing with help and error handling
+
+#### Running MigTD in AzCVMEmu Mode
+
+When built with the AzCVMEmu feature, MigTD can be run directly from the command line:
+
+```
+# Display help information
+./target/debug/migtd -h
+```
+
+**Command-line Options:**
+- `--role <source|destination>`: Specify whether this instance acts as migration source or destination
+- `--bind-handle <HANDLE>`: Binding handle (supports both hex with 0x prefix and decimal)
+- `--dest-addr <IP:PORT>`: Destination address for source role (e.g., 192.168.1.100:8080)
+- `--policy-file <PATH>`: Path to migration policy file
+- `--root-ca-file <PATH>`: Path to root CA certificate file
+- `-h, --help`: Display help information
+
+**Example Usage:**
+```
+# Terminal 1: Start destination
+./target/debug/migtd --role destination --bind-handle 0x1234 
+
+# Terminal 2: Start source
+./target/debug/migtd --role source --bind-handle 0x1234 --dest-addr 127.0.0.1:8080 
+```
+
+
 ### Generate SERVTD_INFO_HASH
 
 `SERVTD_HASH_INFO` can be calculated based on a given MigTD image and a TD configuration such as
