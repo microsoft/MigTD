@@ -13,4 +13,6 @@ r-efi = "3.2.0"
 zerocopy = { version = "0.7", features = ["derive"] }
 
 [features]
+default = ["std"]
 no-metadata-checks = []
+std = []

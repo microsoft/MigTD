@@ -31,6 +31,39 @@ pub extern "C" fn main() {
     {
         td_benchmark::StackProfiling::init(0x5a5a_5a5a_5a5a_5a5a, 0xd000);
     }
+
+    // Initialize file-based configuration for AzCVMEmu mode
+    #[cfg(feature = "AzCVMEmu")]
+    {
+        // Initialize event log emulation
+        td_shim_emu::event_log::init_event_log();
+
+        // Define file paths for policy and root CA
+        const POLICY_FILE_PATH: &str = "/tmp/migtd_policy.bin";
+        const ROOT_CA_FILE_PATH: &str = "/tmp/migtd_root_ca.bin";
+        
+        // Initialize file-based emulation with real file access
+        let result = td_shim_interface_emu::init_file_based_emulation_with_real_files(
+            POLICY_FILE_PATH, 
+            ROOT_CA_FILE_PATH
+        );
+        
+        if result {
+            log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:");
+            log::info!("  Policy: {}", POLICY_FILE_PATH);
+            log::info!("  Root CA: {}", ROOT_CA_FILE_PATH);
+        } else {
+            log::warn!("Failed to initialize file-based emulation, using fallback data");
+            
+            // If initialization fails, load default test data directly via emulation layer
+            let default_policy = b"AzCVMEmu hardcoded policy data";
+            let default_root_ca = b"AzCVMEmu hardcoded root CA data";
+
+            td_shim_interface_emu::load_policy_data(default_policy);
+            td_shim_interface_emu::load_root_ca_data(default_root_ca);
+        }
+    }
+
     runtime_main()
 }
 
@@ -89,7 +122,17 @@ fn measure_test_feature(event_log: &mut [u8]) {
 
 fn get_policy_and_measure(event_log: &mut [u8]) {
     // Read migration policy from CFV
+    #[cfg(not(feature = "AzCVMEmu"))]
     let policy = config::get_policy().expect("Fail to get policy from CFV\n");
+    
+    #[cfg(feature = "AzCVMEmu")]
+    let policy = match config::get_policy() {
+        Some(policy) => policy,
+        None => {
+            log::warn!("No policy found in AzCVMEmu mode. Using default policy.");
+            b"AzCVMEmu default policy"
+        }
+    };
 
     // Measure and extend the migration policy to RTMR
     event_log::write_tagged_event_log(event_log, TAGGED_EVENT_ID_POLICY, policy)
@@ -97,7 +140,17 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
 }
 
 fn get_ca_and_measure(event_log: &mut [u8]) {
+    #[cfg(not(feature = "AzCVMEmu"))]
     let root_ca = config::get_root_ca().expect("Fail to get root certificate from CFV\n");
+    
+    #[cfg(feature = "AzCVMEmu")]
+    let root_ca = match config::get_root_ca() {
+        Some(root_ca) => root_ca,
+        None => {
+            log::warn!("No root CA found in AzCVMEmu mode. Using default root CA.");
+            b"AzCVMEmu default root CA"
+        }
+    };
 
     // Measure and extend the root certificate to RTMR
     event_log::write_tagged_event_log(event_log, TAGGED_EVENT_ID_ROOT_CA, root_ca)

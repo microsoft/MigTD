@@ -36,7 +36,7 @@ td-paging = { path = "../../deps/td-shim/td-paging"}
 td-payload = { path = "../../deps/td-shim/td-payload", features = ["tdx"] }
 td-shim-interface = { path = "../../deps/td-shim/td-shim-interface", optional = false }
 td-shim = { path = "../../deps/td-shim/td-shim", optional = false }
-td-shim-interface-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim-interface", optional = true }
+td-shim-interface-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim-interface", optional = true, features = ["std"] }
 td-shim-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim", optional = true }
 virtio = { path="../devices/virtio" }
 vsock = { path="../devices/vsock", default-features = false, optional = true }
