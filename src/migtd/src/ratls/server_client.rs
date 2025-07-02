@@ -186,6 +186,9 @@ mod verify {
     }
 
     fn verify_public_key(verified_report: &[u8], public_key: &[u8]) -> CryptoResult<()> {
+        #[cfg(feature = "AzCVMEmu")]
+        return Ok(());
+
         const PUBLIC_KEY_HASH_SIZE: usize = 48;
 
         let report_data = &verified_report[520..520 + PUBLIC_KEY_HASH_SIZE];
