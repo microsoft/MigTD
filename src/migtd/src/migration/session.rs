@@ -256,9 +256,12 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
                 return Poll::Ready(Err(MigrationResult::InvalidParameter));
             }
             if wfr.operation == 1 {
+                #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
                 let mig_info =
                     read_mig_info(&private_mem[24 + size_of::<ServiceMigWaitForReqResponse>()..])
                         .ok_or(MigrationResult::InvalidParameter)?;
+                #[cfg(any(feature = "vmcall-raw", feature = "AzCVMEmu"))]
+                let mig_info = MigrationInformation::default(); // Use default when HOB not available
                 let request_id = mig_info.mig_info.mig_request_id;
 
                 if REQUESTS.lock().contains(&request_id) {

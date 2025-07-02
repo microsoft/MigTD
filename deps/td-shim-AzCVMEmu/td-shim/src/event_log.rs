@@ -1,18 +1,21 @@
 // Copyright (c) 2020 Intel Corporation
 // Copyright (c) 2022 Alibaba Cloud
+// Copyright (c) 2024 Microsoft Corporation
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 //! Event log emulation module
 //! 
 //! This module provides minimal emulation of td-shim event log functionality
-//! for Azure CVM environments.
+//! for Azure CVM environments, including file-based event log storage.
 
 use cc_measurement::{
     log::{CcEventLogError, CcEventLogWriter},
+    CcEventHeader, TcgPcrEventHeader, TpmlDigestValues, TpmtHa, TpmuHa, 
     UefiPlatformFirmwareBlob2, EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_PLATFORM_CONFIG_FLAGS,
 };
 use core::{mem::size_of, ptr::slice_from_raw_parts};
+use zerocopy::{AsBytes, FromBytes};
 
 pub const CCEL_CC_TYPE_TDX: u8 = 2;
 
@@ -104,6 +107,81 @@ pub fn log_payload_parameter(payload_parameter: &[u8], cc_event_log: &mut CcEven
         payload_parameter,
     )
     .expect("Failed to log HOB list to the td event log");
+}
+
+/// SHA384 hash size
+pub const SHA384_DIGEST_SIZE: usize = 48;
+/// SHA384 algorithm identifier
+pub const TPML_ALG_SHA384: u16 = 0x000C;
+/// Event tag for TXT events
+pub const EV_EVENT_TAG: u32 = 0x00000006;
+
+/// Emulated file-based event log
+pub struct EventLogEmulator {
+    data: [u8; 4096], // Fixed size buffer for simplicity
+    size: usize,
+}
+
+impl EventLogEmulator {
+    /// Create a new empty event log
+    pub fn new() -> Self {
+        Self {
+            data: [0u8; 4096],
+            size: 0,
+        }
+    }
+    
+    /// Get a reference to the event log data
+    pub fn data(&self) -> &[u8] {
+        &self.data[..self.size]
+    }
+    
+    /// Get a mutable reference to the event log data
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.data[..self.size]
+    }
+    
+    /// Set the size of the event log
+    pub fn set_size(&mut self, size: usize) {
+        self.size = size;
+    }
+}
+
+// Singleton instance of the event log
+static mut EVENT_LOG: Option<EventLogEmulator> = None;
+
+/// Initialize the event log emulator
+pub fn init_event_log() {
+    unsafe {
+        if EVENT_LOG.is_none() {
+            EVENT_LOG = Some(EventLogEmulator::new());
+        }
+    }
+}
+
+/// Get a reference to the event log data
+pub fn get_event_log() -> Option<&'static [u8]> {
+    unsafe {
+        if let Some(log) = &EVENT_LOG {
+            Some(log.data())
+        } else {
+            None
+        }
+    }
+}
+
+/// Get a mutable reference to the event log data
+pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
+    unsafe {
+        if let Some(log) = &mut EVENT_LOG {
+            Some(core::slice::from_raw_parts_mut(
+                log.data_mut().as_mut_ptr(),
+                log.size,
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

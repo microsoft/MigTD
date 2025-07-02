@@ -5,3 +5,5 @@
 //! UEFI Platform Initialization data structures emulation for Azure CVM.
 
 pub mod pi;
+pub mod fv;
+pub mod hob;

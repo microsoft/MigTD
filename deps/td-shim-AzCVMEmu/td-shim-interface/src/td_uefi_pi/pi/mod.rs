@@ -5,3 +5,5 @@
 //! Constants and Structures emulation for UEFI Platform Initialization (UEFI-PI) Spec.
 
 pub mod guid;
+pub mod fv;
+pub mod hob;

@@ -13,14 +13,19 @@ use cc_measurement::{
 use core::mem::size_of;
 use crypto::hash::digest_sha384;
 use spin::Once;
+#[cfg(not(feature = "AzCVMEmu"))]
 use td_payload::acpi::get_acpi_tables;
+#[cfg(not(feature = "AzCVMEmu"))]
 use td_shim_interface::acpi::Ccel;
+#[cfg(feature = "AzCVMEmu")]
+use td_shim_emu::event_log as emu_event_log;
 use tdx_tdcall::tdx;
 use zerocopy::{AsBytes, FromBytes};
 
 pub const EV_EVENT_TAG: u32 = 0x00000006;
 pub const TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT: &[u8] = b"test_disable_ra_and_accept_all";
 
+#[cfg(not(feature = "AzCVMEmu"))]
 static CCEL: Once<Ccel> = Once::new();
 
 pub struct TaggedEvent {
@@ -44,13 +49,29 @@ impl TaggedEvent {
     }
 }
 
+#[cfg(not(feature = "AzCVMEmu"))]
 pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
     get_ccel().map(event_log_slice)
 }
 
+#[cfg(feature = "AzCVMEmu")]
+pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
+    // Initialize the emulated event log if needed
+    emu_event_log::init_event_log();
+    emu_event_log::get_event_log_mut()
+}
+
+#[cfg(not(feature = "AzCVMEmu"))]
 pub fn get_event_log() -> Option<&'static [u8]> {
     let raw = get_ccel().map(event_log_slice)?;
     event_log_size(raw).map(|size| &raw[..size + 1])
+}
+
+#[cfg(feature = "AzCVMEmu")]
+pub fn get_event_log() -> Option<&'static [u8]> {
+    // Initialize the emulated event log if needed
+    emu_event_log::init_event_log();
+    emu_event_log::get_event_log()
 }
 
 fn event_log_size(event_log: &[u8]) -> Option<usize> {
@@ -66,10 +87,12 @@ fn event_log_size(event_log: &[u8]) -> Option<usize> {
     Some(size)
 }
 
+#[cfg(not(feature = "AzCVMEmu"))]
 fn event_log_slice(ccel: &Ccel) -> &'static mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(ccel.lasa as *mut u8, ccel.laml as usize) }
 }
 
+#[cfg(not(feature = "AzCVMEmu"))]
 fn get_ccel() -> Option<&'static Ccel> {
     if !CCEL.is_completed() {
         // Parse out ACPI tables handoff from firmware and find the event log location

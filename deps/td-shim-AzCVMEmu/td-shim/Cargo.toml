@@ -9,3 +9,4 @@ keywords = ["td-shim", "TDX", "intel", "azure", "emulation"]
 
 [dependencies]
 cc-measurement = { path = "../../td-shim/cc-measurement"}
+zerocopy = { version = "0.7", features = ["derive"] }

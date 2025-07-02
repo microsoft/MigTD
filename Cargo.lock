@@ -597,7 +597,10 @@ dependencies = [
  "td-logger",
  "td-paging",
  "td-payload",
+ "td-shim",
+ "td-shim-emu",
  "td-shim-interface",
+ "td-shim-interface-emu",
  "tdx-tdcall",
  "virtio",
  "virtio_serial",
@@ -1137,6 +1140,7 @@ name = "td-shim-emu"
 version = "0.1.0-emu"
 dependencies = [
  "cc-measurement",
+ "zerocopy",
 ]
 
 [[package]]
@@ -1153,7 +1157,9 @@ dependencies = [
 name = "td-shim-interface-emu"
 version = "0.1.0-emu"
 dependencies = [
+ "r-efi",
  "scroll",
+ "zerocopy",
 ]
 
 [[package]]
