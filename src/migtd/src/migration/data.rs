@@ -17,6 +17,9 @@ use td_shim_interface_emu::td_uefi_pi::{
 };
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+#[cfg(feature = "AzCVMEmu")]
+use alloc::string::String;
+
 use super::*;
 
 pub const QUERY_COMMAND: u8 = 0;
@@ -240,6 +243,10 @@ pub struct MigrationInformation {
     pub mig_socket_info: MigtdStreamSocketInfo,
     #[cfg(not(feature = "vmcall-raw"))]
     pub mig_policy: Option<MigtdMigpolicy>,
+    #[cfg(feature = "AzCVMEmu")]
+    pub destination_ip: Option<String>,
+    #[cfg(feature = "AzCVMEmu")]
+    pub destination_port: Option<u16>,
 }
 
 impl MigrationInformation {
@@ -251,25 +258,16 @@ impl MigrationInformation {
 #[cfg(any(feature = "vmcall-raw", feature = "AzCVMEmu"))]
 impl Default for MigrationInformation {
     fn default() -> Self {
-        Self {
-            mig_info: MigtdMigrationInformation {
-                mig_request_id: 0,
-                migration_source: 0,
-                _pad: [0; 7],
-                target_td_uuid: [0; 4],
-                binding_handle: 0,
-                mig_policy_id: 0,
-                communication_id: 0,
-            },
+        MigrationInformation {
+            mig_info: Default::default(),
             #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
-            mig_socket_info: MigtdStreamSocketInfo {
-                communication_id: 0,
-                mig_td_cid: 0,
-                mig_channel_port: 0,
-                quote_service_port: 0,
-            },
+            mig_socket_info: Default::default(),
             #[cfg(not(feature = "vmcall-raw"))]
             mig_policy: None,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_ip: None,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_port: None,
         }
     }
 }

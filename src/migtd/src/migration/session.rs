@@ -414,19 +414,36 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     {
         use tcp_transport::TcpStream;
         
-        // For AzCVMEmu, use TCP transport with a fixed port based on migration ID
-        let tcp_port = 8000u16.saturating_add(info.mig_info.mig_request_id as u16 % 1000);
+        // For AzCVMEmu, use TCP transport with custom destination IP/port if provided
+        // Default to localhost:8000+mig_request_id if not specified
+        let default_host = "127.0.0.1";
+        let default_port = 8000u16.saturating_add(info.mig_info.mig_request_id as u16 % 1000);
+        
+        // Use provided destination IP or fall back to default
+        let host = info.destination_ip.as_deref().unwrap_or(default_host);
+        // Use provided destination port or fall back to default
+        let port = info.destination_port.unwrap_or(default_port);
+        
+        log::info!("Using TCP transport with {}:{}", host, port);
         
         if info.is_src() {
             // Source MigTD connects to destination
-            transport = TcpStream::connect_to("127.0.0.1", tcp_port)
+            log::info!("Source MigTD connecting to {}:{}", host, port);
+            transport = TcpStream::connect_to(host, port)
                 .await
-                .map_err(|_e| MigrationResult::InvalidParameter)?;
+                .map_err(|e| {
+                    log::error!("Failed to connect to {}:{}: {:?}", host, port, e);
+                    MigrationResult::InvalidParameter
+                })?;
         } else {
             // Destination MigTD listens for connection
-            transport = TcpStream::accept_on(tcp_port)
+            log::info!("Destination MigTD listening on port {}", port);
+            transport = TcpStream::accept_on(port)
                 .await
-                .map_err(|_e| MigrationResult::InvalidParameter)?;
+                .map_err(|e| {
+                    log::error!("Failed to accept on port {}: {:?}", port, e);
+                    MigrationResult::InvalidParameter
+                })?;
         }
     }
 

@@ -149,22 +149,31 @@ When built with the AzCVMEmu feature, MigTD can be run directly from the command
 ```
 
 **Command-line Options:**
-- `--role <source|destination>`: Specify whether this instance acts as migration source or destination
-- `--bind-handle <HANDLE>`: Binding handle (supports both hex with 0x prefix and decimal)
-- `--dest-addr <IP:PORT>`: Destination address for source role (e.g., 192.168.1.100:8080)
-- `--policy-file <PATH>`: Path to migration policy file
-- `--root-ca-file <PATH>`: Path to root CA certificate file
-- `-h, --help`: Display help information
+- `--request-id, -r ID`: Set migration request ID (default: 1)
+- `--role, -m ROLE`: Set role as 'source' or 'destination' (default: source)
+- `--uuid, -u U1 U2 U3 U4`: Set target TD UUID as four integers (default: 1 2 3 4)
+- `--binding, -b HANDLE`: Set binding handle as hex or decimal (default: 0x1234)
+- `--policy-id, -p ID`: Set migration policy ID (default: 0)
+- `--comm-id, -c ID`: Set communication ID (default: 0)
+- `--dest-ip, -d IP`: Set destination IP address for connection (default: 127.0.0.1)
+- `--dest-port, -t PORT`: Set destination port for connection (default: 8000 + request_id % 1000)
+- `--help, -h`: Show help message
 
 **Example Usage:**
 ```
-# Terminal 1: Start destination
-./target/debug/migtd --role destination --bind-handle 0x1234 
+# Terminal 1: Start destination MigTD
+./target/debug/migtd --role destination --request-id 42
 
-# Terminal 2: Start source
-./target/debug/migtd --role source --bind-handle 0x1234 --dest-addr 127.0.0.1:8080 
+# Terminal 2: Start source MigTD connecting to the destination
+./target/debug/migtd --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8042
 ```
 
+**File-based Configuration:**
+MigTD in AzCVMEmu mode uses file-based configuration for policy and root CA:
+- Policy file: `/tmp/migtd_policy.bin`
+- Root CA file: `/tmp/migtd_root_ca.bin`
+
+These files will be loaded on demand if they exist. If not, default values will be used.
 
 ### Generate SERVTD_INFO_HASH
 

@@ -279,6 +279,8 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
     let mut binding_handle = 0x1234;
     let mut policy_id = 0u64;
     let mut comm_id = 0u64;
+    let mut destination_ip: Option<String> = None;
+    let mut destination_port: Option<u16> = None;
     let mut help_requested = false;
     
     let mut i = 1;
@@ -357,6 +359,19 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                     return None;
                 }
             }
+            "--dest-ip" | "-d" if i + 1 < args.len() => {
+                destination_ip = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--dest-port" | "-t" if i + 1 < args.len() => {
+                if let Ok(port) = args[i + 1].parse::<u16>() {
+                    destination_port = Some(port);
+                    i += 2;
+                } else {
+                    println!("Invalid destination port value: {}", args[i + 1]);
+                    return None;
+                }
+            }
             "--help" | "-h" => {
                 help_requested = true;
                 i += 1;
@@ -395,9 +410,22 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
     println!("  Policy ID: {}", policy_id);
     println!("  Communication ID: {}", comm_id);
     
+    if let Some(ip) = &destination_ip {
+        println!("  Destination IP: {}", ip);
+    }
+    if let Some(port) = destination_port {
+        println!("  Destination Port: {}", port);
+    }
+    
     #[cfg(feature = "vmcall-raw")]
     {
-        Some(MigrationInformation { mig_info })
+        Some(MigrationInformation { 
+            mig_info,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_ip,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_port,
+        })
     }
     
     #[cfg(all(not(feature = "vmcall-raw"), any(feature = "vmcall-vsock", feature = "virtio-vsock")))]
@@ -410,7 +438,11 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                 mig_channel_port: 0,
                 quote_service_port: 0,
             }, 
-            mig_policy: None 
+            mig_policy: None,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_ip,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_port,
         })
     }
     
@@ -418,7 +450,11 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
     {
         Some(MigrationInformation { 
             mig_info,
-            mig_policy: None 
+            mig_policy: None,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_ip,
+            #[cfg(feature = "AzCVMEmu")]
+            destination_port,
         })
     }
 }
@@ -432,11 +468,14 @@ fn print_usage() {
     println!("  --binding, -b HANDLE       Set binding handle as hex or decimal (default: 0x1234)");
     println!("  --policy-id, -p ID         Set migration policy ID (default: 0)");
     println!("  --comm-id, -c ID           Set communication ID (default: 0)");
+    println!("  --dest-ip, -d IP           Set destination IP address for connection (default: none)");
+    println!("  --dest-port, -t PORT       Set destination port for connection (default: none)");
     println!("  --help, -h                 Show this help message");
     println!();
     println!("Examples:");
     println!("  ./migtd --role source --request-id 42");
     println!("  ./migtd -m destination -r 42 -b 0x5678");
+    println!("  ./migtd --role source --dest-ip 192.168.1.100 --dest-port 8080");
 }
 
 #[cfg(feature = "AzCVMEmu")]
