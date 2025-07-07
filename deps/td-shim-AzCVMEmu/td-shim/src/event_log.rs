@@ -5,9 +5,9 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 //! Event log emulation module
-//! 
-//! This module provides minimal emulation of td-shim event log functionality
-//! for Azure CVM environments, including file-based event log storage.
+
+// This module provides minimal emulation of td-shim event log functionality
+// for Azure CVM environments, including file-based event log storage.
 
 use cc_measurement::{
     log::{CcEventLogError, CcEventLogWriter},
@@ -117,8 +117,11 @@ pub const TPML_ALG_SHA384: u16 = 0x000C;
 pub const EV_EVENT_TAG: u32 = 0x00000006;
 
 /// Emulated file-based event log
+// Define the size of the event log buffer as a constant for better maintainability
+pub const EVENT_LOG_BUFFER_SIZE: usize = 4096;
+
 pub struct EventLogEmulator {
-    data: [u8; 4096], // Fixed size buffer for simplicity
+    data: [u8; EVENT_LOG_BUFFER_SIZE], // Fixed size buffer defined by constant
     size: usize,
 }
 
@@ -126,24 +129,39 @@ impl EventLogEmulator {
     /// Create a new empty event log
     pub fn new() -> Self {
         Self {
-            data: [0u8; 4096],
+            data: [0u8; EVENT_LOG_BUFFER_SIZE],
             size: 0,
         }
     }
     
-    /// Get a reference to the event log data
+    /// Get a reference to the event log data (only the written portion)
     pub fn data(&self) -> &[u8] {
         &self.data[..self.size]
     }
     
-    /// Get a mutable reference to the event log data
+    /// Get a mutable reference to the event log data (only the written portion)
     pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.data[..self.size]
     }
     
-    /// Set the size of the event log
+    /// Get a reference to the full event log buffer
+    pub fn full_buffer(&self) -> &[u8] {
+        &self.data[..]
+    }
+    
+    /// Get the capacity of the event log buffer
+    pub fn capacity(&self) -> usize {
+        EVENT_LOG_BUFFER_SIZE
+    }
+    
+    /// Set the size of the event log (used portion)
     pub fn set_size(&mut self, size: usize) {
         self.size = size;
+    }
+    
+    /// Get the current written size of the event log
+    pub fn written_size(&self) -> usize {
+        self.size
     }
 }
 
@@ -159,7 +177,7 @@ pub fn init_event_log() {
     }
 }
 
-/// Get a reference to the event log data
+/// Get a reference to the event log data (only the written portion)
 pub fn get_event_log() -> Option<&'static [u8]> {
     unsafe {
         if let Some(log) = &EVENT_LOG {
@@ -170,13 +188,52 @@ pub fn get_event_log() -> Option<&'static [u8]> {
     }
 }
 
-/// Get a mutable reference to the event log data
+/// Get a reference to the full event log buffer, including unused space
+/// This is important for functions that need to know the full allocated buffer size
+pub fn get_event_log_full_buffer() -> Option<&'static [u8]> {
+    unsafe {
+        if let Some(log) = &EVENT_LOG {
+            Some(log.full_buffer())
+        } else {
+            None
+        }
+    }
+}
+
+/// Get a mutable reference to the event log data (only the written portion)
 pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
     unsafe {
         if let Some(log) = &mut EVENT_LOG {
             Some(core::slice::from_raw_parts_mut(
                 log.data_mut().as_mut_ptr(),
                 log.size,
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+/// Get the full capacity of the event log buffer
+pub fn get_event_log_capacity() -> usize {
+    unsafe {
+        if let Some(log) = &EVENT_LOG {
+            log.capacity()
+        } else {
+            // If the event log isn't initialized yet, return the constant
+            EVENT_LOG_BUFFER_SIZE
+        }
+    }
+}
+
+/// Get a mutable reference to the full event log buffer
+/// This is useful when you need to write beyond the current used size
+pub fn get_event_log_full_buffer_mut() -> Option<&'static mut [u8]> {
+    unsafe {
+        if let Some(log) = &mut EVENT_LOG {
+            Some(core::slice::from_raw_parts_mut(
+                log.data.as_mut_ptr(),
+                log.capacity(),
             ))
         } else {
             None

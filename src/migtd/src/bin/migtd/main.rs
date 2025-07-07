@@ -453,6 +453,12 @@ fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
     
     let is_source = mig_info.mig_info.migration_source != 0;
     println!("Role: {}", if is_source { "Source" } else { "Destination" });
+
+    // Dump basic information of MigTD
+    basic_info();
+
+    // Measure the input data
+    do_measurements();
     
     // Add the request ID to the tracking set for proper session management
     REQUESTS.lock().insert(mig_info.mig_info.mig_request_id);
@@ -461,6 +467,7 @@ fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
     // Since we're in an emulated environment, we can avoid the complexity of async_runtime
     println!("Creating Tokio runtime...");
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+
     
     println!("Running migration key exchange...");
     let result = rt.block_on(async {

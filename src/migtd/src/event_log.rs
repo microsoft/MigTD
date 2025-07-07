@@ -58,7 +58,10 @@ pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
 pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
     // Initialize the emulated event log if needed
     emu_event_log::init_event_log();
-    emu_event_log::get_event_log_mut()
+    
+    // Get the full buffer to write to, not just the written portion
+    // This ensures event_log.len() returns the full buffer size (4096)
+    emu_event_log::get_event_log_full_buffer_mut()
 }
 
 #[cfg(not(feature = "AzCVMEmu"))]
@@ -74,6 +77,7 @@ pub fn get_event_log() -> Option<&'static [u8]> {
     emu_event_log::get_event_log()
 }
 
+#[cfg(not(feature = "AzCVMEmu"))]
 fn event_log_size(event_log: &[u8]) -> Option<usize> {
     let reader = CcEventLogReader::new(event_log)?;
 
@@ -85,6 +89,40 @@ fn event_log_size(event_log: &[u8]) -> Option<usize> {
     }
 
     Some(size)
+}
+
+#[cfg(feature = "AzCVMEmu")]
+fn event_log_size(event_log: &[u8]) -> Option<usize> {
+    // For AzCVMEmu, we need to determine the actual size of valid events
+    
+    // First, try to get the event log from the emulator
+    if let Some(log_data) = emu_event_log::get_event_log() {
+        // In the emulator, get_event_log() returns a slice that's sized to the written data
+        // If it's 0, it means no events have been written yet
+        let written_size = log_data.len();
+        if written_size > 0 {
+            Some(written_size)
+        } else {
+            // When no events have been written yet, return 0 as the valid event size
+            Some(0)
+        }
+    } else {
+        // If the emulator isn't initialized, parse the buffer as in TDX mode
+        // to calculate the size of written events
+        if event_log.len() > 0 {
+            let reader = CcEventLogReader::new(event_log)?;
+            let mut size = size_of::<TcgPcrEventHeader>() + reader.pcr_event_header.event_size as usize;
+            
+            for (header, _) in reader.cc_events {
+                size += size_of::<CcEventHeader>() + header.event_size as usize;
+            }
+            
+            Some(size)
+        } else {
+            // Empty event log
+            Some(0)
+        }
+    }
 }
 
 #[cfg(not(feature = "AzCVMEmu"))]
@@ -121,6 +159,8 @@ pub fn write_tagged_event_log(
     let event = TaggedEvent::new(tagged_event_id, tagged_event_data);
 
     let digest = calculate_digest(tagged_event_data)?;
+    //Temporarily skip RTMR extension in AzCVMEmu
+    #[cfg(not(feature = "AzCVMEmu"))]
     extend_rtmr(&digest, 3)?;
 
     let event_header = CcEventHeader {
@@ -136,8 +176,15 @@ pub fn write_tagged_event_log(
         event_size: event.as_bytes().len() as u32,
     };
 
-    if event_log.len() < log_size + size_of::<CcEventHeader>() + event.as_bytes().len() {
-        return Err(anyhow!("Event log out of memory"));
+    let required_size = log_size + size_of::<CcEventHeader>() + event.as_bytes().len();
+    
+    // Since we're now returning the full buffer in both modes,
+    // we can simply use event_log.len() to get the buffer size
+    let buffer_size = event_log.len();
+    
+    if buffer_size < required_size {
+        return Err(anyhow!("Event log out of memory: buffer size {} bytes, required {} bytes", 
+                           buffer_size, required_size));
     }
 
     event_log[log_size..log_size + size_of::<CcEventHeader>()]
