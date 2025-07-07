@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
+#[cfg(feature = "AzCVMEmu")]
+use az_tdx_vtpm::{imds, tdx::TdReport};
+
 use crate::{
     binding::get_quote as get_quote_inner, binding::init_heap, binding::verify_quote_integrity,
     binding::AttestLibError, root_ca::ROOT_CA, Error, TD_VERIFIED_REPORT_SIZE,
@@ -25,6 +28,7 @@ pub fn attest_init_heap() -> Option<usize> {
     Some(ATTEST_HEAP_SIZE)
 }
 
+#[cfg(not(feature = "AzCVMEmu"))]
 pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
     let mut quote = vec![0u8; TD_QUOTE_SIZE];
     let mut quote_size = TD_QUOTE_SIZE as u32;
@@ -42,6 +46,38 @@ pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
     quote.truncate(quote_size as usize);
     Ok(quote)
 }
+
+#[cfg(feature = "AzCVMEmu")]
+pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
+    // Azure CVM Emulated environment gets Quote through IMDS interface
+    
+    // Convert the raw td_report bytes to a TdReport structure
+    // TdReport is expected by the az-tdx-vtpm crate
+    let td_report_struct = if td_report.len() >= core::mem::size_of::<TdReport>() {
+        // Safety: This is safe because we're checking the size and TdReport is a repr(C) struct
+        unsafe {
+            let report_ptr = td_report.as_ptr() as *const TdReport;
+            &*report_ptr
+        }
+    } else {
+        log::error!("Invalid TD report size");
+        return Err(Error::GetQuote);
+    };
+    
+    let quote = match imds::get_td_quote(td_report_struct) {
+        Ok(quote) => {
+            log::info!("Successfully got TD quote from IMDS");
+            quote
+        }
+        Err(e) => {
+            log::error!("IMDS call failed (expected outside Azure): {:?}", e);
+            return Err(Error::GetQuote);
+        }
+    };
+    
+    Ok(quote)
+}
+
 
 pub fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, Error> {
     let mut td_report_verify = vec![0u8; TD_REPORT_VERIFY_SIZE];

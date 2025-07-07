@@ -45,6 +45,7 @@ vmcall_raw = { path="../devices/vmcall_raw", optional = true }
 tcp_transport = { path="../devices/tcp_transport", optional = true }
 env_logger = { version = "0.10.0", optional = true }
 tokio = { version = "1.0", features = ["rt", "rt-multi-thread"], optional = true }
+az-tdx-vtpm = { version = "0.7", optional = true }
 x86 = "0.47.0"
 x86_64 = { version = "0.14", default-features = false, features = ["instructions"] }
 zerocopy = { version = "0.7", features = ["derive"] }
@@ -54,7 +55,7 @@ td-benchmark = { path = "../../deps/td-shim/devtools/td-benchmark", default-feat
 
 [features]
 default = ["virtio-vsock"]
-AzCVMEmu = ["td-shim-interface-emu", "td-shim-emu", "tcp_transport/AzCVMEmu", "tcp_transport/std", "env_logger", "tokio", "attestation/AzCVMEmu"]
+AzCVMEmu = ["td-shim-interface-emu", "td-shim-emu", "az-tdx-vtpm", "tcp_transport/AzCVMEmu", "tcp_transport/std", "env_logger", "tokio", "attestation/AzCVMEmu"]
 cet-shstk = ["td-payload/cet-shstk"]
 coverage = ["minicov"]
 main = ["attestation", "policy/log"]

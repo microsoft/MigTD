@@ -20,6 +20,7 @@ pub enum RatlsError {
     Crypto(CryptoError),
     X509(DerError),
     InvalidEventlog,
+    InvalidTdReport,
 }
 
 impl From<TdCallError> for RatlsError {

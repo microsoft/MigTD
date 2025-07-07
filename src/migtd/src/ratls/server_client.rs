@@ -1,6 +1,10 @@
 // Copyright (c) 2022 Intel Corporation
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
+#[cfg(feature = "AzCVMEmu")]
+use az_tdx_vtpm::{hcl, tdx, vtpm};
+#[cfg(feature = "AzCVMEmu")]
+use zerocopy::AsBytes;
 
 use alloc::vec::Vec;
 use async_io::{AsyncRead, AsyncWrite};
@@ -98,7 +102,31 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
     // Generate the TD Report that contains the public key hash as nonce
     let mut additional_data = [0u8; 64];
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
+    
+    #[cfg(not(feature = "AzCVMEmu"))]
     let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
+    
+    #[cfg(feature = "AzCVMEmu")]
+    let td_report = {
+        // In AzCVMEmu mode, we use the vTPM interface to get the report        
+        // Get the vTPM report with our additional data as user data
+        let vtpm_report = match vtpm::get_report_with_report_data(&additional_data) {
+            Ok(report) => report,
+            Err(_) => return Err(RatlsError::InvalidTdReport),
+        };
+        
+        // Create an HCL report from the vTPM report
+        let hcl_report = match hcl::HclReport::new(vtpm_report) {
+            Ok(report) => report,
+            Err(_) => return Err(RatlsError::InvalidTdReport),
+        };
+        
+        // Convert the HCL report to a TD report
+        match tdx::TdReport::try_from(hcl_report) {
+            Ok(report) => report,
+            Err(_) => return Err(RatlsError::InvalidTdReport),
+        }
+    };
 
     attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
 }
@@ -111,7 +139,7 @@ fn verify_client_cert(cert: &[u8], quote: &[u8]) -> core::result::Result<(), Cry
     verify_peer_cert(false, cert, quote)
 }
 
-#[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+#[cfg(not(any(feature = "test_disable_ra_and_accept_all", feature = "AzCVMEmu")))]
 mod verify {
     use super::*;
     use crate::mig_policy;
@@ -187,25 +215,33 @@ mod verify {
 
     fn verify_public_key(verified_report: &[u8], public_key: &[u8]) -> CryptoResult<()> {
         #[cfg(feature = "AzCVMEmu")]
-        return Ok(());
+        {
+            // In AzCVMEmu mode, we don't verify the public key in the report
+            // This is acceptable for testing/development but would not be secure in production
+            log::warn!("AzCVMEmu mode: Skipping public key verification in report");
+            return Ok(());
+        }
 
-        const PUBLIC_KEY_HASH_SIZE: usize = 48;
+        #[cfg(not(feature = "AzCVMEmu"))]
+        {
+            const PUBLIC_KEY_HASH_SIZE: usize = 48;
 
-        let report_data = &verified_report[520..520 + PUBLIC_KEY_HASH_SIZE];
-        let digest = digest_sha384(public_key)?;
+            let report_data = &verified_report[520..520 + PUBLIC_KEY_HASH_SIZE];
+            let digest = digest_sha384(public_key)?;
 
-        if report_data == digest.as_slice() {
-            Ok(())
-        } else {
-            Err(CryptoError::TlsVerifyPeerCert(
-                MISMATCH_PUBLIC_KEY.to_string(),
-            ))
+            if report_data == digest.as_slice() {
+                Ok(())
+            } else {
+                Err(CryptoError::TlsVerifyPeerCert(
+                    MISMATCH_PUBLIC_KEY.to_string(),
+                ))
+            }
         }
     }
 }
 
 // Only for test to bypass the quote verification
-#[cfg(feature = "test_disable_ra_and_accept_all")]
+#[cfg(any(feature = "test_disable_ra_and_accept_all", feature = "AzCVMEmu"))]
 mod verify {
     use super::*;
 

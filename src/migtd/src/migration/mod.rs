@@ -166,7 +166,7 @@ impl From<RatlsError> for MigrationResult {
                 MigrationResult::SecureSessionError
             }
             RatlsError::TdxModule(_) => MigrationResult::TdxModuleError,
-            RatlsError::GetQuote | RatlsError::VerifyQuote => {
+            RatlsError::GetQuote | RatlsError::VerifyQuote | RatlsError::InvalidTdReport => {
                 MigrationResult::MutualAttestationError
             }
         }
