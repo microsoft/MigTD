@@ -506,12 +506,15 @@ fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
     // Since we're in an emulated environment, we can avoid the complexity of async_runtime
     println!("Creating Tokio runtime...");
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-
+    println!("DEBUG: Tokio runtime created successfully");
     
     println!("Running migration key exchange...");
-    let result = rt.block_on(async {
-        exchange_msk(&mig_info).await
-    });
+    println!("DEBUG: About to call exchange_msk (async)");
+    let result = rt.block_on(exchange_msk(&mig_info));
+    match &result {
+        Ok(_) => println!("DEBUG: exchange_msk returned: Ok"),
+        Err(_) => println!("DEBUG: exchange_msk returned: Err"),
+    }
     
     // Process the result and exit with appropriate status code
     match result {

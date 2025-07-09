@@ -107,28 +107,79 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
     let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
     
     #[cfg(feature = "AzCVMEmu")]
-    let td_report = {
-        // In AzCVMEmu mode, we use the vTPM interface to get the report        
-        // Get the vTPM report with our additional data as user data
-        let vtpm_report = match vtpm::get_report_with_report_data(&additional_data) {
-            Ok(report) => report,
-            Err(_) => return Err(RatlsError::InvalidTdReport),
+    {
+        std::println!("RATLS: Using AzCVMEmu vTPM interface for report generation");
+        let td_report = {
+            // In AzCVMEmu mode, we use the vTPM interface to get the report        
+            // Get the vTPM report with our additional data as user data
+            std::println!("RATLS: Getting vTPM report with retry mechanism");
+            
+            // Retry logic for vTPM report generation
+            let mut vtpm_report = None;
+            let max_retries = 3;
+            
+            for attempt in 1..=max_retries {
+                std::println!("RATLS: vTPM report attempt {} of {}", attempt, max_retries);
+                
+                match vtpm::get_report_with_report_data(&additional_data) {
+                    Ok(report) => {
+                        std::println!("RATLS: vTPM report obtained successfully on attempt {}", attempt);
+                        vtpm_report = Some(report);
+                        break;
+                    }
+                    Err(e) => {
+                        std::println!("RATLS: vTPM report attempt {} failed: {:?}", attempt, e);
+                        
+                        if attempt < max_retries {
+                            std::println!("RATLS: Waiting 5 seconds before retry...");
+                            // Wait 5 seconds using std::time in AzCVMEmu mode
+                            let start = std::time::Instant::now();
+                            while start.elapsed() < std::time::Duration::from_secs(5) {
+                                // Busy wait
+                            }
+                        } else {
+                            std::println!("RATLS: All vTPM report attempts failed");
+                            return Err(RatlsError::InvalidTdReport);
+                        }
+                    }
+                }
+            }
+            
+            let vtpm_report = vtpm_report.ok_or(RatlsError::InvalidTdReport)?;
+            
+            // Create an HCL report from the vTPM report
+            std::println!("RATLS: Creating HCL report from vTPM report");
+            let hcl_report = match hcl::HclReport::new(vtpm_report) {
+                Ok(report) => {
+                    std::println!("RATLS: HCL report created successfully");
+                    report
+                }
+                Err(_) => {
+                    std::println!("RATLS: Failed to create HCL report");
+                    return Err(RatlsError::InvalidTdReport);
+                }
+            };
+            
+            // Convert the HCL report to a TD report
+            std::println!("RATLS: Converting HCL report to TD report");
+            match tdx::TdReport::try_from(hcl_report) {
+                Ok(report) => {
+                    std::println!("RATLS: TD report conversion successful");
+                    report
+                }
+                Err(_) => {
+                    std::println!("RATLS: Failed to convert HCL report to TD report");
+                    return Err(RatlsError::InvalidTdReport);
+                }
+            }
         };
-        
-        // Create an HCL report from the vTPM report
-        let hcl_report = match hcl::HclReport::new(vtpm_report) {
-            Ok(report) => report,
-            Err(_) => return Err(RatlsError::InvalidTdReport),
-        };
-        
-        // Convert the HCL report to a TD report
-        match tdx::TdReport::try_from(hcl_report) {
-            Ok(report) => report,
-            Err(_) => return Err(RatlsError::InvalidTdReport),
-        }
-    };
 
-    attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
+        std::println!("RATLS: Getting quote from TD report");
+        attestation::get_quote(td_report.as_bytes()).map_err(|_| {
+            std::println!("RATLS: Failed to get quote from attestation service");
+            RatlsError::GetQuote
+        })
+    }
 }
 
 fn verify_server_cert(cert: &[u8], quote: &[u8]) -> core::result::Result<(), CryptoError> {
@@ -218,7 +269,7 @@ mod verify {
         {
             // In AzCVMEmu mode, we don't verify the public key in the report
             // This is acceptable for testing/development but would not be secure in production
-            log::warn!("AzCVMEmu mode: Skipping public key verification in report");
+            std::println!("AzCVMEmu mode: Skipping public key verification in report");
             return Ok(());
         }
 
@@ -258,7 +309,7 @@ mod verify {
             .as_ref()
             .ok_or(CryptoError::ParseCertificate)?;
         let _ = parse_extensions(extensions).ok_or(CryptoError::ParseCertificate)?;
-
+        
         // As the remote attestation is disabled, the certificate can't be verified. Aways return
         // success for test purpose.
         Ok(())
