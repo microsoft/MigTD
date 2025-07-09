@@ -637,6 +637,8 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     }
 
     let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
+    //temporarily skip tdcall
+    #[cfg(not(feature = "AzCVMEmu"))]
     set_mig_version(info, mig_ver)?;
     //temporarily skip MSK injection
     #[cfg(not(feature = "AzCVMEmu"))]
