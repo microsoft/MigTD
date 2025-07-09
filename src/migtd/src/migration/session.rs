@@ -535,20 +535,23 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         debug_print!("DEBUG: ExchangeInformation bytes ptr: {:?}", exchange_information.as_bytes().as_ptr());
         debug_print!("DEBUG: ExchangeInformation bytes len: {}", exchange_information.as_bytes().len());
         debug_print!("DEBUG: About to call ratls_client.write()");
-        with_timeout(
-            TLS_TIMEOUT,
-            ratls_client.write(exchange_information.as_bytes()),
-        )
-        .await??;
-        debug_print!("DEBUG: ratls_client.write() completed successfully");
-        debug_print!("DEBUG: About to receive MSK from peer");
-        debug_print!("DEBUG: About to call ratls_client.write()");
+        #[cfg(not(feature = "AzCVMEmu"))]
         let size = with_timeout(
             TLS_TIMEOUT,
             ratls_client.read(remote_information.as_bytes_mut()),
         )
-        .await??;
-        debug_print!("DEBUG: ratls_client.write() completed successfully");
+        .await??;     
+        #[cfg(feature = "AzCVMEmu")]
+        let size = match ratls_client.read(remote_information.as_bytes_mut()).await {
+            Ok(size) => {
+                debug_print!("DEBUG: ratls_client.read() completed successfully, read {} bytes", size);
+                size
+            }
+            Err(e) => {
+                debug_print!("DEBUG: ratls_client.read() failed with error: {:?}", e);
+                return Err(MigrationResult::SecureSessionError);
+            }
+        };
         if size < size_of::<ExchangeInformation>() {
             return Err(MigrationResult::NetworkError);
         }
@@ -570,23 +573,49 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             .map_err(|_e| MigrationResult::InvalidParameter)?;
     } else {
         // TLS server
+        debug_print!("DEBUG: Creating RATLS server");
         let mut ratls_server =
             ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;
 
-        debug_print!("DEBUG: About to call ratls_client.write()");
-        with_timeout(
+        debug_print!("DEBUG: About to call ratls_server.write()");
+        
+        // Remove timeout for AzCVMEmu mode to avoid crashes
+        #[cfg(feature = "AzCVMEmu")]
+        let write_result = ratls_server.write(exchange_information.as_bytes()).await;        
+        #[cfg(not(feature = "AzCVMEmu"))]
+        let write_result = with_timeout(
             TLS_TIMEOUT,
             ratls_server.write(exchange_information.as_bytes()),
-        )
-        .await??;
-        debug_print!("DEBUG: ratls_client.write() completed successfully");
-        debug_print!("DEBUG: About to call ratls_client.write()");
+        ).await?;
+        
+        match write_result {
+            Ok(_) => {
+                debug_print!("DEBUG: ratls_server.write() completed successfully");
+            }
+            Err(e) => {
+                debug_print!("DEBUG: ratls_server.write() failed with error: {:?}", e);
+                return Err(MigrationResult::SecureSessionError);
+            }
+        }
+        
+        debug_print!("DEBUG: About to call ratls_server.read()");
+        #[cfg(not(feature = "AzCVMEmu"))]
         let size = with_timeout(
             TLS_TIMEOUT,
             ratls_server.read(remote_information.as_bytes_mut()),
         )
         .await??;
-        debug_print!("DEBUG: ratls_client.write() completed successfully");
+        #[cfg(feature = "AzCVMEmu")]
+        let size = match ratls_server.read(remote_information.as_bytes_mut()).await {
+            Ok(size) => {
+                debug_print!("DEBUG: ratls_server.read() completed successfully, read {} bytes", size);
+                size
+            }
+            Err(e) => {
+                debug_print!("DEBUG: ratls_server.read() failed with error: {:?}", e);
+                return Err(MigrationResult::SecureSessionError);
+            }
+        };
         if size < size_of::<ExchangeInformation>() {
             return Err(MigrationResult::NetworkError);
         }

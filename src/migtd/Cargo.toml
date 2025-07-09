@@ -55,7 +55,7 @@ td-benchmark = { path = "../../deps/td-shim/devtools/td-benchmark", default-feat
 
 [features]
 default = ["virtio-vsock"]
-AzCVMEmu = ["td-shim-interface-emu", "td-shim-emu", "az-tdx-vtpm", "tcp_transport/AzCVMEmu", "tcp_transport/std", "env_logger", "tokio", "attestation/AzCVMEmu"]
+AzCVMEmu = ["td-shim-interface-emu", "td-shim-emu", "az-tdx-vtpm", "tcp_transport/AzCVMEmu", "tcp_transport/std", "env_logger", "tokio", "attestation/AzCVMEmu", "crypto/AzCVMEmu"]
 cet-shstk = ["td-payload/cet-shstk"]
 coverage = ["minicov"]
 main = ["attestation", "policy/log"]

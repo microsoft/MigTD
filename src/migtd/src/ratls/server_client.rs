@@ -104,7 +104,10 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
     
     #[cfg(not(feature = "AzCVMEmu"))]
-    let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
+    {
+        let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
+        attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
+    }
     
     #[cfg(feature = "AzCVMEmu")]
     {

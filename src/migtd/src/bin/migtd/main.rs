@@ -493,6 +493,9 @@ fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
     let is_source = mig_info.mig_info.migration_source != 0;
     println!("Role: {}", if is_source { "Source" } else { "Destination" });
 
+    // Extract request ID before moving mig_info
+    let request_id = mig_info.mig_info.mig_request_id;
+
     // Dump basic information of MigTD
     basic_info();
 
@@ -500,20 +503,44 @@ fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
     do_measurements();
     
     // Add the request ID to the tracking set for proper session management
-    REQUESTS.lock().insert(mig_info.mig_info.mig_request_id);
+    REQUESTS.lock().insert(request_id);
     
-    // For AzCVMEmu, we'll create a simple sync wrapper around the async function
-    // Since we're in an emulated environment, we can avoid the complexity of async_runtime
+    // For AzCVMEmu, we'll create an async runtime and spawn the task
     println!("Creating Tokio runtime...");
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     println!("DEBUG: Tokio runtime created successfully");
     
     println!("Running migration key exchange...");
-    println!("DEBUG: About to call exchange_msk (async)");
-    let result = rt.block_on(exchange_msk(&mig_info));
+    println!("DEBUG: About to spawn exchange_msk (async) for request ID: {}", request_id);
+    
+    // Use async approach with spawn and block_on for the final result
+    let result = rt.block_on(async {
+        println!("DEBUG: Inside async block, spawning exchange_msk task");
+        
+        // Spawn the exchange_msk task on the runtime's thread pool
+        let handle = tokio::spawn(async move {
+            println!("DEBUG: exchange_msk task started for request ID: {}", mig_info.mig_info.mig_request_id);
+            let result = exchange_msk(&mig_info).await;
+            println!("DEBUG: exchange_msk task completed for request ID: {}", mig_info.mig_info.mig_request_id);
+            result
+        });
+        
+        // Await the spawned task
+        match handle.await {
+            Ok(result) => {
+                println!("DEBUG: Spawned task completed successfully");
+                result
+            }
+            Err(join_error) => {
+                println!("DEBUG: Spawned task failed with join error: {:?}", join_error);
+                Err(MigrationResult::InvalidParameter)
+            }
+        }
+    });
+    
     match &result {
-        Ok(_) => println!("DEBUG: exchange_msk returned: Ok"),
-        Err(_) => println!("DEBUG: exchange_msk returned: Err"),
+        Ok(_) => println!("DEBUG: exchange_msk returned: Ok for request ID: {}", request_id),
+        Err(_) => println!("DEBUG: exchange_msk returned: Err for request ID: {}", request_id),
     }
     
     // Process the result and exit with appropriate status code
