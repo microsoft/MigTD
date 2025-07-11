@@ -119,7 +119,7 @@ cargo image --no-default-features --features stack-guard,virtio-serial
 
 ### Build for Azure CVM Emulation (AzCVMEmu)
 
-For development and testing in Azure Confidential VM environments where TDX hardware is not available, you can build MigTD with emulation support:
+For development and testing in Azure TDX CVM environments where TDX hardware interface is not fully exposed, you can build MigTD with emulation support:
 
 ```
 cargo build --features "main,AzCVMEmu" --bin migtd
@@ -141,24 +141,47 @@ This enables MigTD to run as a standard command-line application with:
 
 #### Running MigTD in AzCVMEmu Mode
 
-When built with the AzCVMEmu feature, MigTD can be run directly from the command line.
+**Using the migtdemu.sh Script (Recommended):**
 
-**Required Environment Variables:**
-
-Before running MigTD in AzCVMEmu mode, you must set the following environment variables:
+The easiest way to run MigTD in AzCVMEmu mode is using the provided `migtdemu.sh` script, which automatically builds and runs MigTD with proper environment setup:
 
 ```bash
-export MIGTD_POLICY_FILE="/path/to/your/policy.bin"
-export MIGTD_ROOT_CA_FILE="/path/to/your/root_ca.bin"
+# Display help
+./migtdemu.sh --help
+
+# Build release and run as source (default)
+./migtdemu.sh
+
+# Build debug and run as destination
+./migtdemu.sh --debug --role destination
+
+# Run with custom configuration
+./migtdemu.sh --role source --request-id 42 --dest-ip 192.168.1.100 --dest-port 8002
 ```
 
-Both files must exist at the specified paths. The program will exit with an error if either environment variable is missing or if the files cannot be found.
+The script automatically:
+- Builds MigTD in debug or release mode based on `--debug`/`--release` flags
+- Sets up required environment variables for policy and root CA files
+- Validates file existence before running
+- Runs the appropriate binary from the build output
+
+**Manual Execution:**
+
+If you prefer to run MigTD manually, you must first set the required environment variables:
+
+```bash
+export MIGTD_POLICY_FILE="/path/to/your/policy.json"
+export MIGTD_ROOT_CA_FILE="/path/to/your/root_ca.cer"
+```
+
+Both files must exist at the specified paths. The program will exit with an error if either environment variable is missing or if the files cannot be found. You must also run it in sudo mode, as the app need
+to access vTPM to generate a TDX QUOTE of the HCL virtual firmware, as a stand-in for MigTD TDX Quote.
 
 **Running the Application:**
 
 ```bash
 # Display help information
-./target/debug/migtd -h
+sudo ./target/debug/migtd -h
 ```
 
 **Command-line Options:**
@@ -172,17 +195,32 @@ Both files must exist at the specified paths. The program will exit with an erro
 - `--dest-port, -t PORT`: Set destination port for connection (default: none)
 - `--help, -h`: Show help message
 
-**Example Usage:**
+**Example Usage with migtdemu.sh:**
 ```bash
-# Set required environment variables
-export MIGTD_POLICY_FILE="/path/to/policy.bin"
-export MIGTD_ROOT_CA_FILE="/path/to/root_ca.bin"
-
-# Terminal 1: Start destination MigTD
-./target/debug/migtd --role destination --request-id 42
+# Terminal 1: Start destination MigTD in release mode
+./migtdemu.sh --role destination --request-id 42
 
 # Terminal 2: Start source MigTD connecting to the destination
-./target/debug/migtd --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8042
+./migtdemu.sh --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8042
+
+# Debug mode example
+./migtdemu.sh --debug --role destination --request-id 123
+```
+
+**Manual Example Usage:**
+```bash
+# Set required environment variables
+export MIGTD_POLICY_FILE="/path/to/policy.json"
+export MIGTD_ROOT_CA_FILE="/path/to/root_ca.cer"
+
+# Build and run manually
+cargo build --release --features "main,AzCVMEmu"
+
+# Terminal 1: Start destination MigTD
+sudo ./target/release/migtd --role destination --request-id 42
+
+# Terminal 2: Start source MigTD connecting to the destination
+sudo ./target/release/migtd --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8042
 ```
 
 **Error Handling:**
