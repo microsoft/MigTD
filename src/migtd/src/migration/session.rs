@@ -22,16 +22,6 @@ use tdx_tdcall::{
 };
 use zerocopy::AsBytes;
 
-// Import println for debug messages - different for different modes
-#[cfg(feature = "AzCVMEmu")]
-macro_rules! debug_print {
-    ($($arg:tt)*) => {
-        std::println!($($arg)*);
-    };
-}
-#[cfg(not(feature = "AzCVMEmu"))]
-use td_payload::println as debug_print;
-
 type Result<T> = core::result::Result<T, MigrationResult>;
 
 use super::{data::*, *};
@@ -439,24 +429,24 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         // Use provided destination port or fall back to default
         let port = info.destination_port.unwrap_or(default_port);
         
-        debug_print!("Using TCP transport with {}:{}", host, port);
+        log::info!("Using TCP transport with {}:{}", host, port);
         
         if info.is_src() {
             // Source MigTD connects to destination
-            debug_print!("Source MigTD connecting to {}:{}", host, port);
+            log::info!("Source MigTD connecting to {}:{}", host, port);
 
             transport = tcp_transport::TcpStream::connect_to(host, port)
                 .await
                 .map_err(|_| MigrationResult::TcpConnectError)?;
 
-            debug_print!("DEBUG: TCP connection established");
+            log::info!("TCP connection established");
         } else {
             // Destination MigTD listens for connection
-            debug_print!("Destination MigTD listening on port {}", port);
+            log::info!("Destination MigTD listening on port {}", port);
             transport = tcp_transport::TcpStream::accept_on(port)
                 .await
                 .map_err(|_| MigrationResult::TcpAcceptError)?;           
-            debug_print!("DEBUG: TCP connection accepted");
+            log::info!("TCP connection accepted");
         }
     }
 
@@ -515,7 +505,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     //Temporarily skip MSK retrieval in AzCVMEmu
     #[cfg(feature = "AzCVMEmu")]
     let mut exchange_information = {
-        debug_print!("DEBUG: Using mock ExchangeInformation in AzCVMEmu mode");
+        log::warn!("Using mock ExchangeInformation in AzCVMEmu mode");
         ExchangeInformation::default()
     };
 
@@ -525,16 +515,42 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     // Establish TLS layer connection and negotiate the MSK
     if info.is_src() {
         // TLS client
-        debug_print!("DEBUG: About to create RATLS client");
+        #[cfg(feature = "AzCVMEmu")]
+        log::info!("Creating RATLS client");
         let mut ratls_client =
             ratls::client(transport).map_err(|_| MigrationResult::SecureSessionError)?;
 
         // MigTD-S send Migration Session Forward key to peer
-        debug_print!("DEBUG: About to send MSK to peer");
-        debug_print!("DEBUG: ExchangeInformation size: {}", size_of::<ExchangeInformation>());
-        debug_print!("DEBUG: ExchangeInformation bytes ptr: {:?}", exchange_information.as_bytes().as_ptr());
-        debug_print!("DEBUG: ExchangeInformation bytes len: {}", exchange_information.as_bytes().len());
-        debug_print!("DEBUG: About to call ratls_client.write()");
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            log::debug!("About to send MSK to peer");
+            log::info!("ExchangeInformation size: {}", size_of::<ExchangeInformation>());
+            log::debug!("ExchangeInformation bytes ptr: {:?}", exchange_information.as_bytes().as_ptr());
+            log::debug!("ExchangeInformation bytes len: {}", exchange_information.as_bytes().len());
+            log::debug!("About to call ratls_client.read()");
+        }
+        // Remove timeout for AzCVMEmu mode to avoid crashes
+        #[cfg(feature = "AzCVMEmu")]
+        let write_result = ratls_client.write(exchange_information.as_bytes()).await;        
+        #[cfg(not(feature = "AzCVMEmu"))]
+        let write_result = with_timeout(
+            TLS_TIMEOUT,
+            ratls_client.write(exchange_information.as_bytes()),
+        ).await?;
+        
+        match write_result {
+            Ok(_) => {
+                #[cfg(feature = "AzCVMEmu")]
+                log::info!("ratls_client.write() completed successfully");
+            }
+            Err(e) => {
+                #[cfg(feature = "AzCVMEmu")]
+                log::error!("ratls_client.write() failed with error: {:?}", e);
+                #[cfg(not(feature = "AzCVMEmu"))]
+                let _ = e; // Suppress unused variable warning
+                return Err(MigrationResult::SecureSessionError);
+            }
+        }
         #[cfg(not(feature = "AzCVMEmu"))]
         let size = with_timeout(
             TLS_TIMEOUT,
@@ -544,11 +560,11 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         #[cfg(feature = "AzCVMEmu")]
         let size = match ratls_client.read(remote_information.as_bytes_mut()).await {
             Ok(size) => {
-                debug_print!("DEBUG: ratls_client.read() completed successfully, read {} bytes", size);
+                log::info!("ratls_client.read() completed successfully, read {} bytes", size);
                 size
             }
             Err(e) => {
-                debug_print!("DEBUG: ratls_client.read() failed with error: {:?}", e);
+                log::error!("ratls_client.read() failed with error: {:?}", e);
                 return Err(MigrationResult::SecureSessionError);
             }
         };
@@ -556,7 +572,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             return Err(MigrationResult::NetworkError);
         }
         #[cfg(feature = "AzCVMEmu")]
-        debug_print!("DEBUG: About to shutdown RATLS client transport");
+        log::info!("Shutting down RATLS client transport");
         ratls_client.transport_mut().shutdown().await
             .map_err(|_e| MigrationResult::InvalidParameter)?;
 
@@ -573,11 +589,13 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             .map_err(|_e| MigrationResult::InvalidParameter)?;
     } else {
         // TLS server
-        debug_print!("DEBUG: Creating RATLS server");
+        #[cfg(feature = "AzCVMEmu")]
+        log::info!("Creating RATLS server");
         let mut ratls_server =
             ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;
 
-        debug_print!("DEBUG: About to call ratls_server.write()");
+        #[cfg(feature = "AzCVMEmu")]
+        log::debug!("About to call ratls_server.write()");
         
         // Remove timeout for AzCVMEmu mode to avoid crashes
         #[cfg(feature = "AzCVMEmu")]
@@ -590,15 +608,20 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         
         match write_result {
             Ok(_) => {
-                debug_print!("DEBUG: ratls_server.write() completed successfully");
+                #[cfg(feature = "AzCVMEmu")]
+                log::info!("ratls_server.write() completed successfully");
             }
             Err(e) => {
-                debug_print!("DEBUG: ratls_server.write() failed with error: {:?}", e);
+                #[cfg(feature = "AzCVMEmu")]
+                log::error!("ratls_server.write() failed with error: {:?}", e);
+                #[cfg(not(feature = "AzCVMEmu"))]
+                let _ = e; // Suppress unused variable warning
                 return Err(MigrationResult::SecureSessionError);
             }
         }
         
-        debug_print!("DEBUG: About to call ratls_server.read()");
+        #[cfg(feature = "AzCVMEmu")]
+        log::debug!("About to call ratls_server.read()");
         #[cfg(not(feature = "AzCVMEmu"))]
         let size = with_timeout(
             TLS_TIMEOUT,
@@ -608,11 +631,11 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         #[cfg(feature = "AzCVMEmu")]
         let size = match ratls_server.read(remote_information.as_bytes_mut()).await {
             Ok(size) => {
-                debug_print!("DEBUG: ratls_server.read() completed successfully, read {} bytes", size);
+                log::info!("ratls_server.read() completed successfully, read {} bytes", size);
                 size
             }
             Err(e) => {
-                debug_print!("DEBUG: ratls_server.read() failed with error: {:?}", e);
+                log::error!("ratls_server.read() failed with error: {:?}", e);
                 return Err(MigrationResult::SecureSessionError);
             }
         };
@@ -653,15 +676,16 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
 
 #[cfg(feature = "main")]
 pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
-    debug_print!("DEBUG: exchange_msk called - START");
+    #[cfg(feature = "AzCVMEmu")]
+    log::debug!("exchange_msk called - START");
     
     #[cfg(feature = "AzCVMEmu")]
     {
-        debug_print!("DEBUG: AzCVMEmu mode - implementing simple hello message exchange");
+        log::debug!("AzCVMEmu mode - implementing simple hello message exchange");
         
         // Check if we're source or destination
         if info.is_src() {
-            debug_print!("DEBUG: Source role - connecting to destination");
+            log::debug!("Source role - connecting to destination");
             
             // Connect to destination
             let host = if let Some(ref dest_ip) = info.destination_ip {
@@ -671,16 +695,16 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
             };
             
             let port = info.destination_port.unwrap_or(8042);
-            debug_print!("DEBUG: Connecting to {}:{}", host, port);
+            log::debug!("Connecting to {}:{}", host, port);
             
             let mut stream = tcp_transport::TcpStream::connect_to(host, port).await
                 .map_err(|_| MigrationResult::TcpConnectError)?;
             
-            debug_print!("DEBUG: TCP connection established, sending hello message");
+            log::debug!("TCP connection established, sending hello message");
             
             // Send hello message
             let hello_msg = b"HELLO_FROM_SOURCE";
-            debug_print!("DEBUG: Sending hello message: {:?}", core::str::from_utf8(hello_msg).unwrap_or("invalid utf8"));
+            log::debug!("Sending hello message: {:?}", core::str::from_utf8(hello_msg).unwrap_or("invalid utf8"));
             
             // Write all bytes
             let mut written = 0;
@@ -690,7 +714,7 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
                 written += n;
             }
             
-            debug_print!("DEBUG: Hello message sent successfully");
+            log::debug!("Hello message sent successfully");
             
             // Read response
             let mut buffer = [0u8; 64];
@@ -698,18 +722,18 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
                 .map_err(|_| MigrationResult::TcpReadError)?;
             
             let response = core::str::from_utf8(&buffer[..n]).unwrap_or("invalid utf8");
-            debug_print!("DEBUG: Received response: {}", response);
+            log::debug!("Received response: {}", response);
             
         } else {
-            debug_print!("DEBUG: Destination role - listening for source connection");
+            log::debug!("Destination role - listening for source connection");
             
             let port = info.destination_port.unwrap_or(8042);
-            debug_print!("DEBUG: Listening on port {}", port);
+            log::debug!("Listening on port {}", port);
             
             let mut stream = tcp_transport::TcpStream::accept_on(port).await
                 .map_err(|_| MigrationResult::TcpAcceptError)?;
             
-            debug_print!("DEBUG: TCP connection accepted, waiting for hello message");
+            log::debug!("TCP connection accepted, waiting for hello message");
             
             // Read hello message
             let mut buffer = [0u8; 64];
@@ -717,11 +741,11 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
                 .map_err(|_| MigrationResult::TcpReadError)?;
             
             let hello_msg = core::str::from_utf8(&buffer[..n]).unwrap_or("invalid utf8");
-            debug_print!("DEBUG: Received hello message: {}", hello_msg);
+            log::debug!("Received hello message: {}", hello_msg);
             
             // Send response
             let response_msg = b"HELLO_FROM_DEST";
-            debug_print!("DEBUG: Sending response: {:?}", core::str::from_utf8(response_msg).unwrap_or("invalid utf8"));
+            log::debug!("Sending response: {:?}", core::str::from_utf8(response_msg).unwrap_or("invalid utf8"));
             
             // Write all bytes
             let mut written = 0;
@@ -731,22 +755,19 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
                 written += n;
             }
             
-            debug_print!("DEBUG: Response sent successfully");
+            log::debug!("Response sent successfully");
         }
         
-        debug_print!("DEBUG: exchange_msk completed successfully");
+        log::debug!("exchange_msk completed successfully");
         return Ok(());
     }
     
     #[cfg(not(feature = "AzCVMEmu"))]
     {
-        debug_print!("DEBUG: Non-AzCVMEmu mode - calling exchange_info");
+        // No debug prints in non-AzCVMEmu mode
         let _exchange_info = exchange_info(info)?;
-        debug_print!("DEBUG: exchange_info successful");
-        
         // TODO: Implement actual TDX-based migration key exchange
         // This would use the real TDX functions and exchange keys properly
-        debug_print!("DEBUG: TDX migration key exchange not yet implemented");
     }
     
     Ok(())

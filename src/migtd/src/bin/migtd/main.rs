@@ -207,7 +207,15 @@ fn main() {}
 // AzCVMEmu entry point - standard Rust main function
 #[cfg(feature = "AzCVMEmu")]
 fn main() {
-    println!("MigTD Version - {}", MIGTD_VERSION);
+    // Initialize standard Rust logging for AzCVMEmu mode with info level by default
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Dump basic information of MigTD
+    basic_info();
+
+    // Init internal heap
+    // Enable after the QVL linking issue is resolved
+    //#[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+    //attestation::attest_init_heap();
     
     // Initialize event log emulation
     td_shim_emu::event_log::init_event_log();
@@ -236,6 +244,9 @@ fn main() {
         td_shim_interface_emu::load_policy_data(default_policy);
         td_shim_interface_emu::load_root_ca_data(default_root_ca);
     }
+
+    // Measure the policy and Root CA data
+    do_measurements();
     
     // Parse command-line arguments for AzCVMEmu mode
     if let Some(mig_info) = parse_commandline_args() {
@@ -268,7 +279,7 @@ fn test_memory() {
 fn parse_commandline_args() -> Option<MigrationInformation> {
     use std::env;
     
-    println!("Parsing command-line arguments for AzCVMEmu mode");
+    log::info!("Parsing command-line arguments for AzCVMEmu mode");
     
     let args: Vec<String> = env::args().collect();
     
@@ -291,7 +302,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                     mig_request_id = id;
                     i += 2;
                 } else {
-                    println!("Invalid request ID value: {}", args[i + 1]);
+                    log::error!("Invalid request ID value: {}", args[i + 1]);
                     return None;
                 }
             }
@@ -306,7 +317,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                         i += 2;
                     }
                     _ => {
-                        println!("Invalid role value: {}. Use 'source' or 'destination'", args[i + 1]);
+                        log::error!("Invalid role value: {}. Use 'source' or 'destination'", args[i + 1]);
                         return None;
                     }
                 }
@@ -321,7 +332,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                     target_td_uuid = [u1, u2, u3, u4];
                     i += 5;
                 } else {
-                    println!("Invalid UUID values. Expected 4 unsigned integers");
+                    log::error!("Invalid UUID values. Expected 4 unsigned integers");
                     return None;
                 }
             }
@@ -337,7 +348,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                     binding_handle = handle;
                     i += 2;
                 } else {
-                    println!("Invalid binding handle value: {}", args[i + 1]);
+                    log::error!("Invalid binding handle value: {}", args[i + 1]);
                     return None;
                 }
             }
@@ -346,7 +357,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                     policy_id = id;
                     i += 2;
                 } else {
-                    println!("Invalid policy ID value: {}", args[i + 1]);
+                    log::error!("Invalid policy ID value: {}", args[i + 1]);
                     return None;
                 }
             }
@@ -355,7 +366,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                     comm_id = id;
                     i += 2;
                 } else {
-                    println!("Invalid communication ID value: {}", args[i + 1]);
+                    log::error!("Invalid communication ID value: {}", args[i + 1]);
                     return None;
                 }
             }
@@ -368,7 +379,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                     destination_port = Some(port);
                     i += 2;
                 } else {
-                    println!("Invalid destination port value: {}", args[i + 1]);
+                    log::error!("Invalid destination port value: {}", args[i + 1]);
                     return None;
                 }
             }
@@ -377,7 +388,7 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
                 i += 1;
             }
             _ => {
-                println!("Unknown argument: {}", args[i]);
+                log::error!("Unknown argument: {}", args[i]);
                 help_requested = true;
                 i += 1;
             }
@@ -402,19 +413,19 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
         info
     };
     
-    println!("Migration information:");
-    println!("  Request ID: {}", mig_request_id);
-    println!("  Role: {}", if is_source { "Source" } else { "Destination" });
-    println!("  Target TD UUID: {:?}", target_td_uuid);
-    println!("  Binding Handle: {:#x}", binding_handle);
-    println!("  Policy ID: {}", policy_id);
-    println!("  Communication ID: {}", comm_id);
+    log::info!("Migration information:");
+    log::info!("  Request ID: {}", mig_request_id);
+    log::info!("  Role: {}", if is_source { "Source" } else { "Destination" });
+    log::info!("  Target TD UUID: {:?}", target_td_uuid);
+    log::info!("  Binding Handle: {:#x}", binding_handle);
+    log::info!("  Policy ID: {}", policy_id);
+    log::info!("  Communication ID: {}", comm_id);
     
     if let Some(ip) = &destination_ip {
-        println!("  Destination IP: {}", ip);
+        log::info!("  Destination IP: {}", ip);
     }
     if let Some(port) = destination_port {
-        println!("  Destination Port: {}", port);
+        log::info!("  Destination Port: {}", port);
     }
     
     #[cfg(feature = "vmcall-raw")]
@@ -480,7 +491,7 @@ fn print_usage() {
 
 #[cfg(feature = "AzCVMEmu")]
 fn runtime_main_azcvmemu(mig_info: MigrationInformation) {
-    println!("Starting MigTD in AzCVMEmu mode...");
+    log::info!("Starting MigTD in AzCVMEmu mode...");
     
     // Handle the migration directly without TDX-specific initialization
     handle_migration_azcvmemu(mig_info);
@@ -488,70 +499,65 @@ fn runtime_main_azcvmemu(mig_info: MigrationInformation) {
 
 #[cfg(feature = "AzCVMEmu")]
 fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
-    println!("Starting migration in AzCVMEmu mode with request ID: {}", mig_info.mig_info.mig_request_id);
+    log::info!("Starting migration in AzCVMEmu mode with request ID: {}", mig_info.mig_info.mig_request_id);
     
     let is_source = mig_info.mig_info.migration_source != 0;
-    println!("Role: {}", if is_source { "Source" } else { "Destination" });
+    log::info!("Role: {}", if is_source { "Source" } else { "Destination" });
 
     // Extract request ID before moving mig_info
     let request_id = mig_info.mig_info.mig_request_id;
 
-    // Dump basic information of MigTD
-    basic_info();
-
-    // Measure the input data
-    do_measurements();
     
     // Add the request ID to the tracking set for proper session management
     REQUESTS.lock().insert(request_id);
     
     // For AzCVMEmu, we'll create an async runtime and spawn the task
-    println!("Creating Tokio runtime...");
+    log::info!("Creating Tokio runtime...");
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    println!("DEBUG: Tokio runtime created successfully");
+    log::debug!("Tokio runtime created successfully");
     
-    println!("Running migration key exchange...");
-    println!("DEBUG: About to spawn exchange_msk (async) for request ID: {}", request_id);
+    log::info!("Running migration key exchange...");
+    log::debug!("About to spawn exchange_msk (async) for request ID: {}", request_id);
     
     // Use async approach with spawn and block_on for the final result
     let result = rt.block_on(async {
-        println!("DEBUG: Inside async block, spawning exchange_msk task");
+        log::debug!("Inside async block, spawning exchange_msk task");
         
         // Spawn the exchange_msk task on the runtime's thread pool
         let handle = tokio::spawn(async move {
-            println!("DEBUG: exchange_msk task started for request ID: {}", mig_info.mig_info.mig_request_id);
+            log::debug!("exchange_msk task started for request ID: {}", mig_info.mig_info.mig_request_id);
             let result = exchange_msk(&mig_info).await;
-            println!("DEBUG: exchange_msk task completed for request ID: {}", mig_info.mig_info.mig_request_id);
+            log::debug!("exchange_msk task completed for request ID: {}", mig_info.mig_info.mig_request_id);
             result
         });
         
         // Await the spawned task
         match handle.await {
             Ok(result) => {
-                println!("DEBUG: Spawned task completed successfully");
+                log::debug!("Spawned task completed successfully");
                 result
             }
             Err(join_error) => {
-                println!("DEBUG: Spawned task failed with join error: {:?}", join_error);
+                log::error!("Spawned task failed with join error: {:?}", join_error);
                 Err(MigrationResult::InvalidParameter)
             }
         }
     });
     
     match &result {
-        Ok(_) => println!("DEBUG: exchange_msk returned: Ok for request ID: {}", request_id),
-        Err(_) => println!("DEBUG: exchange_msk returned: Err for request ID: {}", request_id),
+        Ok(_) => log::debug!("exchange_msk returned: Ok for request ID: {}", request_id),
+        Err(_) => log::debug!("exchange_msk returned: Err for request ID: {}", request_id),
     }
     
     // Process the result and exit with appropriate status code
     match result {
         Ok(_) => {
-            println!("Migration key exchange successful!");
+            log::info!("Migration key exchange successful!");
             process::exit(0);
         }
         Err(e) => {
             let status_code = e as u8;
-            println!("Migration key exchange failed with code: {}", status_code);
+            log::error!("Migration key exchange failed with code: {}", status_code);
             process::exit(status_code as i32);
         }
     }

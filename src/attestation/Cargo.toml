@@ -12,10 +12,8 @@ policy = {path = "../policy"}
 spin = "0.9.2"
 tdx-tdcall = { path = "../../deps/td-shim/tdx-tdcall"}
 td-payload = { path = "../../deps/td-shim/td-payload", features = ["tdx"] }
-az-tdx-vtpm = { version = "0.7", optional = true }
-log = "0.4.14"
 
 [features]
 default = []
 test = []
-AzCVMEmu = ["az-tdx-vtpm"]
+AzCVMEmu = []
