@@ -141,9 +141,22 @@ This enables MigTD to run as a standard command-line application with:
 
 #### Running MigTD in AzCVMEmu Mode
 
-When built with the AzCVMEmu feature, MigTD can be run directly from the command line:
+When built with the AzCVMEmu feature, MigTD can be run directly from the command line.
 
+**Required Environment Variables:**
+
+Before running MigTD in AzCVMEmu mode, you must set the following environment variables:
+
+```bash
+export MIGTD_POLICY_FILE="/path/to/your/policy.bin"
+export MIGTD_ROOT_CA_FILE="/path/to/your/root_ca.bin"
 ```
+
+Both files must exist at the specified paths. The program will exit with an error if either environment variable is missing or if the files cannot be found.
+
+**Running the Application:**
+
+```bash
 # Display help information
 ./target/debug/migtd -h
 ```
@@ -155,12 +168,16 @@ When built with the AzCVMEmu feature, MigTD can be run directly from the command
 - `--binding, -b HANDLE`: Set binding handle as hex or decimal (default: 0x1234)
 - `--policy-id, -p ID`: Set migration policy ID (default: 0)
 - `--comm-id, -c ID`: Set communication ID (default: 0)
-- `--dest-ip, -d IP`: Set destination IP address for connection (default: 127.0.0.1)
-- `--dest-port, -t PORT`: Set destination port for connection (default: 8000 + request_id % 1000)
+- `--dest-ip, -d IP`: Set destination IP address for connection (default: none)
+- `--dest-port, -t PORT`: Set destination port for connection (default: none)
 - `--help, -h`: Show help message
 
 **Example Usage:**
-```
+```bash
+# Set required environment variables
+export MIGTD_POLICY_FILE="/path/to/policy.bin"
+export MIGTD_ROOT_CA_FILE="/path/to/root_ca.bin"
+
 # Terminal 1: Start destination MigTD
 ./target/debug/migtd --role destination --request-id 42
 
@@ -168,12 +185,13 @@ When built with the AzCVMEmu feature, MigTD can be run directly from the command
 ./target/debug/migtd --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8042
 ```
 
-**File-based Configuration:**
-MigTD in AzCVMEmu mode uses file-based configuration for policy and root CA:
-- Policy file: `/tmp/migtd_policy.bin`
-- Root CA file: `/tmp/migtd_root_ca.bin`
+**Error Handling:**
 
-These files will be loaded on demand if they exist. If not, default values will be used.
+If environment variables are not set or files are missing, MigTD will display clear error messages:
+- `MIGTD_POLICY_FILE environment variable not set`
+- `MIGTD_ROOT_CA_FILE environment variable not set`
+- `Policy file not found: /path/to/file`
+- `Root CA file not found: /path/to/file`
 
 ### Generate SERVTD_INFO_HASH
 

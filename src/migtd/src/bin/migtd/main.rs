@@ -220,29 +220,51 @@ fn main() {
     // Initialize event log emulation
     td_shim_emu::event_log::init_event_log();
 
-    // Define file paths for policy and root CA
-    const POLICY_FILE_PATH: &str = "/tmp/migtd_policy.bin";
-    const ROOT_CA_FILE_PATH: &str = "/tmp/migtd_root_ca.bin";
+    // Get file paths from environment variables
+    let policy_file_path = match env::var("MIGTD_POLICY_FILE") {
+        Ok(path) => path,
+        Err(_) => {
+            log::error!("MIGTD_POLICY_FILE environment variable not set");
+            std::process::exit(1);
+        }
+    };
+    
+    let root_ca_file_path = match env::var("MIGTD_ROOT_CA_FILE") {
+        Ok(path) => path,
+        Err(_) => {
+            log::error!("MIGTD_ROOT_CA_FILE environment variable not set");
+            std::process::exit(1);
+        }
+    };
+    
+    // Check if files exist before attempting to initialize
+    if !std::path::Path::new(&policy_file_path).exists() {
+        log::error!("Policy file not found: {}", policy_file_path);
+        std::process::exit(1);
+    }
+    
+    if !std::path::Path::new(&root_ca_file_path).exists() {
+        log::error!("Root CA file not found: {}", root_ca_file_path);
+        std::process::exit(1);
+    }
     
     // Initialize file-based emulation with real file access
+    // Convert strings to static references by leaking them (required by the API)
+    let policy_path: &'static str = Box::leak(policy_file_path.clone().into_boxed_str());
+    let root_ca_path: &'static str = Box::leak(root_ca_file_path.clone().into_boxed_str());
+    
     let result = td_shim_interface_emu::init_file_based_emulation_with_real_files(
-        POLICY_FILE_PATH, 
-        ROOT_CA_FILE_PATH
+        policy_path, 
+        root_ca_path
     );
     
     if result {
         log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:");
-        log::info!("  Policy: {}", POLICY_FILE_PATH);
-        log::info!("  Root CA: {}", ROOT_CA_FILE_PATH);
+        log::info!("  Policy: {}", policy_file_path);
+        log::info!("  Root CA: {}", root_ca_file_path);
     } else {
-        log::warn!("Failed to initialize file-based emulation, using fallback data");
-        
-        // If initialization fails, load default test data directly via emulation layer
-        let default_policy = b"AzCVMEmu hardcoded policy data";
-        let default_root_ca = b"AzCVMEmu hardcoded root CA data";
-
-        td_shim_interface_emu::load_policy_data(default_policy);
-        td_shim_interface_emu::load_root_ca_data(default_root_ca);
+        log::error!("Failed to initialize file-based emulation");
+        std::process::exit(1);
     }
 
     // Measure the policy and Root CA data
@@ -473,6 +495,12 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
 #[cfg(feature = "AzCVMEmu")]
 fn print_usage() {
     println!("MigTD AzCVMEmu Mode Usage:");
+    println!();
+    println!("Required Environment Variables:");
+    println!("  MIGTD_POLICY_FILE          Path to the migration policy file");
+    println!("  MIGTD_ROOT_CA_FILE         Path to the root CA certificate file");
+    println!();
+    println!("Command Line Options:");
     println!("  --request-id, -r ID        Set migration request ID (default: 1)");
     println!("  --role, -m ROLE            Set role as 'source' or 'destination' (default: source)");
     println!("  --uuid, -u U1 U2 U3 U4     Set target TD UUID as four integers (default: 1 2 3 4)");
@@ -484,6 +512,8 @@ fn print_usage() {
     println!("  --help, -h                 Show this help message");
     println!();
     println!("Examples:");
+    println!("  export MIGTD_POLICY_FILE=/path/to/policy.bin");
+    println!("  export MIGTD_ROOT_CA_FILE=/path/to/root_ca.bin");
     println!("  ./migtd --role source --request-id 42");
     println!("  ./migtd -m destination -r 42 -b 0x5678");
     println!("  ./migtd --role source --dest-ip 192.168.1.100 --dest-port 8080");
