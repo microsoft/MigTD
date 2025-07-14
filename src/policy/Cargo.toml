@@ -18,3 +18,4 @@ td-shim-interface = { path = "../../deps/td-shim/td-shim-interface"}
 [features]
 std = []
 AzCVMEmu = []
+policy_v2 = []
