@@ -150,6 +150,12 @@ fn get_ccel() -> Option<&'static Ccel> {
     }
 }
 
+#[cfg(feature = "AzCVMEmu")]
+pub fn update_event_log_size(new_size: usize) {
+    // Update the emulator's internal size tracker
+    emu_event_log::update_event_log_size(new_size);
+}
+
 pub fn write_tagged_event_log(
     event_log: &mut [u8],
     tagged_event_id: u32,
@@ -193,6 +199,14 @@ pub fn write_tagged_event_log(
 
     event_log[log_size..log_size + event.as_bytes().len()].copy_from_slice(event.as_bytes());
 
+    #[cfg(feature = "AzCVMEmu")]
+    {
+        let final_size = log_size + event.as_bytes().len();
+        // Update the emulator's internal size tracker so subsequent calls get the correct offset
+        update_event_log_size(final_size);
+        Ok(final_size)
+    }
+    #[cfg(not(feature = "AzCVMEmu"))]
     Ok(log_size + event.as_bytes().len())
 }
 

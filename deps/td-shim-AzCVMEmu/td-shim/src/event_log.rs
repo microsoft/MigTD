@@ -13,6 +13,7 @@ use cc_measurement::{
     log::{CcEventLogError, CcEventLogWriter},
     CcEventHeader, TcgPcrEventHeader, TpmlDigestValues, TpmtHa, TpmuHa, 
     UefiPlatformFirmwareBlob2, EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_PLATFORM_CONFIG_FLAGS,
+    TcgEfiSpecIdevent, TcgEfiSpecIdEventAlgorithmSize,
 };
 use core::{mem::size_of, ptr::slice_from_raw_parts};
 use zerocopy::{AsBytes, FromBytes};
@@ -118,7 +119,7 @@ pub const EV_EVENT_TAG: u32 = 0x00000006;
 
 /// Emulated file-based event log
 // Define the size of the event log buffer as a constant for better maintainability
-pub const EVENT_LOG_BUFFER_SIZE: usize = 4096;
+pub const EVENT_LOG_BUFFER_SIZE: usize = 16384; // Increased from 4096 to 16384 (16KB)
 
 pub struct EventLogEmulator {
     data: [u8; EVENT_LOG_BUFFER_SIZE], // Fixed size buffer defined by constant
@@ -173,6 +174,9 @@ pub fn init_event_log() {
     unsafe {
         if EVENT_LOG.is_none() {
             EVENT_LOG = Some(EventLogEmulator::new());
+            // Add expected event at the beginning of the log
+            // ToDo: Add MigTDCore event to support relevant policy rules
+            populate_TcgPcr_event_log();
         }
     }
 }
@@ -237,6 +241,54 @@ pub fn get_event_log_full_buffer_mut() -> Option<&'static mut [u8]> {
             ))
         } else {
             None
+        }
+    }
+}
+
+/// Update the event log size (used when externally writing to the buffer)
+pub fn update_event_log_size(new_size: usize) {
+    unsafe {
+        if let Some(log) = &mut EVENT_LOG {
+            log.set_size(new_size);
+        }
+    }
+}
+
+fn populate_TcgPcr_event_log() {
+    unsafe {
+        if let Some(log) = &mut EVENT_LOG {
+            // Create a proper TCG event log starting with TcgPcrEventHeader
+            // This is what the policy verification expects to find
+            
+            use cc_measurement::{TcgPcrEventHeader, TcgEfiSpecIdevent};
+            use core::mem::size_of;
+            use zerocopy::AsBytes;
+            
+            // Create the initial TCG_EfiSpecIDEvent using the default implementation
+            let spec_id_event = TcgEfiSpecIdevent::default();
+            
+            // Create TcgPcrEventHeader for the first event
+            let pcr_header = TcgPcrEventHeader {
+                mr_index: 0,
+                event_type: 0x80000003, // EV_NO_ACTION
+                digest: [0u8; 20], // SHA1 digest (zeros for EV_NO_ACTION)
+                event_size: size_of::<TcgEfiSpecIdevent>() as u32,
+            };
+            
+            // Write the headers to the event log
+            let mut offset = 0;
+            
+            // Write TcgPcrEventHeader
+            let pcr_header_bytes = pcr_header.as_bytes();
+            log.data[offset..offset + pcr_header_bytes.len()].copy_from_slice(pcr_header_bytes);
+            offset += pcr_header_bytes.len();
+            
+            // Write TcgEfiSpecIdevent
+            let spec_id_bytes = spec_id_event.as_bytes();
+            log.data[offset..offset + spec_id_bytes.len()].copy_from_slice(spec_id_bytes);
+            offset += spec_id_bytes.len();
+            
+            log.set_size(offset);
         }
     }
 }

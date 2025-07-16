@@ -63,12 +63,12 @@ build_migtd() {
     echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
     
     if [[ "$build_mode" == "debug" ]]; then
-        if ! cargo build --features "main,AzCVMEmu"; then
+        if ! cargo build --features "AzCVMEmu"; then
             echo -e "${RED}Error: Failed to build MigTD in debug mode${NC}" >&2
             exit 1
         fi
     else
-        if ! cargo build --release --features "main,AzCVMEmu"; then
+        if ! cargo build --release --features "AzCVMEmu"; then
             echo -e "${RED}Error: Failed to build MigTD in release mode${NC}" >&2
             exit 1
         fi

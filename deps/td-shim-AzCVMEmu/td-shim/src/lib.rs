@@ -7,7 +7,7 @@
 //! This crate provides minimal emulation of td-shim functionality needed
 //! to build the policy crate in environments where the full td-shim is not available.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 

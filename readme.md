@@ -122,13 +122,13 @@ cargo image --no-default-features --features stack-guard,virtio-serial
 For development and testing in Azure TDX CVM environments where TDX hardware interface is not fully exposed, you can build MigTD with emulation support:
 
 ```
-cargo build --features "main,AzCVMEmu" --bin migtd
+cargo build --features "AzCVMEmu" --bin migtd
 ```
 
-Note: The `main` feature enables the main MigTD functionality, and `AzCVMEmu` enables emulation support. The `--bin migtd` flag ensures the main MigTD binary is built. You can also use:
+Note: The `AzCVMEmu` feature automatically includes the main MigTD functionality. The `--bin migtd` flag ensures the main MigTD binary is built. You can also use:
 
 ```
-cargo build --features "main,AzCVMEmu"
+cargo build --features "AzCVMEmu"
 ```
 
 This will build all binaries in the workspace.
@@ -214,7 +214,7 @@ export MIGTD_POLICY_FILE="/path/to/policy.json"
 export MIGTD_ROOT_CA_FILE="/path/to/root_ca.cer"
 
 # Build and run manually
-cargo build --release --features "main,AzCVMEmu"
+cargo build --release --features "AzCVMEmu"
 
 # Terminal 1: Start destination MigTD
 sudo ./target/release/migtd --role destination --request-id 42

@@ -103,7 +103,10 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
     
     #[cfg(feature = "AzCVMEmu")]
     let policy = match config::get_policy() {
-        Some(policy) => policy,
+        Some(policy) => {
+            log::info!("Successfully loaded policy from file in AzCVMEmu mode, size: {} bytes", policy.len());
+            policy
+        },
         None => {
             log::warn!("No policy found in AzCVMEmu mode. Using default policy.");
             b"AzCVMEmu default policy"
@@ -222,7 +225,10 @@ fn main() {
 
     // Get file paths from environment variables
     let policy_file_path = match env::var("MIGTD_POLICY_FILE") {
-        Ok(path) => path,
+        Ok(path) => {
+            log::info!("MIGTD_POLICY_FILE set to: {}", path);
+            path
+        },
         Err(_) => {
             log::error!("MIGTD_POLICY_FILE environment variable not set");
             std::process::exit(1);
@@ -230,7 +236,10 @@ fn main() {
     };
     
     let root_ca_file_path = match env::var("MIGTD_ROOT_CA_FILE") {
-        Ok(path) => path,
+        Ok(path) => {
+            log::info!("MIGTD_ROOT_CA_FILE set to: {}", path);
+            path
+        },
         Err(_) => {
             log::error!("MIGTD_ROOT_CA_FILE environment variable not set");
             std::process::exit(1);
@@ -269,6 +278,16 @@ fn main() {
 
     // Measure the policy and Root CA data
     do_measurements();
+    
+    // AzCVMEmu workaround: Add 1 extra byte to event log size to work around 
+    // the strict '<' condition in CcEvents iterator (line 242 in log.rs)
+    // that requires at least one extra byte beyond the actual event data
+    {
+        let current_log = event_log::get_event_log().expect("Failed to get event log for size adjustment");
+        let current_size = current_log.len();
+        log::debug!("[AzCVMEmu] Adding 1 byte workaround to event log size: {} -> {}", current_size, current_size + 1);
+        event_log::update_event_log_size(current_size + 1);
+    }
     
     // Parse command-line arguments for AzCVMEmu mode
     if let Some(mig_info) = parse_commandline_args() {

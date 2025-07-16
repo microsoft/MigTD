@@ -12,11 +12,11 @@ use crate::td_uefi_pi::pi::fv::FV_FILETYPE_RAW;
 use crate::file_ops::FileReader;
 
 // Static buffers to store emulated files
-static mut POLICY_BUFFER: [u8; 4096] = [0; 4096];
+static mut POLICY_BUFFER: [u8; 32768] = [0; 32768]; // Increased to 32KB for policy files
 static mut POLICY_SIZE: usize = 0;
 static POLICY_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-static mut ROOT_CA_BUFFER: [u8; 4096] = [0; 4096];
+static mut ROOT_CA_BUFFER: [u8; 4096] = [0; 4096]; // Keep at 4KB for root CA files
 static mut ROOT_CA_SIZE: usize = 0;
 static ROOT_CA_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -142,14 +142,25 @@ pub fn set_file_reader(reader: FileReader) {
 /// Try to load policy data from file
 fn try_load_policy_from_file() -> bool {
     unsafe {
+        if POLICY_FILE_PATH.is_none() {
+            return false;
+        }
+        
+        if FILE_READER.is_none() {
+            return false;
+        }
+        
         if let (Some(path), Some(reader)) = (POLICY_FILE_PATH, FILE_READER) {
-            if let Some(data) = reader(path) {
-                if data.len() <= POLICY_BUFFER.len() {
-                    POLICY_BUFFER[..data.len()].copy_from_slice(&data);
-                    POLICY_SIZE = data.len();
-                    POLICY_INITIALIZED.store(true, Ordering::SeqCst);
-                    return true;
+            match reader(path) {
+                Some(data) => {
+                    if data.len() <= POLICY_BUFFER.len() {
+                        POLICY_BUFFER[..data.len()].copy_from_slice(&data);
+                        POLICY_SIZE = data.len();
+                        POLICY_INITIALIZED.store(true, Ordering::SeqCst);
+                        return true;
+                    }
                 }
+                None => {}
             }
         }
         false
@@ -159,14 +170,25 @@ fn try_load_policy_from_file() -> bool {
 /// Try to load root CA data from file
 fn try_load_root_ca_from_file() -> bool {
     unsafe {
+        if ROOT_CA_FILE_PATH.is_none() {
+            return false;
+        }
+        
+        if FILE_READER.is_none() {
+            return false;
+        }
+        
         if let (Some(path), Some(reader)) = (ROOT_CA_FILE_PATH, FILE_READER) {
-            if let Some(data) = reader(path) {
-                if data.len() <= ROOT_CA_BUFFER.len() {
-                    ROOT_CA_BUFFER[..data.len()].copy_from_slice(&data);
-                    ROOT_CA_SIZE = data.len();
-                    ROOT_CA_INITIALIZED.store(true, Ordering::SeqCst);
-                    return true;
+            match reader(path) {
+                Some(data) => {
+                    if data.len() <= ROOT_CA_BUFFER.len() {
+                        ROOT_CA_BUFFER[..data.len()].copy_from_slice(&data);
+                        ROOT_CA_SIZE = data.len();
+                        ROOT_CA_INITIALIZED.store(true, Ordering::SeqCst);
+                        return true;
+                    }
                 }
+                None => {}
             }
         }
         false

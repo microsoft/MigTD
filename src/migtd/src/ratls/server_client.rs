@@ -19,7 +19,7 @@ use crypto::{
     Error as CryptoError,
 };
 #[cfg(feature = "AzCVMEmu")]
-use log::{info, debug, error};
+use log::{info, debug, warn, error};
 
 use super::*;
 use crate::event_log::get_event_log;
@@ -204,6 +204,7 @@ fn verify_client_cert(cert: &[u8], quote: &[u8]) -> core::result::Result<(), Cry
     verify_peer_cert(false, cert, quote)
 }
 
+//#[cfg(not(feature = "test_disable_ra_and_accept_all"))]
 #[cfg(not(any(feature = "test_disable_ra_and_accept_all", feature = "AzCVMEmu")))]
 mod verify {
     use super::*;
@@ -283,7 +284,7 @@ mod verify {
         {
             // In AzCVMEmu mode, we don't verify the public key in the report
             // This is acceptable for testing/development but would not be secure in production
-            debug!("AzCVMEmu mode: Skipping public key verification in report");
+            warn!("AzCVMEmu mode: Skipping public key verification in report");
             return Ok(());
         }
 
@@ -307,6 +308,7 @@ mod verify {
 
 // Only for test to bypass the quote verification
 #[cfg(any(feature = "test_disable_ra_and_accept_all", feature = "AzCVMEmu"))]
+//#[cfg(feature = "test_disable_ra_and_accept_all")]
 mod verify {
     use super::*;
 

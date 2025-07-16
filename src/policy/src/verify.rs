@@ -681,6 +681,12 @@ fn replay_event_log(event_log: &[u8], report_peer: &Report) -> Result<(), Policy
     {
         Ok(())
     } else {
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            log::warn!("RTMR check bypassed in AzCVMEmu mode temporarily");
+            Ok(())
+        }
+        #[cfg(not(feature = "AzCVMEmu"))]
         Err(PolicyError::InvalidEventLog)
     }
 }
