@@ -204,8 +204,7 @@ fn verify_client_cert(cert: &[u8], quote: &[u8]) -> core::result::Result<(), Cry
     verify_peer_cert(false, cert, quote)
 }
 
-//#[cfg(not(feature = "test_disable_ra_and_accept_all"))]
-#[cfg(not(any(feature = "test_disable_ra_and_accept_all", feature = "AzCVMEmu")))]
+#[cfg(not(feature = "test_disable_ra_and_accept_all"))]
 mod verify {
     use super::*;
     use crate::mig_policy;
@@ -307,8 +306,7 @@ mod verify {
 }
 
 // Only for test to bypass the quote verification
-#[cfg(any(feature = "test_disable_ra_and_accept_all", feature = "AzCVMEmu"))]
-//#[cfg(feature = "test_disable_ra_and_accept_all")]
+#[cfg(feature = "test_disable_ra_and_accept_all")]
 mod verify {
     use super::*;
 

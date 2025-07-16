@@ -216,9 +216,8 @@ fn main() {
     basic_info();
 
     // Init internal heap
-    // Enable after the QVL linking issue is resolved
-    //#[cfg(not(feature = "test_disable_ra_and_accept_all"))]
-    //attestation::attest_init_heap();
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+    attestation::attest_init_heap();
     
     // Initialize event log emulation
     td_shim_emu::event_log::init_event_log();
