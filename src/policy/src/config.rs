@@ -8,11 +8,7 @@ use serde::{
     de::{Error, Visitor},
     Deserialize, Deserializer,
 };
-
-#[cfg(not(feature = "AzCVMEmu"))]
 use td_shim_interface::td_uefi_pi::pi::guid::Guid;
-#[cfg(feature = "AzCVMEmu")]
-use td_shim_interface_emu::td_uefi_pi::pi::guid::Guid;
 
 #[derive(Debug, Deserialize)]
 pub struct MigPolicy {

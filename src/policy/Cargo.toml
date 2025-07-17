@@ -12,16 +12,9 @@ crypto = { path = "../crypto" }
 log = { version = "0.4.13", optional = true }
 serde = { version = "1.0", default-features = false, features = ["derive"]}
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-
-# Conditional dependencies for td-shim
-td-shim = { path = "../../deps/td-shim/td-shim", default-features = false, optional = true }
-td-shim-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim", optional = true }
-
-# Conditional dependencies for td-shim-interface
-td-shim-interface = { path = "../../deps/td-shim/td-shim-interface", optional = true }
-td-shim-interface-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim-interface", optional = true }
+td-shim = { path = "../../deps/td-shim/td-shim", default-features = false }
+td-shim-interface = { path = "../../deps/td-shim/td-shim-interface"}
 
 [features]
-default = ["td-shim-interface", "td-shim"]
 std = []
-AzCVMEmu = ["td-shim-interface-emu", "td-shim-emu"]
+AzCVMEmu = []
