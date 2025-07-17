@@ -437,7 +437,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
 
             transport = tcp_transport::TcpStream::connect_to(host, port)
                 .await
-                .map_err(|_| MigrationResult::TcpConnectError)?;
+                .map_err(|_| MigrationResult::NetworkError)?;
 
             log::info!("TCP connection established");
         } else {
@@ -445,7 +445,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             log::info!("Destination MigTD listening on port {}", port);
             transport = tcp_transport::TcpStream::accept_on(port)
                 .await
-                .map_err(|_| MigrationResult::TcpAcceptError)?;           
+                .map_err(|_| MigrationResult::NetworkError)?;           
             log::info!("TCP connection accepted");
         }
     }
@@ -698,7 +698,7 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
             log::debug!("Connecting to {}:{}", host, port);
             
             let mut stream = tcp_transport::TcpStream::connect_to(host, port).await
-                .map_err(|_| MigrationResult::TcpConnectError)?;
+                .map_err(|_| MigrationResult::NetworkError)?;
             
             log::debug!("TCP connection established, sending hello message");
             
@@ -710,7 +710,7 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
             let mut written = 0;
             while written < hello_msg.len() {
                 let n = stream.write(&hello_msg[written..]).await
-                    .map_err(|_| MigrationResult::TcpWriteError)?;
+                    .map_err(|_| MigrationResult::NetworkError)?;
                 written += n;
             }
             
@@ -719,7 +719,7 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
             // Read response
             let mut buffer = [0u8; 64];
             let n = stream.read(&mut buffer).await
-                .map_err(|_| MigrationResult::TcpReadError)?;
+                .map_err(|_| MigrationResult::NetworkError)?;
             
             let response = core::str::from_utf8(&buffer[..n]).unwrap_or("invalid utf8");
             log::debug!("Received response: {}", response);
@@ -731,14 +731,14 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
             log::debug!("Listening on port {}", port);
             
             let mut stream = tcp_transport::TcpStream::accept_on(port).await
-                .map_err(|_| MigrationResult::TcpAcceptError)?;
+                .map_err(|_| MigrationResult::NetworkError)?;
             
             log::debug!("TCP connection accepted, waiting for hello message");
             
             // Read hello message
             let mut buffer = [0u8; 64];
             let n = stream.read(&mut buffer).await
-                .map_err(|_| MigrationResult::TcpReadError)?;
+                .map_err(|_| MigrationResult::NetworkError)?;
             
             let hello_msg = core::str::from_utf8(&buffer[..n]).unwrap_or("invalid utf8");
             log::debug!("Received hello message: {}", hello_msg);
@@ -751,7 +751,7 @@ pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
             let mut written = 0;
             while written < response_msg.len() {
                 let n = stream.write(&response_msg[written..]).await
-                    .map_err(|_| MigrationResult::TcpWriteError)?;
+                    .map_err(|_| MigrationResult::NetworkError)?;
                 written += n;
             }
             

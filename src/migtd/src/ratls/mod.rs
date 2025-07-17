@@ -13,7 +13,6 @@ mod server_client;
 #[cfg(feature = "main")]
 pub use server_client::*;
 
-#[derive(Debug)]
 pub enum RatlsError {
     GetQuote,
     VerifyQuote,
@@ -21,7 +20,6 @@ pub enum RatlsError {
     Crypto(CryptoError),
     X509(DerError),
     InvalidEventlog,
-    InvalidTdReport,
 }
 
 impl From<TdCallError> for RatlsError {

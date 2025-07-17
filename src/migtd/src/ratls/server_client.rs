@@ -144,13 +144,13 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
                             }
                         } else {
                             error!("RATLS: All vTPM report attempts failed");
-                            return Err(RatlsError::InvalidTdReport);
+                            return Err(RatlsError::GetQuote);
                         }
                     }
                 }
             }
             
-            let vtpm_report = vtpm_report.ok_or(RatlsError::InvalidTdReport)?;
+            let vtpm_report = vtpm_report.ok_or(RatlsError::GetQuote)?;
             
             // Create an HCL report from the vTPM report
             debug!("RATLS: Creating HCL report from vTPM report");
@@ -161,7 +161,7 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
                 }
                 Err(_) => {
                     error!("RATLS: Failed to create HCL report");
-                    return Err(RatlsError::InvalidTdReport);
+                    return Err(RatlsError::GetQuote);
                 }
             };
             
@@ -174,7 +174,7 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
                 }
                 Err(_) => {
                     error!("RATLS: Failed to convert HCL report to TD report");
-                    return Err(RatlsError::InvalidTdReport);
+                    return Err(RatlsError::GetQuote);
                 }
             }
         };

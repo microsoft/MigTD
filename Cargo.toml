@@ -46,13 +46,3 @@ lto = true
 [patch.crates-io]
 ring = { path = "deps/td-shim/library/ring" }
 az-tdx-vtpm = { version = "0.7", git = "https://github.com/kinvolk/azure-cvm-tooling", package = "az-tdx-vtpm" }
-
-[patch."https://github.com/confidential-containers/td-shim"]
-td-shim = { path = "deps/td-shim/td-shim" }
-td-shim-interface = { path = "deps/td-shim/td-shim-interface" }
-
-# Note: Since this is a workspace Cargo.toml, features are specified in the crate-level Cargo.toml files
-# The AzCVMEmu feature is defined in src/migtd/Cargo.toml
-
-# When AzCVMEmu feature is enabled, use the emulated td-shim implementations
-# For AzCVMEmu feature, the patching is handled in the individual crates

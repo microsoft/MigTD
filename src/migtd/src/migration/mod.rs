@@ -143,16 +143,6 @@ pub enum MigrationResult {
     MutualAttestationError = 7,
     PolicyUnsatisfiedError = 8,
     InvalidPolicyError = 9,
-    #[cfg(feature = "AzCVMEmu")]
-    TcpConnectError = 10,
-    #[cfg(feature = "AzCVMEmu")]
-    TcpAcceptError = 11,
-    #[cfg(feature = "AzCVMEmu")]
-    TcpReadError = 12,
-    #[cfg(feature = "AzCVMEmu")]
-    TcpWriteError = 13,
-    #[cfg(feature = "AzCVMEmu")]
-    RatlsError = 14,
 }
 
 #[cfg(any(feature = "virtio-vsock", feature = "vmcall-vsock"))]
@@ -176,7 +166,7 @@ impl From<RatlsError> for MigrationResult {
                 MigrationResult::SecureSessionError
             }
             RatlsError::TdxModule(_) => MigrationResult::TdxModuleError,
-            RatlsError::GetQuote | RatlsError::VerifyQuote | RatlsError::InvalidTdReport => {
+            RatlsError::GetQuote | RatlsError::VerifyQuote => {
                 MigrationResult::MutualAttestationError
             }
         }
