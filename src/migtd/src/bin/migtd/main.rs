@@ -277,17 +277,7 @@ fn main() {
 
     // Measure the policy and Root CA data
     do_measurements();
-    
-    // AzCVMEmu workaround: Add 1 extra byte to event log size to work around 
-    // the strict '<' condition in CcEvents iterator (line 242 in log.rs)
-    // that requires at least one extra byte beyond the actual event data
-    {
-        let current_log = event_log::get_event_log().expect("Failed to get event log for size adjustment");
-        let current_size = current_log.len();
-        log::debug!("[AzCVMEmu] Adding 1 byte workaround to event log size: {} -> {}", current_size, current_size + 1);
-        event_log::update_event_log_size(current_size + 1);
-    }
-    
+      
     // Parse command-line arguments for AzCVMEmu mode
     if let Some(mig_info) = parse_commandline_args() {
         runtime_main_azcvmemu(mig_info);

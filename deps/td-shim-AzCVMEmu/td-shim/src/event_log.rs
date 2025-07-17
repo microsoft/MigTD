@@ -15,10 +15,48 @@ use cc_measurement::{
     UefiPlatformFirmwareBlob2, EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_PLATFORM_CONFIG_FLAGS,
     TcgEfiSpecIdevent, TcgEfiSpecIdEventAlgorithmSize,
 };
-use core::{mem::size_of, ptr::slice_from_raw_parts};
+use core::{mem::size_of, ptr::slice_from_raw_parts, ptr, slice};
 use zerocopy::{AsBytes, FromBytes};
 
 pub const CCEL_CC_TYPE_TDX: u8 = 2;
+
+// Mock ACPI and CCEL structures to align with non-AzCVMEmu APIs
+#[derive(Debug, Clone, Copy)]
+pub struct MockCcel {
+    pub lasa: u64,    // Event log base address (points to our buffer)
+    pub laml: u32,    // Event log length
+}
+
+impl MockCcel {
+    pub fn new(buffer_ptr: *const u8, buffer_len: usize) -> Self {
+        Self {
+            lasa: buffer_ptr as u64,
+            laml: buffer_len as u32,
+        }
+    }
+    
+    // Mock FromBytes::read_from for compatibility
+    pub fn read_from(_bytes: &[u8]) -> Option<Self> {
+        // Initialize the event log if needed and return a proper CCEL
+        init_event_log();
+        
+        unsafe {
+            if let Some(log) = &EVENT_LOG {
+                Some(Self::new(log.data.as_ptr(), EVENT_LOG_BUFFER_SIZE))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+// Mock ACPI tables function
+pub fn get_acpi_tables() -> Option<&'static [&'static [u8]]> {
+    // Return a mock CCEL table - just need the signature
+    static MOCK_CCEL: &[u8] = b"CCEL\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    static TABLES: &[&[u8]] = &[MOCK_CCEL];
+    Some(TABLES)
+}
 
 pub const PLATFORM_CONFIG_HOB: &[u8] = b"td_hob\0";
 pub const PLATFORM_CONFIG_PAYLOAD_PARAMETER: &[u8] = b"td_payload_info\0";
@@ -118,31 +156,54 @@ pub const TPML_ALG_SHA384: u16 = 0x000C;
 pub const EV_EVENT_TAG: u32 = 0x00000006;
 
 /// Emulated file-based event log
+// Mock Once implementation to align with non-AzCVMEmu APIs
+pub struct MockOnce<T> {
+    value: Option<T>,
+}
+
+impl<T> MockOnce<T> {
+    pub const fn new() -> Self {
+        Self { value: None }
+    }
+    
+    pub fn is_completed(&self) -> bool {
+        true // Always return true for emulation
+    }
+    
+    pub fn get(&self) -> Option<&T> {
+        self.value.as_ref()
+    }
+    
+    pub fn call_once<F>(&mut self, f: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        if self.value.is_none() {
+            self.value = Some(f());
+        }
+        self.value.as_ref().unwrap()
+    }
+}
+
 // Define the size of the event log buffer as a constant for better maintainability
 pub const EVENT_LOG_BUFFER_SIZE: usize = 16384; // Increased from 4096 to 16384 (16KB)
 
 pub struct EventLogEmulator {
     data: [u8; EVENT_LOG_BUFFER_SIZE], // Fixed size buffer defined by constant
-    size: usize,
+    ccel: MockCcel, // Mock CCEL pointing to our buffer
 }
 
 impl EventLogEmulator {
     /// Create a new empty event log
     pub fn new() -> Self {
-        Self {
+        let mut emulator = Self {
             data: [0u8; EVENT_LOG_BUFFER_SIZE],
-            size: 0,
-        }
-    }
-    
-    /// Get a reference to the event log data (only the written portion)
-    pub fn data(&self) -> &[u8] {
-        &self.data[..self.size]
-    }
-    
-    /// Get a mutable reference to the event log data (only the written portion)
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        &mut self.data[..self.size]
+            ccel: MockCcel::new(ptr::null(), 0), // Will be updated below
+        };
+        
+        // Update CCEL to point to our buffer
+        emulator.ccel = MockCcel::new(emulator.data.as_ptr(), EVENT_LOG_BUFFER_SIZE);
+        emulator
     }
     
     /// Get a reference to the full event log buffer
@@ -150,24 +211,57 @@ impl EventLogEmulator {
         &self.data[..]
     }
     
-    /// Get the capacity of the event log buffer
-    pub fn capacity(&self) -> usize {
-        EVENT_LOG_BUFFER_SIZE
+    /// Get a mutable reference to the full event log buffer
+    pub fn full_buffer_mut(&mut self) -> &mut [u8] {
+        &mut self.data[..]
     }
     
-    /// Set the size of the event log (used portion)
-    pub fn set_size(&mut self, size: usize) {
-        self.size = size;
+    /// Get the mock CCEL for this event log
+    pub fn get_ccel(&mut self) -> &MockCcel {
+        // Update the CCEL pointer in case the buffer was moved
+        self.ccel = MockCcel::new(self.data.as_ptr(), EVENT_LOG_BUFFER_SIZE);
+        &self.ccel
     }
     
-    /// Get the current written size of the event log
-    pub fn written_size(&self) -> usize {
-        self.size
+    /// Get event log slice (mimics the non-AzCVMEmu API)
+    pub fn event_log_slice(&mut self) -> &mut [u8] {
+        &mut self.data[..]
     }
 }
 
 // Singleton instance of the event log
 static mut EVENT_LOG: Option<EventLogEmulator> = None;
+
+// Mock CCEL singleton to align with non-AzCVMEmu API
+static mut MOCK_CCEL_ONCE: MockOnce<MockCcel> = MockOnce::new();
+
+/// Mock get_ccel function to align with non-AzCVMEmu API
+pub fn get_ccel() -> Option<&'static MockCcel> {
+    unsafe {
+        // Initialize if needed
+        init_event_log();
+        
+        if let Some(log) = &mut EVENT_LOG {
+            Some(MOCK_CCEL_ONCE.call_once(|| {
+                MockCcel::new(log.data.as_ptr(), EVENT_LOG_BUFFER_SIZE)
+            }))
+        } else {
+            None
+        }
+    }
+}
+
+/// Mock event_log_slice function to align with non-AzCVMEmu API
+pub fn event_log_slice(ccel: &MockCcel) -> &'static mut [u8] {
+    unsafe {
+        if let Some(log) = &mut EVENT_LOG {
+            log.event_log_slice()
+        } else {
+            // This shouldn't happen if properly initialized
+            slice::from_raw_parts_mut(ptr::null_mut(), 0)
+        }
+    }
+}
 
 /// Initialize the event log emulator
 pub fn init_event_log() {
@@ -181,20 +275,11 @@ pub fn init_event_log() {
     }
 }
 
-/// Get a reference to the event log data (only the written portion)
+/// Get a reference to the event log data (returns full buffer for parsing)
 pub fn get_event_log() -> Option<&'static [u8]> {
-    unsafe {
-        if let Some(log) = &EVENT_LOG {
-            Some(log.data())
-        } else {
-            None
-        }
-    }
-}
-
-/// Get a reference to the full event log buffer, including unused space
-/// This is important for functions that need to know the full allocated buffer size
-pub fn get_event_log_full_buffer() -> Option<&'static [u8]> {
+    // Initialize the event log if needed
+    init_event_log();
+    
     unsafe {
         if let Some(log) = &EVENT_LOG {
             Some(log.full_buffer())
@@ -204,52 +289,16 @@ pub fn get_event_log_full_buffer() -> Option<&'static [u8]> {
     }
 }
 
-/// Get a mutable reference to the event log data (only the written portion)
-pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
-    unsafe {
-        if let Some(log) = &mut EVENT_LOG {
-            Some(core::slice::from_raw_parts_mut(
-                log.data_mut().as_mut_ptr(),
-                log.size,
-            ))
-        } else {
-            None
-        }
-    }
-}
-
-/// Get the full capacity of the event log buffer
-pub fn get_event_log_capacity() -> usize {
-    unsafe {
-        if let Some(log) = &EVENT_LOG {
-            log.capacity()
-        } else {
-            // If the event log isn't initialized yet, return the constant
-            EVENT_LOG_BUFFER_SIZE
-        }
-    }
-}
-
 /// Get a mutable reference to the full event log buffer
-/// This is useful when you need to write beyond the current used size
-pub fn get_event_log_full_buffer_mut() -> Option<&'static mut [u8]> {
+pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
+    // Initialize the event log if needed
+    init_event_log();
+    
     unsafe {
         if let Some(log) = &mut EVENT_LOG {
-            Some(core::slice::from_raw_parts_mut(
-                log.data.as_mut_ptr(),
-                log.capacity(),
-            ))
+            Some(log.full_buffer_mut())
         } else {
             None
-        }
-    }
-}
-
-/// Update the event log size (used when externally writing to the buffer)
-pub fn update_event_log_size(new_size: usize) {
-    unsafe {
-        if let Some(log) = &mut EVENT_LOG {
-            log.set_size(new_size);
         }
     }
 }
@@ -286,9 +335,8 @@ fn populate_TcgPcr_event_log() {
             // Write TcgEfiSpecIdevent
             let spec_id_bytes = spec_id_event.as_bytes();
             log.data[offset..offset + spec_id_bytes.len()].copy_from_slice(spec_id_bytes);
-            offset += spec_id_bytes.len();
             
-            log.set_size(offset);
+            // No need to track size - parsing logic will determine the written portion
         }
     }
 }
