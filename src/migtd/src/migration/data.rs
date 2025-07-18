@@ -10,11 +10,6 @@ use td_shim_interface::td_uefi_pi::{
     hob::{self as hob_lib, align_to_next_hob_offset},
     pi::hob::{GuidExtension, Header, HOB_TYPE_END_OF_HOB_LIST, HOB_TYPE_GUID_EXTENSION},
 };
-#[cfg(all(not(feature = "vmcall-raw"), feature = "AzCVMEmu"))]
-use td_shim_interface_emu::td_uefi_pi::{
-    hob::{self as hob_lib, align_to_next_hob_offset},
-    pi::hob::{GuidExtension, Header, HOB_TYPE_END_OF_HOB_LIST, HOB_TYPE_GUID_EXTENSION},
-};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[cfg(feature = "AzCVMEmu")]
@@ -239,9 +234,9 @@ impl Default for MigrationSessionKey {
 
 pub struct MigrationInformation {
     pub mig_info: MigtdMigrationInformation,
-    #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
+    #[cfg(all(any(feature = "vmcall-vsock", feature = "virtio-vsock"), not(feature = "AzCVMEmu")))]
     pub mig_socket_info: MigtdStreamSocketInfo,
-    #[cfg(not(feature = "vmcall-raw"))]
+    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     pub mig_policy: Option<MigtdMigpolicy>,
     #[cfg(feature = "AzCVMEmu")]
     pub destination_ip: Option<String>,
@@ -252,23 +247,6 @@ pub struct MigrationInformation {
 impl MigrationInformation {
     pub fn is_src(&self) -> bool {
         self.mig_info.migration_source == 1
-    }
-}
-
-#[cfg(any(feature = "vmcall-raw", feature = "AzCVMEmu"))]
-impl Default for MigrationInformation {
-    fn default() -> Self {
-        MigrationInformation {
-            mig_info: Default::default(),
-            #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
-            mig_socket_info: Default::default(),
-            #[cfg(not(feature = "vmcall-raw"))]
-            mig_policy: None,
-            #[cfg(feature = "AzCVMEmu")]
-            destination_ip: None,
-            #[cfg(feature = "AzCVMEmu")]
-            destination_port: None,
-        }
     }
 }
 
@@ -376,29 +354,13 @@ fn create_migration_information(
     })
 }
 
-// For AzCVMEmu mode, we don't need to implement HOB-related functionality
-// as this code path should not be executed when either vmcall-raw or AzCVMEmu is enabled
-#[allow(unused_variables)]
-#[cfg(any(feature = "vmcall-raw", feature = "AzCVMEmu"))]
-pub fn read_mig_info(hob: &[u8]) -> Option<MigrationInformation> {
-    // In AzCVMEmu or vmcall-raw mode, HOB-related functionality is not needed
-    // Return a default MigrationInformation
-    Some(MigrationInformation::default())
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::migration::VMCALL_SERVICE_COMMON_GUID;
 
     use scroll::Pwrite;
-    #[cfg(not(feature = "AzCVMEmu"))]
     use td_shim_interface::td_uefi_pi::pi::hob::{
-        GuidExtension, Header, HOB_TYPE_END_OF_HOB_LIST, HOB_TYPE_GUID_EXTENSION,
-        HOB_TYPE_RESOURCE_DESCRIPTOR,
-    };
-    #[cfg(feature = "AzCVMEmu")]
-    use td_shim_interface_emu::td_uefi_pi::pi::hob::{
         GuidExtension, Header, HOB_TYPE_END_OF_HOB_LIST, HOB_TYPE_GUID_EXTENSION,
         HOB_TYPE_RESOURCE_DESCRIPTOR,
     };
@@ -411,7 +373,7 @@ mod test {
 
         let mut cmd = ret.unwrap();
         let query = [0u8; 1];
-        let _ = cmd.write(query.as_bytes());
+        cmd.write(query.as_bytes());
     }
 
     #[test]
@@ -429,7 +391,7 @@ mod test {
 
         let mut cmd = ret.unwrap();
         let query = [0u8; 1];
-        let _ = cmd.write(query.as_bytes());
+        cmd.write(query.as_bytes());
         let length = u32::from_le_bytes(cmd.data[16..20].try_into().unwrap()) as usize;
         assert_eq!(length, COMMAND_HEADER_LENGTH + 1);
     }
@@ -685,6 +647,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_unknown_guided_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -730,6 +693,7 @@ mod test {
         assert!(result.is_none());
     }
 
+    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn create_unknown_guided_hob(hob: &mut [u8], offset: &mut usize) {
         let guid = [0x10u8; 16];
         let guided_hob = create_guid_hob(&guid, 64);

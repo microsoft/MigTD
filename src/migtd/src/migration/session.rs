@@ -133,6 +133,12 @@ pub fn query() -> Result<()> {
 }
 
 pub async fn wait_for_request() -> Result<MigrationInformation> {
+    #[cfg(feature = "AzCVMEmu")]
+    {
+        // AzCVMEmu mode should never call this function
+        return Err(MigrationResult::Unsupported);
+    }
+
     #[cfg(feature = "vmcall-raw")]
     {
         let num_rsp_pages: usize = 1;
@@ -205,7 +211,7 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
         .await
     }
 
-    #[cfg(not(feature = "vmcall-raw"))]
+    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     {
         // Allocate shared page for command and response buffer
         let mut cmd_mem = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
@@ -262,12 +268,9 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
                 return Poll::Ready(Err(MigrationResult::InvalidParameter));
             }
             if wfr.operation == 1 {
-                #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
                 let mig_info =
                     read_mig_info(&private_mem[24 + size_of::<ServiceMigWaitForReqResponse>()..])
                         .ok_or(MigrationResult::InvalidParameter)?;
-                #[cfg(any(feature = "vmcall-raw", feature = "AzCVMEmu"))]
-                let mig_info = MigrationInformation::default(); // Use default when HOB not available
                 let request_id = mig_info.mig_info.mig_request_id;
 
                 if REQUESTS.lock().contains(&request_id) {
@@ -671,105 +674,6 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     exchange_information.key.clear();
     remote_information.key.clear();
 
-    Ok(())
-}
-
-#[cfg(feature = "main")]
-pub async fn exchange_msk_tcp_test(info: &MigrationInformation) -> Result<()> {
-    #[cfg(feature = "AzCVMEmu")]
-    log::debug!("exchange_msk called - START");
-    
-    #[cfg(feature = "AzCVMEmu")]
-    {
-        log::debug!("AzCVMEmu mode - implementing simple hello message exchange");
-        
-        // Check if we're source or destination
-        if info.is_src() {
-            log::debug!("Source role - connecting to destination");
-            
-            // Connect to destination
-            let host = if let Some(ref dest_ip) = info.destination_ip {
-                dest_ip.as_str()
-            } else {
-                "127.0.0.1"
-            };
-            
-            let port = info.destination_port.unwrap_or(8042);
-            log::debug!("Connecting to {}:{}", host, port);
-            
-            let mut stream = tcp_transport::TcpStream::connect_to(host, port).await
-                .map_err(|_| MigrationResult::NetworkError)?;
-            
-            log::debug!("TCP connection established, sending hello message");
-            
-            // Send hello message
-            let hello_msg = b"HELLO_FROM_SOURCE";
-            log::debug!("Sending hello message: {:?}", core::str::from_utf8(hello_msg).unwrap_or("invalid utf8"));
-            
-            // Write all bytes
-            let mut written = 0;
-            while written < hello_msg.len() {
-                let n = stream.write(&hello_msg[written..]).await
-                    .map_err(|_| MigrationResult::NetworkError)?;
-                written += n;
-            }
-            
-            log::debug!("Hello message sent successfully");
-            
-            // Read response
-            let mut buffer = [0u8; 64];
-            let n = stream.read(&mut buffer).await
-                .map_err(|_| MigrationResult::NetworkError)?;
-            
-            let response = core::str::from_utf8(&buffer[..n]).unwrap_or("invalid utf8");
-            log::debug!("Received response: {}", response);
-            
-        } else {
-            log::debug!("Destination role - listening for source connection");
-            
-            let port = info.destination_port.unwrap_or(8042);
-            log::debug!("Listening on port {}", port);
-            
-            let mut stream = tcp_transport::TcpStream::accept_on(port).await
-                .map_err(|_| MigrationResult::NetworkError)?;
-            
-            log::debug!("TCP connection accepted, waiting for hello message");
-            
-            // Read hello message
-            let mut buffer = [0u8; 64];
-            let n = stream.read(&mut buffer).await
-                .map_err(|_| MigrationResult::NetworkError)?;
-            
-            let hello_msg = core::str::from_utf8(&buffer[..n]).unwrap_or("invalid utf8");
-            log::debug!("Received hello message: {}", hello_msg);
-            
-            // Send response
-            let response_msg = b"HELLO_FROM_DEST";
-            log::debug!("Sending response: {:?}", core::str::from_utf8(response_msg).unwrap_or("invalid utf8"));
-            
-            // Write all bytes
-            let mut written = 0;
-            while written < response_msg.len() {
-                let n = stream.write(&response_msg[written..]).await
-                    .map_err(|_| MigrationResult::NetworkError)?;
-                written += n;
-            }
-            
-            log::debug!("Response sent successfully");
-        }
-        
-        log::debug!("exchange_msk completed successfully");
-        return Ok(());
-    }
-    
-    #[cfg(not(feature = "AzCVMEmu"))]
-    {
-        // No debug prints in non-AzCVMEmu mode
-        let _exchange_info = exchange_info(info)?;
-        // TODO: Implement actual TDX-based migration key exchange
-        // This would use the real TDX functions and exchange keys properly
-    }
-    
     Ok(())
 }
 
