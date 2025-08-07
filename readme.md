@@ -117,6 +117,11 @@ To use virtio-serial instead of virtio-vsock for the guest-host communication:
 cargo image --no-default-features --features stack-guard,virtio-serial
 ```
 
+To use vmcall-raw for the guest-host communication:
+```
+cargo image --no-default-features --features stack-guard,vmcall-raw
+```
+
 ### Build for Azure CVM Emulation (AzCVMEmu)
 
 For development and testing in Azure TDX CVM environments where TDX hardware interface is not fully exposed, you can build MigTD with emulation support:
@@ -230,6 +235,11 @@ If environment variables are not set or files are missing, MigTD will display cl
 - `MIGTD_ROOT_CA_FILE environment variable not set`
 - `Policy file not found: /path/to/file`
 - `Root CA file not found: /path/to/file`
+
+To use vmcall-raw for the guest-host communication:
+```
+cargo image --no-default-features --features stack-guard,vmcall-raw
+```
 
 ### Generate SERVTD_INFO_HASH
 
