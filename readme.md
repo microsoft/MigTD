@@ -131,7 +131,7 @@ cargo image --no-default-features --features vmcall-raw,stack-guard,main,test_di
 
 To build MigTD as a standard Rust app that can run in Azure TDX CVM environment, for development and testing purpose:
 ```
-cargo build --no-default-features --features AzCVMEmu
+cargo image --no-default-features --features vmcall-raw,stack-guard,main,test_disable_ra_and_accept_all --log-level info --image-format igvm --fw-top 0x3000000
 ```
 The detailed AzCVMEmu mode instructions can be found in `doc/AzCVMEmu.md`.
 
