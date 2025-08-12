@@ -193,12 +193,25 @@ fn handle_pre_mig() {
         // The async task waiting for VMM response is always in the queue
         let new_request = PENDING_REQUEST.lock().take();
 
-        if let Some(request) = new_request {
-            async_runtime::add_task(async move {
-                let status = exchange_msk(&request)
-                    .await
-                    .map(|_| MigrationResult::Success)
-                    .unwrap_or_else(|e| e);
+            if let Some(request) = new_request {
+                async_runtime::add_task(async move {
+
+                    // Determine the status based on enabled features
+                    let status = {
+                        #[cfg(feature = "test_reject_all")]
+                        {
+                            // Don't execute exchange_msk, just return Unsupported
+                            MigrationResult::Unsupported
+                        }
+                        #[cfg(not(feature = "test_reject_all"))]
+                        {
+                            // Normal behavior - execute and use the actual result
+                            let exchange_result = exchange_msk(&request).await;
+                            exchange_result
+                                .map(|_| MigrationResult::Success)
+                                .unwrap_or_else(|e| e)
+                        }
+                    };
 
                 #[cfg(feature = "vmcall-raw")]
                 {
