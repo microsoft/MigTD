@@ -8,6 +8,11 @@ edition = "2021"
 name = "migtd"
 required-features = ["main"]
 
+[[bin]]
+name = "migtd-cvmemu"
+path = "src/bin/migtd/cvmemu.rs"
+required-features = ["AzCVMEmu"]
+
 [dev-dependencies]
 attestation = { path = "../attestation", default-features = false, features = ["test"] }
 
@@ -29,6 +34,8 @@ r-efi = "3.2.0"
 scroll = { version = "0.10", default-features = false, features = ["derive"]}
 spin = "0.9.2"
 tdx-tdcall = { path = "../../deps/td-shim/tdx-tdcall"}
+# Use emulated tdx-tdcall for AzCVMEmu feature
+tdx-tdcall-emu = { path = "../../deps/td-shim-AzCVMEmu/tdx-tdcall", optional = true, features = ["tcp-emulation"], package = "tdx-tdcall-emu" }
 td-logger = { path = "../../deps/td-shim/td-logger", features = ["tdx"] }
 td-layout = { path = "../../deps/td-shim/td-layout"}
 td-loader = { path = "../../deps/td-shim/td-loader"}
@@ -41,7 +48,7 @@ td-shim-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim", optional = true }
 virtio = { path="../devices/virtio" }
 vsock = { path="../devices/vsock", default-features = false, optional = true }
 virtio_serial = { path="../devices/virtio_serial", optional = true }
-vmcall_raw = { path="../devices/vmcall_raw", optional = true }
+vmcall_raw = { path="../devices/vmcall_raw", optional = true, default-features = false }
 tcp_transport = { path="../devices/tcp_transport", optional = true }
 env_logger = { version = "0.10.0", optional = true }
 tokio = { version = "1.0", features = ["rt", "rt-multi-thread"], optional = true }
@@ -55,7 +62,20 @@ td-benchmark = { path = "../../deps/td-shim/devtools/td-benchmark", default-feat
 
 [features]
 default = ["virtio-vsock"]
-AzCVMEmu = ["main", "td-shim-interface-emu", "td-shim-emu", "az-tdx-vtpm", "tcp_transport/AzCVMEmu", "tcp_transport/std", "env_logger", "tokio", "attestation/AzCVMEmu", "crypto/AzCVMEmu", "policy/AzCVMEmu"]
+AzCVMEmu = [
+	"main",                      # Pull in items gated by `feature = \"main\"` (e.g., exchange_msk)
+	"attestation/AzCVMEmu",
+	"crypto/AzCVMEmu",
+	"policy/AzCVMEmu",
+	"vmcall-raw",
+	"vmcall_raw/AzCVMEmu",
+	"td-shim-interface-emu",
+	"td-shim-emu",
+	"tdx-tdcall-emu",
+	"az-tdx-vtpm",
+	"env_logger",
+	"tokio",
+]
 cet-shstk = ["td-payload/cet-shstk"]
 coverage = ["minicov"]
 main = ["attestation", "policy/log"]

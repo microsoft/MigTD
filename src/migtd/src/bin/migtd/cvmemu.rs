@@ -9,11 +9,87 @@ use std::process;
 
 #[cfg(feature = "AzCVMEmu")]
 use migtd::migration::data::MigrationInformation;
-use migtd::migration::session::{exchange_msk, REQUESTS};
+use migtd::migration::session::{exchange_msk, report_status, azcvmemu_set_pending_request};
+use migtd::migration::event;
 use migtd::migration::{MigrationResult, MigtdMigrationInformation};
 use migtd;
 
-use crate::{basic_info, do_measurements};
+#[cfg(feature = "AzCVMEmu")]
+use tdx_tdcall_emu::{init_tcp_emulation_with_mode, start_tcp_server_sync, TcpEmulationMode};
+use tdx_tdcall_emu::tcp_emulation::{set_emulated_mig_request, EmuMigRequest};
+
+// Local copies of basic info and measurement helpers for AzCVMEmu binary
+const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const TAGGED_EVENT_ID_POLICY: u32 = 0x1;
+const TAGGED_EVENT_ID_ROOT_CA: u32 = 0x2;
+const TAGGED_EVENT_ID_TEST: u32 = 0x32;
+
+fn basic_info() {
+    log::info!("MigTD Version - {}\n", MIGTD_VERSION);
+}
+
+// Helper to convert a MigrationResult by reference into its u8 code without moving it
+fn migration_result_code(e: &MigrationResult) -> u8 {
+    match e {
+        MigrationResult::Success => 0,
+        MigrationResult::InvalidParameter => 1,
+        MigrationResult::Unsupported => 2,
+        MigrationResult::OutOfResource => 3,
+        MigrationResult::TdxModuleError => 4,
+        MigrationResult::NetworkError => 5,
+        MigrationResult::SecureSessionError => 6,
+        MigrationResult::MutualAttestationError => 7,
+        MigrationResult::PolicyUnsatisfiedError => 8,
+        MigrationResult::InvalidPolicyError => 9,
+    }
+}
+
+fn do_measurements() {
+    // Get the event log recorded by firmware
+    let event_log = migtd::event_log::get_event_log_mut().expect("Failed to get the event log");
+
+    if cfg!(feature = "test_disable_ra_and_accept_all") {
+        measure_test_feature(event_log);
+        return;
+    }
+
+    // Get migration td policy from CFV and measure it into RMTR
+    get_policy_and_measure(event_log);
+
+    // Get root certificate from CFV and measure it into RMTR
+    get_ca_and_measure(event_log);
+}
+
+fn measure_test_feature(event_log: &mut [u8]) {
+    use migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT;
+    // Measure and extend the migtd test feature to RTMR
+    migtd::event_log::write_tagged_event_log(
+        event_log,
+        TAGGED_EVENT_ID_TEST,
+        TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
+    )
+    .expect("Failed to log migtd test feature");
+}
+
+fn get_policy_and_measure(event_log: &mut [u8]) {
+    // Read migration policy from CFV
+    let policy = migtd::config::get_policy().expect("Fail to get policy from CFV\n");
+
+    // Measure and extend the migration policy to RTMR
+    migtd::event_log::write_tagged_event_log(event_log, TAGGED_EVENT_ID_POLICY, policy)
+        .expect("Failed to log migration policy");
+}
+
+fn get_ca_and_measure(event_log: &mut [u8]) {
+    let root_ca = migtd::config::get_root_ca().expect("Fail to get root certificate from CFV\n");
+
+    // Measure and extend the root certificate to RTMR
+    migtd::event_log::write_tagged_event_log(event_log, TAGGED_EVENT_ID_ROOT_CA, root_ca)
+        .expect("Failed to log SGX root CA\n");
+
+    attestation::root_ca::set_ca(root_ca).expect("Invalid root certificate\n");
+}
 
 /// AzCVMEmu entry point - standard Rust main function
 pub fn main() {
@@ -245,8 +321,78 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
         log::info!("  Destination Port: {}", port);
     }
     
-    // Create MigrationInformation with fields required for AzCVMEmu
-    // Note: The exact fields required depend on which feature flags are active
+    log::info!("DEBUG: About to initialize TCP emulation configuration");
+    
+    // Debug: Check what values we have
+    log::info!("DEBUG: destination_ip = {:?}, destination_port = {:?}", destination_ip, destination_port);
+    log::info!("DEBUG: is_source = {}", is_source);
+    
+    // Determine IP and port (either from command line or use defaults)
+    let tcp_ip = destination_ip.as_deref().unwrap_or("127.0.0.1");
+    let tcp_port = destination_port.unwrap_or(8001);
+    
+    log::info!("Configuring TCP emulation for tdcall layer with address: {}:{}", tcp_ip, tcp_port);
+    
+    // Configure TCP emulation mode
+    let mode = if is_source { 
+        TcpEmulationMode::Client 
+    } else { 
+        TcpEmulationMode::Server 
+    };
+    log::info!("DEBUG: Mode set to: {:?}", mode);
+    
+    // Initialize TCP emulation
+    if let Err(e) = init_tcp_emulation_with_mode(tcp_ip, tcp_port, mode) {
+        log::error!("Failed to initialize TCP emulation: {}", e);
+        return None;
+    }
+    log::info!("DEBUG: TCP emulation initialized successfully");
+    
+    // Handle connection logic based on role
+    log::info!("DEBUG: Checking if is_source = {}", is_source);
+    if !is_source {
+        // Destination mode: start TCP server
+        log::info!("DEBUG: About to start TCP server");
+        let addr = format!("{}:{}", tcp_ip, tcp_port);
+        log::info!("Starting TCP server for destination mode on: {}", addr);
+        match start_tcp_server_sync(&addr) {
+            Ok(_) => {
+                log::info!("TCP server started successfully on: {}", addr);
+            }
+            Err(e) => {
+                log::error!("Failed to start TCP server: {:?}", e);
+                return None;
+            }
+        }
+    } else {
+        // Source mode: connect to destination server
+        log::info!("DEBUG: Source mode - attempting to connect to destination server");
+        let addr = format!("{}:{}", tcp_ip, tcp_port);
+        log::info!("Connecting to destination server at: {}", addr);
+        
+        // For source mode, establish the TCP client connection
+        use tdx_tdcall_emu::tcp_emulation::connect_tcp_client;
+        match connect_tcp_client() {
+            Ok(_) => {
+                log::info!("Successfully connected to destination server at: {}", addr);
+            }
+            Err(e) => {
+                log::error!("Failed to connect to destination server at {}: {:?}", addr, e);
+                return None;
+            }
+        }
+    }
+
+    // Seed waitforrequest emulation with the parsed MigrationInformation
+    set_emulated_mig_request(EmuMigRequest {
+        request_id: mig_info.mig_request_id,
+        migration_source: mig_info.migration_source as u8,
+        target_td_uuid: mig_info.target_td_uuid,
+        binding_handle: mig_info.binding_handle,
+    });
+    
+    // Create MigrationInformation without AzCVMEmu-specific fields
+    // The TCP configuration is now handled globally
     Some(MigrationInformation { 
         mig_info,
         #[cfg(all(any(feature = "vmcall-vsock", feature = "virtio-vsock"), not(feature = "AzCVMEmu")))]
@@ -258,10 +404,6 @@ fn parse_commandline_args() -> Option<MigrationInformation> {
         },
         #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
         mig_policy: None,
-        #[cfg(feature = "AzCVMEmu")]
-        destination_ip,
-        #[cfg(feature = "AzCVMEmu")]
-        destination_port,
     })
 }
 
@@ -279,8 +421,8 @@ fn print_usage() {
     println!("  --binding, -b HANDLE       Set binding handle as hex or decimal (default: 0x1234)");
     println!("  --policy-id, -p ID         Set migration policy ID (default: 0)");
     println!("  --comm-id, -c ID           Set communication ID (default: 0)");
-    println!("  --dest-ip, -d IP           Set destination IP address for connection (default: none)");
-    println!("  --dest-port, -t PORT       Set destination port for connection (default: none)");
+    println!("  --dest-ip, -d IP           Set destination IP address for connection (default: 127.0.0.1)");
+    println!("  --dest-port, -t PORT       Set destination port for connection (default: 8001)");
     println!("  --help, -h                 Show this help message");
     println!();
     println!("Examples:");
@@ -288,7 +430,7 @@ fn print_usage() {
     println!("  export MIGTD_ROOT_CA_FILE=/path/to/root_ca.bin");
     println!("  ./migtd --role source --request-id 42");
     println!("  ./migtd -m destination -r 42 -b 0x5678");
-    println!("  ./migtd --role source --dest-ip 192.168.1.100 --dest-port 8080");
+    println!("  ./migtd --role source --dest-ip 192.168.1.100 --dest-port 8001");
 }
 
 fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
@@ -298,60 +440,70 @@ fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
     let is_source = mig_info.mig_info.migration_source != 0;
     log::info!("Role: {}", if is_source { "Source" } else { "Destination" });
 
+    // Register the vmcall interrupt callback used by vmcall-raw emulation
+    event::register_callback();
+
     // Extract request ID before moving mig_info
     let request_id = mig_info.mig_info.mig_request_id;
-    
-    // Add the request ID to the tracking set for proper session management
-    REQUESTS.lock().insert(request_id);
-    
-    // For AzCVMEmu, we'll create an async runtime and spawn the task
+
+    // Seed the pending request for wait_for_request() path
+    azcvmemu_set_pending_request(mig_info);
+
+    // For AzCVMEmu, create an async runtime and run the standard flow once
     log::info!("Creating Tokio runtime...");
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     log::debug!("Tokio runtime created successfully");
     
-    log::info!("Running migration key exchange...");
-    log::debug!("About to spawn exchange_msk (async) for request ID: {}", request_id);
-    
-    // Use async approach with spawn and block_on for the final result
-    let result = rt.block_on(async {
-        log::debug!("Inside async block, spawning exchange_msk task");
-        
-        // Spawn the exchange_msk task on the runtime's thread pool
-        let handle = tokio::spawn(async move {
-            log::debug!("exchange_msk task started for request ID: {}", mig_info.mig_info.mig_request_id);
-            let result = exchange_msk(&mig_info).await;
-            log::debug!("exchange_msk task completed for request ID: {}", mig_info.mig_info.mig_request_id);
-            result
-        });
-        
-        // Await the spawned task
-        match handle.await {
-            Ok(result) => {
-                log::debug!("Spawned task completed successfully");
-                result
+    log::info!("Running migration flow (wait → exchange → report)...");
+
+    // Run the standard sequence once for the single seeded request
+    let exit_code: i32 = rt.block_on(async move {
+        match migtd::migration::session::wait_for_request().await {
+            Ok(req) => {
+                // Call exchange_msk() and log its immediate outcome
+                let res = exchange_msk(&req).await;
+                match &res {
+                    Ok(_) => log::info!("exchange_msk() returned Ok"),
+                    Err(e) => log::error!(
+                        "exchange_msk() returned error code {}",
+                        migration_result_code(e)
+                    ),
+                }
+                let status = res
+                    .map(|_| MigrationResult::Success)
+                    .unwrap_or_else(|e| e);
+
+                // Derive a numeric code without moving `status`
+                let status_code_u8 = status as u8;
+
+                // Report status back via vmcall-raw emulation
+                log::info!(
+                    "Calling report_status(status_code={}, request_id={})",
+                    status_code_u8,
+                    req.mig_info.mig_request_id
+                );
+                if let Err(e) = report_status(status_code_u8, req.mig_info.mig_request_id).await {
+                    log::warn!("report_status failed with code {}", e as u8);
+                } else {
+                    log::info!("report_status completed successfully");
+                }
+
+                if status_code_u8 == MigrationResult::Success as u8 {
+                    log::info!("Migration key exchange successful!");
+                    0
+                } else {
+                    let status_code = status_code_u8 as i32;
+                    log::error!("Migration key exchange failed with code: {}", status_code);
+                    status_code
+                }
             }
-            Err(join_error) => {
-                log::error!("Spawned task failed with join error: {:?}", join_error);
-                Err(MigrationResult::InvalidParameter)
+            Err(e) => {
+                let status_code = e as u8 as i32;
+                log::error!("wait_for_request failed with code: {}", status_code);
+                status_code
             }
         }
     });
-    
-    match &result {
-        Ok(_) => log::debug!("exchange_msk returned: Ok for request ID: {}", request_id),
-        Err(_) => log::debug!("exchange_msk returned: Err for request ID: {}", request_id),
-    }
-    
-    // Process the result and exit with appropriate status code
-    match result {
-        Ok(_) => {
-            log::info!("Migration key exchange successful!");
-            process::exit(0);
-        }
-        Err(e) => {
-            let status_code = e as u8;
-            log::error!("Migration key exchange failed with code: {}", status_code);
-            process::exit(status_code as i32);
-        }
-    }
+
+    process::exit(exit_code);
 }

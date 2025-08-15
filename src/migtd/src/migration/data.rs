@@ -238,10 +238,6 @@ pub struct MigrationInformation {
     pub mig_socket_info: MigtdStreamSocketInfo,
     #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     pub mig_policy: Option<MigtdMigpolicy>,
-    #[cfg(feature = "AzCVMEmu")]
-    pub destination_ip: Option<String>,
-    #[cfg(feature = "AzCVMEmu")]
-    pub destination_port: Option<u16>,
 }
 
 impl MigrationInformation {

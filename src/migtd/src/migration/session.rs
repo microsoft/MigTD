@@ -15,23 +15,22 @@ use event::VMCALL_SERVICE_FLAG;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use td_payload::mm::shared::SharedMemory;
-use tdx_tdcall::{
-    td_call,
-    tdx::{self, tdcall_servtd_wr},
-    TdcallArgs,
-};
+// The manual per-request completion flag has been removed for AzCVMEmu builds.
+// The emulator relies on interrupt (vector VMCALL_SERVICE_VECTOR) and buffer status.
+// Under AzCVMEmu, use the emulated tdx interface to avoid real VMCALLs.
+#[cfg(feature = "AzCVMEmu")]
+use tdx_tdcall_emu::tdx;
+// In non-emulation builds, use the original tdx-tdcall interfaces.
+#[cfg(not(feature = "AzCVMEmu"))]
+use tdx_tdcall::tdx;
+#[cfg(not(feature = "AzCVMEmu"))]
+use tdx_tdcall::{td_call, TdcallArgs};
 use zerocopy::AsBytes;
 
 type Result<T> = core::result::Result<T, MigrationResult>;
 
 use super::{data::*, *};
 use crate::ratls;
-
-#[cfg(feature = "AzCVMEmu")]
-use tcp_transport::{self, TcpStream};
-
-#[cfg(feature = "AzCVMEmu")]
-use async_io::{AsyncRead, AsyncWrite};
 
 const TDCALL_STATUS_SUCCESS: u64 = 0;
 const TDCS_FIELD_MIG_DEC_KEY: u64 = 0x9810_0003_0000_0010;
@@ -48,6 +47,11 @@ const TDX_VMCALL_VMM_SUCCESS: u32 = 1;
 lazy_static! {
     pub static ref REQUESTS: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
 }
+
+// Keep compatibility with AzCVMEmu callers without diverging from origin/main logic.
+// The emulator now injects requests via the tdvmcall emulation paths, so this is a no-op.
+#[cfg(feature = "AzCVMEmu")]
+pub fn azcvmemu_set_pending_request(_info: MigrationInformation) {}
 
 struct ExchangeInformation {
     min_ver: u16,
@@ -133,37 +137,88 @@ pub fn query() -> Result<()> {
 }
 
 pub async fn wait_for_request() -> Result<MigrationInformation> {
-    #[cfg(feature = "AzCVMEmu")]
-    {
-        // AzCVMEmu mode should never call this function
-        return Err(MigrationResult::Unsupported);
-    }
-
     #[cfg(feature = "vmcall-raw")]
     {
-        let num_rsp_pages: usize = 1;
-        let mut rsp_mem = SharedMemory::new(num_rsp_pages).ok_or(MigrationResult::OutOfResource)?;
+        // Allocate response buffer
+        #[cfg(not(feature = "AzCVMEmu"))]
+        let mut rsp_mem = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
+        #[cfg(feature = "AzCVMEmu")]
+        let mut rsp_vec: alloc::vec::Vec<u8> = alloc::vec![0u8; 4096];
 
-        let _ = VmcallServiceResponse::new(rsp_mem.as_mut_bytes(), VMCALL_SERVICE_MIGTD_GUID)
+        // Get a mutable byte slice for the response buffer and initialize header
+        #[cfg(not(feature = "AzCVMEmu"))]
+        let rsp_bytes: &mut [u8] = rsp_mem.as_mut_bytes();
+        #[cfg(feature = "AzCVMEmu")]
+        let rsp_bytes: &mut [u8] = &mut rsp_vec[..];
+
+        let _ = VmcallServiceResponse::new(rsp_bytes, VMCALL_SERVICE_MIGTD_GUID)
             .ok_or(MigrationResult::InvalidParameter)?;
 
-        tdx::tdvmcall_migtd_waitforrequest(rsp_mem.as_mut_bytes(), event::VMCALL_SERVICE_VECTOR)?;
+        // Kick off wait-for-request
+        tdx::tdvmcall_migtd_waitforrequest(rsp_bytes, event::VMCALL_SERVICE_VECTOR)?;
 
         poll_fn(|_cx| {
+            // First, for AzCVMEmu builds, accept completion based on buffer status alone.
+            #[cfg(feature = "AzCVMEmu")]
+            {
+                let private_mem_emu: &[u8] = &rsp_bytes[..];
+                let rsp = VmcallServiceResponse::try_read(private_mem_emu)
+                    .ok_or(MigrationResult::InvalidParameter)?;
+                if rsp.read_guid() != VMCALL_SERVICE_MIGTD_GUID.as_bytes() {
+                    return Poll::Ready(Err(MigrationResult::InvalidParameter));
+                }
+                let wfr = rsp
+                    .read_data::<ServiceMigWaitForReqResponse>(0)
+                    .ok_or(MigrationResult::InvalidParameter)?;
+
+                if wfr.data_status == TDX_VMCALL_VMM_SUCCESS {
+                    if wfr.request_type != 0 {
+                        return Poll::Ready(Err(MigrationResult::InvalidParameter));
+                    }
+
+                    let request_id = wfr.mig_request_id;
+                    VMCALL_MIG_REPORTSTATUS_FLAGS
+                        .lock()
+                        .insert(request_id, AtomicBool::new(false));
+
+                    let mut mig_info = MigtdMigrationInformation {
+                        mig_request_id: request_id,
+                        migration_source: wfr.migration_source,
+                        _pad: [0, 0, 0, 0, 0, 0, 0],
+                        target_td_uuid: [0, 0, 0, 0],
+                        binding_handle: wfr.binding_handle,
+                        mig_policy_id: 0,
+                        communication_id: 0,
+                    };
+                    for i in 0..4 {
+                        mig_info.target_td_uuid[i] = wfr.target_td_uuid[i];
+                    }
+
+                    if REQUESTS.lock().contains(&request_id) {
+                        return Poll::Pending;
+                    }
+                    REQUESTS.lock().insert(request_id);
+                    return Poll::Ready(Ok(MigrationInformation { mig_info }));
+                }
+            }
+
+            // Fallback/normal path: wait for interrupt, then parse
             if VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
                 VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
             } else {
                 return Poll::Pending;
             }
 
+            // Copy/parse response
+            #[cfg(not(feature = "AzCVMEmu"))]
             let private_mem = rsp_mem
                 .copy_to_private_shadow()
                 .ok_or(MigrationResult::OutOfResource)?;
+            #[cfg(feature = "AzCVMEmu")]
+            let private_mem: &[u8] = &rsp_bytes[..];
 
-            // Parse out the response data
             let rsp = VmcallServiceResponse::try_read(private_mem)
                 .ok_or(MigrationResult::InvalidParameter)?;
-            // Check the GUID of the reponse
             if rsp.read_guid() != VMCALL_SERVICE_MIGTD_GUID.as_bytes() {
                 return Poll::Ready(Err(MigrationResult::InvalidParameter));
             }
@@ -175,7 +230,6 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
             if wfr.data_status != TDX_VMCALL_VMM_SUCCESS {
                 return Poll::Pending;
             }
-
             if wfr.request_type != 0 {
                 return Poll::Ready(Err(MigrationResult::InvalidParameter));
             }
@@ -194,24 +248,21 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
                 mig_policy_id: 0,
                 communication_id: 0,
             };
-
             for i in 0..4 {
                 mig_info.target_td_uuid[i] = wfr.target_td_uuid[i];
             }
-
-            let mig_info = MigrationInformation { mig_info };
 
             if REQUESTS.lock().contains(&request_id) {
                 Poll::Pending
             } else {
                 REQUESTS.lock().insert(request_id);
-                Poll::Ready(Ok(mig_info))
+                Poll::Ready(Ok(MigrationInformation { mig_info }))
             }
         })
         .await
     }
 
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
+    #[cfg(not(feature = "vmcall-raw"))]
     {
         // Allocate shared page for command and response buffer
         let mut cmd_mem = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
@@ -324,12 +375,27 @@ pub async fn report_status(status: u8, request_id: u64) -> Result<()> {
     let data_status: u32 = 0;
     let data_length: u32 = 0;
 
-    let mut data_buffer = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
+    // In AzCVMEmu host mode, avoid SharedMemory to prevent allocation issues; use a simple Vec
+    #[cfg(feature = "AzCVMEmu")]
+    let mut data_vec: alloc::vec::Vec<u8> = alloc::vec![0u8; 64];
+    #[cfg(feature = "AzCVMEmu")]
+    let data_buffer: &mut [u8] = &mut data_vec[..];
 
-    let data_buffer = data_buffer.as_mut_bytes();
+    // In TD payload mode, use shared memory page as usual
+    #[cfg(not(feature = "AzCVMEmu"))]
+    let mut data_page = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
+    #[cfg(not(feature = "AzCVMEmu"))]
+    let data_buffer: &mut [u8] = data_page.as_mut_bytes();
 
     data_buffer[0..4].copy_from_slice(&u32::to_le_bytes(data_status));
     data_buffer[4..8].copy_from_slice(&u32::to_le_bytes(data_length));
+
+    #[cfg(feature = "AzCVMEmu")]
+    log::info!(
+        "report_status: pre tdvmcall_migtd_reportstatus(req_id={}, status={})",
+        request_id,
+        status
+    );
 
     tdx::tdvmcall_migtd_reportstatus(
         request_id,
@@ -338,23 +404,65 @@ pub async fn report_status(status: u8, request_id: u64) -> Result<()> {
         event::VMCALL_SERVICE_VECTOR,
     )?;
 
+    #[cfg(feature = "AzCVMEmu")]
+    log::info!("report_status: tdvmcall_migtd_reportstatus returned, start polling");
+
     poll_fn(|_cx| -> Poll<Result<()>> {
+        // In AzCVMEmu, the emulator writes the completion (data_status=1) into the provided
+        // buffer synchronously before triggering the interrupt. Accept that as completion to
+        // avoid relying solely on the ISR-delivered flag which may not always be observed in
+        // host-mode. This mirrors the VMM shared-memory semantics.
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            let (data_status, _data_length) = process_buffer(data_buffer);
+            if data_status == TDX_VMCALL_VMM_SUCCESS {
+                log::info!(
+                    "report_status(AzCVMEmu): data_status indicates completion; finalizing"
+                );
+                // Best-effort cleanup of per-request flag entry if present.
+                let _ = VMCALL_MIG_REPORTSTATUS_FLAGS.lock().remove(&request_id);
+                return Poll::Ready(Ok(()));
+            }
+        }
+
+        // Fallback to the normal interrupt-driven completion path.
         if let Some(flag) = VMCALL_MIG_REPORTSTATUS_FLAGS.lock().get(&request_id) {
             if flag.load(Ordering::SeqCst) {
+                log::info!(
+                    "report_status: flag set for request_id={}, clearing and proceeding",
+                    request_id
+                );
                 flag.store(false, Ordering::SeqCst);
             } else {
+                log::debug!(
+                    "report_status: flag not set yet for request_id={}, pending",
+                    request_id
+                );
                 return Poll::Pending;
             }
         } else {
+            log::warn!(
+                "report_status: no flag entry for request_id={}, pending",
+                request_id
+            );
             return Poll::Pending;
         }
 
         let (data_status, _data_length) = process_buffer(data_buffer);
+        #[cfg(feature = "AzCVMEmu")]
+        log::info!(
+            "report_status: interrupt observed, data_status={}",
+            data_status
+        );
 
         if data_status != TDX_VMCALL_VMM_SUCCESS {
             return Poll::Pending;
         }
 
+        log::info!(
+            "report_status: removing flag entry for request_id={}",
+            request_id
+        );
         VMCALL_MIG_REPORTSTATUS_FLAGS.lock().remove(&request_id);
 
         Poll::Ready(Ok(()))
@@ -414,43 +522,20 @@ pub fn report_status(status: u8, request_id: u64) -> Result<()> {
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     use crate::driver::ticks::with_timeout;
     use core::time::Duration;
-
     const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
 
     let transport;
 
     #[cfg(feature = "AzCVMEmu")]
     {
-        
-        // For AzCVMEmu, use TCP transport with custom destination IP/port if provided
-        // Default to localhost:8000+mig_request_id if not specified
-        let default_host = "127.0.0.1";
-        let default_port = 8000u16.saturating_add(info.mig_info.mig_request_id as u16 % 1000);
-        
-        // Use provided destination IP or fall back to default
-        let host = info.destination_ip.as_deref().unwrap_or(default_host);
-        // Use provided destination port or fall back to default
-        let port = info.destination_port.unwrap_or(default_port);
-        
-        log::info!("Using TCP transport with {}:{}", host, port);
-        
-        if info.is_src() {
-            // Source MigTD connects to destination
-            log::info!("Source MigTD connecting to {}:{}", host, port);
-
-            transport = tcp_transport::TcpStream::connect_to(host, port)
-                .await
-                .map_err(|_| MigrationResult::NetworkError)?;
-
-            log::info!("TCP connection established");
-        } else {
-            // Destination MigTD listens for connection
-            log::info!("Destination MigTD listening on port {}", port);
-            transport = tcp_transport::TcpStream::accept_on(port)
-                .await
-                .map_err(|_| MigrationResult::NetworkError)?;           
-            log::info!("TCP connection accepted");
-        }
+        use vmcall_raw::stream::VmcallRaw;
+        let mut vmcall_raw_instance = VmcallRaw::new_with_mid(info.mig_info.mig_request_id)
+            .map_err(|_e| MigrationResult::InvalidParameter)?;
+        vmcall_raw_instance
+            .connect()
+            .await
+            .map_err(|_e| MigrationResult::InvalidParameter)?;
+        transport = vmcall_raw_instance;
     }
 
     #[cfg(not(feature = "AzCVMEmu"))]
@@ -505,86 +590,46 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
 
     let mut remote_information = ExchangeInformation::default();
     
-    //Temporarily skip MSK retrieval in AzCVMEmu
-    #[cfg(feature = "AzCVMEmu")]
-    let mut exchange_information = {
-        log::warn!("Using mock ExchangeInformation in AzCVMEmu mode");
-        ExchangeInformation::default()
-    };
-
-    #[cfg(not(feature = "AzCVMEmu"))]
+    // Always compute real exchange information; under AzCVMEmu the tdcall_* functions are emulated
     let mut exchange_information = exchange_info(&info)?;
 
     // Establish TLS layer connection and negotiate the MSK
     if info.is_src() {
         // TLS client
-        #[cfg(feature = "AzCVMEmu")]
         log::info!("Creating RATLS client");
         let mut ratls_client =
             ratls::client(transport).map_err(|_| MigrationResult::SecureSessionError)?;
-
         // MigTD-S send Migration Session Forward key to peer
-        #[cfg(feature = "AzCVMEmu")]
-        {
-            log::debug!("About to send MSK to peer");
-            log::info!("ExchangeInformation size: {}", size_of::<ExchangeInformation>());
-            log::debug!("ExchangeInformation bytes ptr: {:?}", exchange_information.as_bytes().as_ptr());
-            log::debug!("ExchangeInformation bytes len: {}", exchange_information.as_bytes().len());
-            log::debug!("About to call ratls_client.read()");
-        }
-        // Remove timeout for AzCVMEmu mode to avoid crashes
-        #[cfg(feature = "AzCVMEmu")]
-        let write_result = ratls_client.write(exchange_information.as_bytes()).await;        
-        #[cfg(not(feature = "AzCVMEmu"))]
-        let write_result = with_timeout(
+        let write_timeout = with_timeout(
             TLS_TIMEOUT,
             ratls_client.write(exchange_information.as_bytes()),
-        ).await?;
-        
-        match write_result {
-            Ok(_) => {
-                #[cfg(feature = "AzCVMEmu")]
-                log::info!("ratls_client.write() completed successfully");
+        ).await;
+        match write_timeout {
+            Ok(Ok(_)) => (),
+            Ok(Err(_e)) => {
+                return Err(MigrationResult::SecureSessionError);
             }
-            Err(e) => {
-                #[cfg(feature = "AzCVMEmu")]
-                log::error!("ratls_client.write() failed with error: {:?}", e);
-                #[cfg(not(feature = "AzCVMEmu"))]
-                let _ = e; // Suppress unused variable warning
+            Err(_to) => {
                 return Err(MigrationResult::SecureSessionError);
             }
         }
-        #[cfg(not(feature = "AzCVMEmu"))]
-        let size = with_timeout(
+
+        let read_timeout = with_timeout(
             TLS_TIMEOUT,
             ratls_client.read(remote_information.as_bytes_mut()),
-        )
-        .await??;     
-        #[cfg(feature = "AzCVMEmu")]
-        let size = match ratls_client.read(remote_information.as_bytes_mut()).await {
-            Ok(size) => {
-                log::info!("ratls_client.read() completed successfully, read {} bytes", size);
-                size
+        ).await;
+        let size = match read_timeout {
+            Ok(Ok(sz)) => sz,
+            Ok(Err(_e)) => {
+                return Err(MigrationResult::SecureSessionError);
             }
-            Err(e) => {
-                log::error!("ratls_client.read() failed with error: {:?}", e);
+            Err(_to) => {
                 return Err(MigrationResult::SecureSessionError);
             }
         };
         if size < size_of::<ExchangeInformation>() {
             return Err(MigrationResult::NetworkError);
         }
-        #[cfg(feature = "AzCVMEmu")]
-        log::info!("Shutting down RATLS client transport");
-        ratls_client.transport_mut().shutdown().await
-            .map_err(|_e| MigrationResult::InvalidParameter)?;
-
-        #[cfg(not(feature = "AzCVMEmu"))]
-        #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-        ratls_client.transport_mut().shutdown().await?;
-
-        #[cfg(not(feature = "AzCVMEmu"))]
-        #[cfg(feature = "vmcall-raw")]
         ratls_client
             .transport_mut()
             .shutdown()
@@ -592,69 +637,39 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             .map_err(|_e| MigrationResult::InvalidParameter)?;
     } else {
         // TLS server
-        #[cfg(feature = "AzCVMEmu")]
         log::info!("Creating RATLS server");
         let mut ratls_server =
             ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;
-
-        #[cfg(feature = "AzCVMEmu")]
-        log::debug!("About to call ratls_server.write()");
-        
-        // Remove timeout for AzCVMEmu mode to avoid crashes
-        #[cfg(feature = "AzCVMEmu")]
-        let write_result = ratls_server.write(exchange_information.as_bytes()).await;        
-        #[cfg(not(feature = "AzCVMEmu"))]
-        let write_result = with_timeout(
+        let write_timeout = with_timeout(
             TLS_TIMEOUT,
             ratls_server.write(exchange_information.as_bytes()),
-        ).await?;
-        
-        match write_result {
-            Ok(_) => {
-                #[cfg(feature = "AzCVMEmu")]
-                log::info!("ratls_server.write() completed successfully");
+        ).await;
+        match write_timeout {
+            Ok(Ok(_)) => (),
+            Ok(Err(_e)) => {
+                return Err(MigrationResult::SecureSessionError);
             }
-            Err(e) => {
-                #[cfg(feature = "AzCVMEmu")]
-                log::error!("ratls_server.write() failed with error: {:?}", e);
-                #[cfg(not(feature = "AzCVMEmu"))]
-                let _ = e; // Suppress unused variable warning
+            Err(_to) => {
                 return Err(MigrationResult::SecureSessionError);
             }
         }
-        
-        #[cfg(feature = "AzCVMEmu")]
-        log::debug!("About to call ratls_server.read()");
-        #[cfg(not(feature = "AzCVMEmu"))]
-        let size = with_timeout(
+
+        let read_timeout = with_timeout(
             TLS_TIMEOUT,
             ratls_server.read(remote_information.as_bytes_mut()),
-        )
-        .await??;
-        #[cfg(feature = "AzCVMEmu")]
-        let size = match ratls_server.read(remote_information.as_bytes_mut()).await {
-            Ok(size) => {
-                log::info!("ratls_server.read() completed successfully, read {} bytes", size);
-                size
+        ).await;
+        let size = match read_timeout {
+            Ok(Ok(sz)) => sz,
+            Ok(Err(_e)) => {
+                return Err(MigrationResult::SecureSessionError);
             }
-            Err(e) => {
-                log::error!("ratls_server.read() failed with error: {:?}", e);
+            Err(_to) => {
                 return Err(MigrationResult::SecureSessionError);
             }
         };
         if size < size_of::<ExchangeInformation>() {
             return Err(MigrationResult::NetworkError);
         }
-        #[cfg(feature = "AzCVMEmu")]
-        ratls_server.transport_mut().shutdown().await
-            .map_err(|_e| MigrationResult::InvalidParameter)?;
-
-        #[cfg(not(feature = "AzCVMEmu"))]
-        #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-        ratls_server.transport_mut().shutdown().await?;
-
-        #[cfg(not(feature = "AzCVMEmu"))]
-        #[cfg(feature = "vmcall-raw")]
         ratls_server
             .transport_mut()
             .shutdown()
@@ -663,11 +678,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     }
 
     let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
-    //temporarily skip tdcall
-    #[cfg(not(feature = "AzCVMEmu"))]
     set_mig_version(info, mig_ver)?;
-    //temporarily skip MSK injection
-    #[cfg(not(feature = "AzCVMEmu"))]
     write_msk(&info.mig_info, &remote_information.key)?;
 
     log::info!("Set MSK and report status\n");
@@ -711,7 +722,7 @@ fn read_msk(mig_info: &MigtdMigrationInformation, msk: &mut MigrationSessionKey)
 
 fn write_msk(mig_info: &MigtdMigrationInformation, msk: &MigrationSessionKey) -> Result<()> {
     for idx in 0..msk.fields.len() {
-        tdx::tdcall_servtd_wr(
+    tdx::tdcall_servtd_wr(
             mig_info.binding_handle,
             TDCS_FIELD_MIG_DEC_KEY + idx as u64,
             msk.fields[idx],
@@ -729,19 +740,27 @@ fn write_msk(mig_info: &MigtdMigrationInformation, msk: &MigrationSessionKey) ->
 pub fn tdcall_sys_rd(field_identifier: u64) -> core::result::Result<(u64, u64), TdCallError> {
     const TDVMCALL_SYS_RD: u64 = 0x0000b;
 
-    let mut args = TdcallArgs {
-        rax: TDVMCALL_SYS_RD,
-        rdx: field_identifier,
-        ..Default::default()
-    };
+    #[cfg(not(feature = "AzCVMEmu"))]
+    {
+        let mut args = TdcallArgs {
+            rax: TDVMCALL_SYS_RD,
+            rdx: field_identifier,
+            ..Default::default()
+        };
 
-    let ret = td_call(&mut args);
+        let ret = td_call(&mut args);
 
-    if ret != TDCALL_STATUS_SUCCESS {
-        return Err(ret.into());
+        if ret != TDCALL_STATUS_SUCCESS {
+            return Err(ret.into());
+        }
+
+        Ok((args.rdx, args.r8))
     }
-
-    Ok((args.rdx, args.r8))
+    #[cfg(feature = "AzCVMEmu")]
+    {
+        // Route to emulated function re-exported under tdx
+        tdx::tdcall_sys_rd(field_identifier)
+    }
 }
 
 fn cal_mig_version(
@@ -777,7 +796,7 @@ fn cal_mig_version(
 }
 
 fn set_mig_version(info: &MigrationInformation, mig_ver: u16) -> Result<()> {
-    tdcall_servtd_wr(
+    tdx::tdcall_servtd_wr(
         info.mig_info.binding_handle,
         TDCS_FIELD_MIG_VERSION,
         mig_ver as u64,

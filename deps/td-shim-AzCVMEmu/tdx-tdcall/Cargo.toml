@@ -1,0 +1,30 @@
+[package]
+name = "tdx-tdcall-emu"
+version = "0.1.0"
+edition = "2021"
+authors = ["Intel Corporation"]
+description = "Azure CVM Emulation layer for TDX TDCALL interface - TCP-based emulation for MigTD"
+license = "BSD-2-Clause-Patent"
+
+[dependencies]
+# Original tdx-tdcall for non-emulated functions
+original-tdx-tdcall = { package = "tdx-tdcall", path = "../../td-shim/tdx-tdcall" }
+
+# Core dependencies for emulation (only when tcp-emulation feature is enabled)
+tokio = { version = "1.0", features = ["net", "sync", "time", "rt", "rt-multi-thread", "io-util"], default-features = false, optional = true }
+log = { version = "0.4", default-features = false }
+
+# For compatibility with original tdx-tdcall interface
+bitflags = "2.0"
+spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+interrupt-emu = { path = "../interrupt-emu", package = "interrupt-emu" }
+
+[features]
+default = []
+tcp-emulation = ["tokio"]
+no-std = []
+
+[lib]
+name = "tdx_tdcall_emu"
+path = "src/lib.rs"

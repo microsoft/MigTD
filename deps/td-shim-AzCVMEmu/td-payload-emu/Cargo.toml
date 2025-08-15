@@ -1,0 +1,15 @@
+[package]
+name = "td-payload-emu"
+version = "0.0.0-emu"
+edition = "2021"
+license = "BSD-2-Clause-Patent"
+description = "AzCVMEmu shim for td-payload APIs used by vmcall_raw"
+
+[lib]
+name = "td_payload"
+path = "src/lib.rs"
+
+[dependencies]
+interrupt-emu = { path = "../interrupt-emu", package = "interrupt-emu" }
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+spin = "0.9"

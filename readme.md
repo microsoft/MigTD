@@ -186,7 +186,7 @@ to access vTPM to generate a TDX QUOTE of the HCL virtual firmware, as a stand-i
 
 ```bash
 # Display help information
-sudo ./target/debug/migtd -h
+sudo ./target/debug/migtd-cvmemu -h
 ```
 
 **Command-line Options:**
@@ -218,14 +218,14 @@ sudo ./target/debug/migtd -h
 export MIGTD_POLICY_FILE="/path/to/policy.json"
 export MIGTD_ROOT_CA_FILE="/path/to/root_ca.cer"
 
-# Build and run manually
-cargo build --release --features "AzCVMEmu"
+# Build with AzCVMEmu (disable default features like virtio-vsock)
+cargo build --release --no-default-features --features "AzCVMEmu"
 
-# Terminal 1: Start destination MigTD
-sudo ./target/release/migtd --role destination --request-id 42
+# Terminal 1: Start destination MigTD (host-mode binary)
+sudo ./target/release/migtd-cvmemu --role destination --request-id 42
 
 # Terminal 2: Start source MigTD connecting to the destination
-sudo ./target/release/migtd --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8042
+sudo ./target/release/migtd-cvmemu --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8042
 ```
 
 **Error Handling:**

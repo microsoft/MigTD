@@ -1,9 +1,13 @@
 #!/bin/bash
 
 # MigTD AzCVMEmu Runner Script
-# This script builds and runs MigTD in AzCVMEmu mode
+# This script builds and runs MigTD in AzCVMEmu mode. It can run one side
+# (source or destination) or orchestrate both on localhost.
 
 set -e  # Exit on any error
+
+# Enable core dumps to help diagnose crashes (best-effort)
+ulimit -c unlimited || true
 
 # Default configuration
 DEFAULT_POLICY_FILE="./config/policy.json"
@@ -13,6 +17,12 @@ DEFAULT_REQUEST_ID="1"
 DEFAULT_DEST_IP="127.0.0.1"
 DEFAULT_DEST_PORT="8001"
 DEFAULT_BUILD_MODE="release"
+USE_SUDO=true
+RUN_BOTH=false
+DEFAULT_RUST_BACKTRACE="1"
+# Default RUST_LOG: verbose in debug, info in release; can be overridden by env
+DEFAULT_RUST_LOG_DEBUG="debug"
+DEFAULT_RUST_LOG_RELEASE="info"
 
 # Colors for output
 RED='\033[0;31m'
@@ -36,7 +46,14 @@ show_usage() {
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
     echo "  --debug                      Build in debug mode (default: release)"
     echo "  --release                    Build in release mode (default)"
+    echo "  --both                       Start destination first, then source (same host)"
+    echo "  --no-sudo                    Run without sudo (useful for local testing)"
     echo "  -h, --help                   Show this help message"
+    echo
+    echo "Notes:"
+    echo "  - TPM2TSS flows often require access to /dev/tpmrm0 or tpm2-abrmd."
+    echo "    If those devices are present and you lack permissions, this script will"
+    echo "    automatically enable sudo even if --no-sudo is specified."
     echo
     echo "Examples:"
     echo "  $0                                    # Build release and run as source with defaults"
@@ -57,18 +74,53 @@ check_file() {
     fi
 }
 
+# Detect TPM access needs and force sudo when the current user lacks permissions
+maybe_force_sudo_due_to_tpm() {
+    # Only relevant if user requested no sudo explicitly
+    if [[ "$USE_SUDO" == false ]]; then
+        local need_sudo=false
+        # If TPM resource manager or TPM char devices exist, check perms
+        local devices=(/dev/tpmrm0 /dev/tpm0)
+        for dev in "${devices[@]}"; do
+            if [[ -e "$dev" ]]; then
+                # Require read and write access for typical TPM2TSS usage
+                if [[ ! -r "$dev" || ! -w "$dev" ]]; then
+                    need_sudo=true
+                    break
+                fi
+            fi
+        done
+        # Also check for tpm2-abrmd socket ownership if present
+        if [[ -S "/run/tpm2-abrmd/sessions/tss" && ! -w "/run/tpm2-abrmd/sessions/tss" ]]; then
+            need_sudo=true
+        fi
+        # If user not in 'tss' group and TPM exists, likely need sudo
+        if [[ -e /dev/tpmrm0 || -e /dev/tpm0 ]]; then
+            if ! id -nG "$USER" 2>/dev/null | grep -qw tss; then
+                # Only flip if we already detected a device and permissions may be constrained
+                need_sudo=true
+            fi
+        fi
+
+        if [[ "$need_sudo" == true ]]; then
+            echo -e "${YELLOW}TPM2TSS detected and current user lacks sufficient permissions. Enabling sudo automatically.${NC}"
+            USE_SUDO=true
+        fi
+    fi
+}
+
 # Function to build MigTD
 build_migtd() {
     local build_mode="$1"
     echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
     
     if [[ "$build_mode" == "debug" ]]; then
-        if ! cargo build --features "AzCVMEmu"; then
+        if ! cargo build --features "AzCVMEmu" --no-default-features; then
             echo -e "${RED}Error: Failed to build MigTD in debug mode${NC}" >&2
             exit 1
         fi
     else
-        if ! cargo build --release --features "AzCVMEmu"; then
+        if ! cargo build --release --features "AzCVMEmu" --no-default-features; then
             echo -e "${RED}Error: Failed to build MigTD in release mode${NC}" >&2
             exit 1
         fi
@@ -119,6 +171,14 @@ while [[ $# -gt 0 ]]; do
             BUILD_MODE="release"
             shift
             ;;
+        --both)
+            RUN_BOTH=true
+            shift
+            ;;
+        --no-sudo)
+            USE_SUDO=false
+            shift
+            ;;
         --build)
             # Keep for backward compatibility, but it's now always enabled
             shift
@@ -135,10 +195,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate role
-if [[ "$ROLE" != "source" && "$ROLE" != "destination" ]]; then
-    echo -e "${RED}Error: Role must be 'source' or 'destination', got: $ROLE${NC}" >&2
-    exit 1
+# Validate role (skip when running both)
+if [[ "$RUN_BOTH" != true ]]; then
+    if [[ "$ROLE" != "source" && "$ROLE" != "destination" ]]; then
+        echo -e "${RED}Error: Role must be 'source' or 'destination', got: $ROLE${NC}" >&2
+        exit 1
+    fi
 fi
 
 # Change to MigTD directory
@@ -147,52 +209,188 @@ cd "$(dirname "$0")"
 # Always build MigTD
 build_migtd "$BUILD_MODE"
 
-# Determine binary path based on build mode
+# Determine binary path based on build mode (use AzCVMEmu binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
-    MIGTD_BINARY="./target/debug/migtd"
+    MIGTD_BINARY="./target/debug/migtd-cvmemu"
 else
-    MIGTD_BINARY="./target/release/migtd"
+    MIGTD_BINARY="./target/release/migtd-cvmemu"
 fi
 
 # Check if configuration files exist
 check_file "$POLICY_FILE" "Policy"
 check_file "$ROOT_CA_FILE" "Root CA"
 
-# Set environment variables
+# Evaluate TPM access and elevate if necessary
+maybe_force_sudo_due_to_tpm
+
+run_cmd() {
+    # Run a command with or without sudo, preserving the provided environment
+    # Usage: run_cmd VAR1=... VAR2=... -- <binary> [args...]
+    local env_kv=()
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --)
+                shift
+                break
+                ;;
+            *=*)
+                env_kv+=("$1")
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    if $USE_SUDO; then
+        sudo env "${env_kv[@]}" "$@"
+    else
+        env "${env_kv[@]}" "$@"
+    fi
+}
+
+wait_for_port() {
+    local ip="$1"
+    local port="$2"
+    local timeout_sec="${3:-15}"
+    echo -e "${BLUE}Waiting for ${ip}:${port} to listen (timeout ${timeout_sec}s)...${NC}"
+    local start_ts=$(date +%s)
+    while true; do
+        # Prefer 'ss' if available
+        if command -v ss >/dev/null 2>&1; then
+            if ss -lnt "sport = :$port" | grep -q LISTEN; then
+                echo -e "${GREEN}Port ${port} is now listening.${NC}"
+                return 0
+            fi
+        else
+            # Fallback: try bash TCP connect
+            (echo > "/dev/tcp/${ip}/${port}") >/dev/null 2>&1 && {
+                echo -e "${GREEN}Port ${port} is reachable.${NC}"
+                return 0
+            }
+        fi
+        local now_ts=$(date +%s)
+        if (( now_ts - start_ts >= timeout_sec )); then
+            echo -e "${RED}Timeout waiting for ${ip}:${port}${NC}" >&2
+            return 1
+        fi
+        sleep 0.5
+    done
+}
+
 echo -e "${BLUE}Setting up environment variables...${NC}"
 
 # Display configuration
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Build mode: $BUILD_MODE"
-echo "  Role: $ROLE"
+if [[ "$RUN_BOTH" == true ]]; then
+    echo "  Mode: both (destination then source)"
+else
+    echo "  Role: $ROLE"
+fi
 echo "  Request ID: $REQUEST_ID"
 echo "  Policy file: $POLICY_FILE"
 echo "  Root CA file: $ROOT_CA_FILE"
+echo "  Use sudo: $USE_SUDO"
 
-if [[ "$ROLE" == "source" ]]; then
-    echo "  Destination: ${DEST_IP}:${DEST_PORT}"
-fi
+echo "  Destination: ${DEST_IP}:${DEST_PORT}"
 
 echo
 
-# Build command arguments
-MIGTD_ARGS=(
-    "--role" "$ROLE"
-    "--request-id" "$REQUEST_ID"
-)
+# Prepare runtime env vars
+if [[ -z "$RUST_BACKTRACE" ]]; then
+    RUST_BACKTRACE="$DEFAULT_RUST_BACKTRACE"
+fi
+if [[ -z "$RUST_LOG" ]]; then
+    if [[ "$BUILD_MODE" == "debug" ]]; then
+        RUST_LOG="$DEFAULT_RUST_LOG_DEBUG"
+    else
+        RUST_LOG="$DEFAULT_RUST_LOG_RELEASE"
+    fi
+fi
 
-# Add destination parameters for source role
-if [[ "$ROLE" == "source" ]]; then
-    MIGTD_ARGS+=(
+# Prefer TPM resource manager device for TPM2TSS if present
+TSS2_TCTI_AUTO=""
+if [[ -e /dev/tpmrm0 ]]; then
+    TSS2_TCTI_AUTO="device:/dev/tpmrm0"
+fi
+
+if [[ "$RUN_BOTH" == true ]]; then
+    echo -e "${BLUE}Starting destination in background...${NC}"
+    DEST_ARGS=("--role" "destination" "--request-id" "$REQUEST_ID")
+    # Start destination and redirect output
+    (
+        set -x
+        if [[ -n "$TSS2_TCTI_AUTO" ]]; then
+            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
+        else
+            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
+        fi
+    ) > dest.out.log 2>&1 &
+    DEST_PID=$!
+    echo -e "${GREEN}Destination started with PID ${DEST_PID}. Logs: dest.out.log${NC}"
+
+    # Ensure destination is listening
+    if ! wait_for_port "$DEST_IP" "$DEST_PORT" 20; then
+        echo -e "${RED}Destination didn't start listening on ${DEST_IP}:${DEST_PORT}.${NC}" >&2
+        echo -e "${YELLOW}Last 50 lines of dest.out.log:${NC}"
+        tail -n 50 dest.out.log || true
+        kill "$DEST_PID" >/dev/null 2>&1 || true
+        exit 1
+    fi
+
+    # Trap to cleanup background process on exit
+    trap 'echo -e "\n${YELLOW}Stopping destination (PID ${DEST_PID})...${NC}"; kill ${DEST_PID} >/dev/null 2>&1 || true' EXIT
+
+    echo -e "${BLUE}Starting source (foreground)...${NC}"
+    SRC_ARGS=(
+        "--role" "source"
+        "--request-id" "$REQUEST_ID"
         "--dest-ip" "$DEST_IP"
         "--dest-port" "$DEST_PORT"
     )
+    if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
+    echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+    echo
+    # Run source in foreground
+    if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
+    if [[ -n "$TSS2_TCTI_AUTO" ]]; then
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+    else
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+    fi
+    echo
+    # Run source in foreground; on failure, show last logs and exit non-zero
+    if [[ -n "$TSS2_TCTI_AUTO" ]]; then
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}" || FAILED=true
+    else
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}" || FAILED=true
+    fi
+    if [[ "$FAILED" == true ]]; then
+        echo -e "${RED}Source run failed. Last 100 lines of destination log:${NC}"
+        tail -n 100 dest.out.log || true
+        exit 1
+    fi
+else
+    # Single role run
+    MIGTD_ARGS=(
+        "--role" "$ROLE"
+        "--request-id" "$REQUEST_ID"
+    )
+    if [[ "$ROLE" == "source" ]]; then
+        MIGTD_ARGS+=("--dest-ip" "$DEST_IP" "--dest-port" "$DEST_PORT")
+    fi
+    echo -e "${BLUE}Starting MigTD in $ROLE mode...${NC}"
+    if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
+    if [[ -n "$TSS2_TCTI_AUTO" ]]; then
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+    else
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+    fi
+    echo
+    if [[ -n "$TSS2_TCTI_AUTO" ]]; then
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+    else
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+    fi
 fi
-
-# Run MigTD
-echo -e "${BLUE}Starting MigTD in $ROLE mode...${NC}"
-echo -e "${YELLOW}Command: sudo MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
-echo
-
-# Execute MigTD with sudo and environment variables
-exec sudo MIGTD_POLICY_FILE="$POLICY_FILE" MIGTD_ROOT_CA_FILE="$ROOT_CA_FILE" "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"

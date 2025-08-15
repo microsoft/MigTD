@@ -5,6 +5,10 @@
 #![cfg_attr(not(any(test, feature = "AzCVMEmu")), no_std)]
 #![cfg_attr(not(any(test, feature = "AzCVMEmu")), no_main)]
 
+// AzCVMEmu only supports the vmcall-raw transport.
+#[cfg(all(feature = "AzCVMEmu", any(feature = "virtio-serial", feature = "vmcall-vsock", feature = "virtio-vsock")))]
+compile_error!("AzCVMEmu only supports vmcall-raw transport. Disable virtio-serial/vmcall-vsock/virtio-vsock when enabling AzCVMEmu.");
+
 #[cfg_attr(feature = "main", macro_use)]
 extern crate alloc;
 
