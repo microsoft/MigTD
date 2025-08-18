@@ -16,7 +16,11 @@ extern crate alloc;
 use original_tdx_tdcall;
 
 // Re-export all the standard tdx-tdcall types and constants
-pub use original_tdx_tdcall::{TdVmcallError, TdCallError};
+// Re-export error types and constants that are needed
+pub use original_tdx_tdcall::{TdVmcallError, TdcallArgs};
+
+// Export constants that we need from the original library
+pub const TDCALL_STATUS_SUCCESS: u64 = 0;
 
 // Our TCP emulation module (only when feature is enabled)
 #[cfg(feature = "tcp-emulation")]
@@ -68,3 +72,30 @@ pub mod tdx {
         tdvmcall_migtd_receive,
     };
 }
+
+// Add td_call emulation support
+#[cfg(feature = "tcp-emulation")]
+pub fn td_call(args: &mut TdcallArgs) -> u64 {
+    const TDVMCALL_SYS_RD: u64 = 0x0000b;
+    
+    match args.rax {
+        TDVMCALL_SYS_RD => {
+            match crate::tcp_emulation::tdcall_sys_rd(args.rcx) {
+                Ok((rdx, r8)) => {
+                    args.rdx = rdx;
+                    args.r8 = r8;
+                    TDCALL_STATUS_SUCCESS
+                }
+                Err(_) => 0xFFFFFFFFFFFFFFFF, // Error code
+            }
+        }
+        _ => {
+            // Return error for unsupported rax values
+            0xFFFFFFFFFFFFFFFF // Generic error code
+        }
+    }
+}
+
+// When tcp-emulation is disabled, re-export the original function
+#[cfg(not(feature = "tcp-emulation"))]
+pub use original_tdx_tdcall::td_call;

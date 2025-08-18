@@ -15,4 +15,15 @@ impl SharedMemory {
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
         &mut self.buf
     }
+
+    // Add missing methods for API compatibility with real td-payload
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.buf
+    }
+
+    pub fn copy_to_private_shadow(&mut self) -> Option<&[u8]> {
+        // In emulation mode, just return the buffer directly since we're not dealing with 
+        // actual shared/private memory conversion like in real TDX
+        Some(&self.buf)
+    }
 }

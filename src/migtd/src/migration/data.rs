@@ -5,15 +5,12 @@
 use core::convert::TryInto;
 use core::{mem::size_of, slice::from_raw_parts, slice::from_raw_parts_mut};
 use r_efi::efi::Guid;
-#[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
+#[cfg(not(feature = "vmcall-raw"))]
 use td_shim_interface::td_uefi_pi::{
     hob::{self as hob_lib, align_to_next_hob_offset},
     pi::hob::{GuidExtension, Header, HOB_TYPE_END_OF_HOB_LIST, HOB_TYPE_GUID_EXTENSION},
 };
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
-
-#[cfg(feature = "AzCVMEmu")]
-use alloc::string::String;
 
 use super::*;
 
@@ -234,9 +231,9 @@ impl Default for MigrationSessionKey {
 
 pub struct MigrationInformation {
     pub mig_info: MigtdMigrationInformation,
-    #[cfg(all(any(feature = "vmcall-vsock", feature = "virtio-vsock"), not(feature = "AzCVMEmu")))]
+    #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
     pub mig_socket_info: MigtdStreamSocketInfo,
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
+    #[cfg(not(feature = "vmcall-raw"))]
     pub mig_policy: Option<MigtdMigpolicy>,
 }
 
@@ -246,7 +243,7 @@ impl MigrationInformation {
     }
 }
 
-#[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
+#[cfg(not(feature = "vmcall-raw"))]
 pub fn read_mig_info(hob: &[u8]) -> Option<MigrationInformation> {
     let mut offset = 0;
     let mut mig_info_hob = None;
@@ -299,7 +296,7 @@ pub fn read_mig_info(hob: &[u8]) -> Option<MigrationInformation> {
     create_migration_information(mig_info_hob, mig_socket_hob, policy_info_hob)
 }
 
-#[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
+#[cfg(not(feature = "vmcall-raw"))]
 fn get_next_hob<'a>(hob: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
     if *offset >= hob.len() {
         return None;
@@ -314,7 +311,7 @@ fn get_next_hob<'a>(hob: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
 }
 
 #[allow(unused)]
-#[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
+#[cfg(not(feature = "vmcall-raw"))]
 fn create_migration_information(
     mig_info_hob: Option<&[u8]>,
     mig_socket_hob: Option<&[u8]>,
@@ -456,7 +453,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_valid_hobs() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -481,7 +477,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_duplicate_mig_info_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -504,7 +499,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_duplicate_socket_info_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -527,7 +521,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_duplicate_policy_info_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -552,7 +545,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_missing_mig_info_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -573,7 +565,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_missing_socket_info_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -596,7 +587,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_missing_policy_info_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -617,7 +607,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_unexpected_hob_type() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -643,7 +632,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_unknown_guided_hob() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 1024];
@@ -666,7 +654,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn test_read_mig_info_invalid_hob_length() {
         // Create mock HOB data
         let mut hob_data = vec![0u8; 256];
@@ -689,7 +676,6 @@ mod test {
         assert!(result.is_none());
     }
 
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn create_unknown_guided_hob(hob: &mut [u8], offset: &mut usize) {
         let guid = [0x10u8; 16];
         let guided_hob = create_guid_hob(&guid, 64);
@@ -697,7 +683,6 @@ mod test {
         *offset += size_of::<GuidExtension>() + 64;
     }
 
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn create_mig_info_hob(hob: &mut [u8], offset: &mut usize) {
         let mig_info_hob_guid = MIGRATION_INFORMATION_HOB_GUID.as_bytes();
         let mig_info_hob =
@@ -717,7 +702,6 @@ mod test {
         *offset += size_of::<MigtdMigrationInformation>();
     }
 
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn create_socket_info_hob(hob: &mut [u8], offset: &mut usize) {
         let stream_socket_hob_guid = STREAM_SOCKET_INFO_HOB_GUID.as_bytes();
         let stream_socket_hob =
@@ -734,7 +718,6 @@ mod test {
         *offset += size_of::<MigtdStreamSocketInfo>();
     }
 
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn create_policy_info_hob(hob: &mut [u8], offset: &mut usize) {
         let mig_policy_hob_guid = MIGPOLICY_HOB_GUID.as_bytes();
         let mig_policy_hob =
@@ -749,7 +732,6 @@ mod test {
         *offset += size_of::<MigtdMigpolicyInfo>() + 64;
     }
 
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn create_end_of_hob_list(hob: &mut [u8], offset: &mut usize) {
         let end_hob = Header {
             r#type: HOB_TYPE_END_OF_HOB_LIST,
@@ -760,7 +742,6 @@ mod test {
         *offset += size_of::<Header>();
     }
 
-    #[cfg(all(not(feature = "vmcall-raw"), not(feature = "AzCVMEmu")))]
     fn create_guid_hob(guid: &[u8], length: usize) -> GuidExtension {
         GuidExtension {
             header: Header {

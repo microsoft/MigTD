@@ -71,7 +71,7 @@ pub const STREAM_SOCKET_INFO_HOB_GUID: Guid = Guid::from_fields(
 );
 
 #[repr(C)]
-#[derive(Debug, Pread, Pwrite, Default)]
+#[derive(Debug, Pread, Pwrite)]
 pub struct MigtdMigrationInformation {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
@@ -96,7 +96,7 @@ pub struct MigtdMigrationInformation {
 }
 
 #[repr(C)]
-#[derive(Debug, Pread, Pwrite, Default)]
+#[derive(Debug, Pread, Pwrite)]
 pub struct MigtdStreamSocketInfo {
     // Unique identifier for the communication between MigTD and VMM
     // It can be used in MigtdMigrationInformation Hob

@@ -9,7 +9,7 @@ use std::process;
 
 #[cfg(feature = "AzCVMEmu")]
 use migtd::migration::data::MigrationInformation;
-use migtd::migration::session::{exchange_msk, report_status, azcvmemu_set_pending_request};
+use migtd::migration::session::{exchange_msk, report_status};
 use migtd::migration::event;
 use migtd::migration::{MigrationResult, MigtdMigrationInformation};
 use migtd;
@@ -444,10 +444,7 @@ fn handle_migration_azcvmemu(mig_info: MigrationInformation) {
     event::register_callback();
 
     // Extract request ID before moving mig_info
-    let request_id = mig_info.mig_info.mig_request_id;
-
-    // Seed the pending request for wait_for_request() path
-    azcvmemu_set_pending_request(mig_info);
+    let _request_id = mig_info.mig_info.mig_request_id;
 
     // For AzCVMEmu, create an async runtime and run the standard flow once
     log::info!("Creating Tokio runtime...");

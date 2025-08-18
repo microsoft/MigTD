@@ -6,7 +6,14 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
+
+#[cfg(feature = "AzCVMEmu")]
+use td_payload_emu::arch::apic::*;
+#[cfg(feature = "AzCVMEmu")]
+use td_payload_emu::arch::idt::{register_interrupt_callback, InterruptCallback, InterruptStack};
+#[cfg(not(feature = "AzCVMEmu"))]
 use td_payload::arch::apic::*;
+#[cfg(not(feature = "AzCVMEmu"))]
 use td_payload::arch::idt::{register_interrupt_callback, InterruptCallback, InterruptStack};
 
 pub const VMCALL_SERVICE_VECTOR: u8 = 0x50;
