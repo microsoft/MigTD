@@ -558,3 +558,23 @@ pub fn tdvmcall_get_quote(buffer: &mut [u8]) -> Result<(), original_tdx_tdcall::
     log::info!("AzCVMEmu: tdvmcall_get_quote completed successfully, quote size: {}", quote.len());
     Ok(())
 }
+
+/// Emulation for TDG.MR.EXTEND: extend a measurement into an RTMR
+/// In AzCVMEmu mode, we simulate this operation by logging it
+pub fn tdcall_extend_rtmr(digest: &original_tdx_tdcall::tdx::TdxDigest, mr_index: u32) -> Result<(), TdCallError> {
+    log::info!("AzCVMEmu: tdcall_extend_rtmr emulated - mr_index: {}, digest: {:02x?}", 
+               mr_index, &digest.data[..8]); // Log first 8 bytes of digest
+    
+    // In a real implementation, this would extend the RTMR with the digest
+    // For emulation, we just simulate success
+    // The digest would be combined with the current RTMR value using SHA384
+    
+    // Validate mr_index (RTMRs are typically 0-3)
+    if mr_index > 3 {
+        log::warn!("AzCVMEmu: Invalid RTMR index {} in tdcall_extend_rtmr", mr_index);
+        return Err(TdCallError::TdxExitInvalidParameters);
+    }
+    
+    log::debug!("AzCVMEmu: Successfully emulated RTMR {} extension", mr_index);
+    Ok(())
+}

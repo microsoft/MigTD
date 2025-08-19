@@ -12,12 +12,12 @@ policy = {path = "../policy"}
 spin = "0.9.2"
 
 # Use emulated tdx-tdcall for AzCVMEmu, original for normal mode
-tdx_tdcall_emu = { path = "../../deps/td-shim-AzCVMEmu/tdx-tdcall", package = "tdx-tdcall-emu", optional = true }
-tdx_tdcall = { path = "../../deps/td-shim/tdx-tdcall"}
+tdx-tdcall-emu = { path = "../../deps/td-shim-AzCVMEmu/tdx-tdcall", package = "tdx-tdcall-emu", optional = true }
+tdx-tdcall = { path = "../../deps/td-shim/tdx-tdcall", package = "tdx-tdcall" }
 
 td-payload = { path = "../../deps/td-shim/td-payload", features = ["tdx"] }
 
 [features]
 default = []
 test = []
-AzCVMEmu = ["tdx_tdcall_emu"]
+AzCVMEmu = ["tdx-tdcall-emu"]

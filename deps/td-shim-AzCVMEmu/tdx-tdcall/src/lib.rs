@@ -39,7 +39,7 @@ pub use tdx_emu::{
 pub mod tdx {
     // Re-export all non-MigTD functions from original
     pub use original_tdx_tdcall::tdx::{
-        tdcall_get_td_info, tdcall_get_ve_info, tdcall_extend_rtmr,
+        tdcall_get_td_info, tdcall_get_ve_info, 
         tdcall_accept_page, tdcall_vp_read,
         // Standard VMCALL functions
         tdvmcall_halt, tdvmcall_sti_halt,
@@ -49,6 +49,8 @@ pub mod tdx {
         tdvmcall_mapgpa, tdvmcall_rdmsr, tdvmcall_wrmsr,
         tdvmcall_cpuid, tdvmcall_setup_event_notify,
         tdvmcall_service,
+        // Re-export types
+        TdxDigest,
     };
 
     // Export emulated functions
@@ -62,6 +64,7 @@ pub mod tdx {
         tdcall_servtd_wr,
         tdcall_sys_rd,
         tdcall_sys_wr,
+        tdcall_extend_rtmr,
     };
 }
 

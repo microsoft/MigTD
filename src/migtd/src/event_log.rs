@@ -19,7 +19,13 @@ use td_payload::acpi::get_acpi_tables;
 use td_shim_interface::acpi::Ccel;
 #[cfg(feature = "AzCVMEmu")]
 use td_shim_emu::event_log::{MockCcel as Ccel, get_acpi_tables};
+
+// Conditional imports for tdx_tdcall based on feature
+#[cfg(feature = "AzCVMEmu")]
+use tdx_tdcall_emu::tdx;
+#[cfg(not(feature = "AzCVMEmu"))]
 use tdx_tdcall::tdx;
+
 use zerocopy::{AsBytes, FromBytes};
 
 pub const EV_EVENT_TAG: u32 = 0x00000006;
@@ -102,8 +108,6 @@ pub fn write_tagged_event_log(
     let event = TaggedEvent::new(tagged_event_id, tagged_event_data);
 
     let digest = calculate_digest(tagged_event_data)?;
-    //Temporarily skip RTMR extension in AzCVMEmu
-    #[cfg(not(feature = "AzCVMEmu"))]
     extend_rtmr(&digest, 3)?;
 
     let event_header = CcEventHeader {
