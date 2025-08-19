@@ -38,6 +38,12 @@ pub extern "C" fn main() {
     runtime_main()
 }
 
+// AzCVMEmu entry point - standard Rust main function
+#[cfg(feature = "AzCVMEmu")]
+fn main() {
+    cvmemu::main();
+}
+
 pub fn runtime_main() {
     let _ = td_logger::init();
 
@@ -61,11 +67,11 @@ pub fn runtime_main() {
     handle_pre_mig();
 }
 
-fn basic_info() {
+pub fn basic_info() {
     info!("MigTD Version - {}\n", MIGTD_VERSION);
 }
 
-fn do_measurements() {
+pub fn do_measurements() {
     // Get the event log recorded by firmware
     let event_log = event_log::get_event_log_mut().expect("Failed to get the event log");
 
@@ -184,11 +190,6 @@ fn sleep() {
 #[cfg(test)]
 fn main() {}
 
-// AzCVMEmu entry point - standard Rust main function
-#[cfg(feature = "AzCVMEmu")]
-fn main() {
-    cvmemu::main();
-}
 // FIXME: remove when https://github.com/Amanieu/minicov/issues/12 is fixed.
 #[cfg(all(feature = "coverage", target_os = "none"))]
 #[no_mangle]

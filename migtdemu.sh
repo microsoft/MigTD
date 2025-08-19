@@ -209,11 +209,11 @@ cd "$(dirname "$0")"
 # Always build MigTD
 build_migtd "$BUILD_MODE"
 
-# Determine binary path based on build mode (use AzCVMEmu binary)
+# Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
-    MIGTD_BINARY="./target/debug/migtd-cvmemu"
+    MIGTD_BINARY="./target/debug/migtd"
 else
-    MIGTD_BINARY="./target/release/migtd-cvmemu"
+    MIGTD_BINARY="./target/release/migtd"
 fi
 
 # Check if configuration files exist

@@ -2,15 +2,18 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-//! TCP-based emulation for TDX MigTD operations
+//! TDX emulation for MigTD operations in AzCVMEmu mode
 //!
-//! This module provides simple TCP-based emulation for sending/receiving raw data
-//! between source and destination MigTD instances in AzCVMEmu mode.
+//! This module provides comprehensive emulation for TDX operations including:
+//! - TDVMCALL MigTD functions (waitforrequest, reportstatus, send, receive)
+//! - TDCALL ServTD functions (rd, wr)
+//! - TDCALL SYS functions (rd, wr)
+//! - TCP-based networking for communication between source and destination instances
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
-use log::{debug, trace, warn};
+use log::{error, warn};
 // Use interrupt-emu to fire callbacks registered by upper layers.
 use interrupt_emu as intr;
 use original_tdx_tdcall::{TdCallError, TdVmcallError};
@@ -59,7 +62,6 @@ pub fn set_emulated_mig_request(req: EmuMigRequest) {
 /// Set TCP address and mode for emulation
 pub fn init_tcp_emulation_with_mode(ip: &str, port: u16, mode: TcpEmulationMode) -> Result<(), &'static str> {
     let tcp_addr = format!("{}:{}", ip, port);
-    debug!("TCP emulation init address={} mode={:?}", tcp_addr, mode);
     
     // Validate IP address format (basic validation)
     if ip.is_empty() {
@@ -78,49 +80,32 @@ pub fn init_tcp_emulation_with_mode(ip: &str, port: u16, mode: TcpEmulationMode)
     
     match mode {
         TcpEmulationMode::Server => {
-            debug!("TCP emulation server listening on {}", tcp_addr);
+            // Server mode setup
         }
         TcpEmulationMode::Client => {
-            debug!("TCP emulation client connecting to {}", tcp_addr);
+            // Client mode setup
         }
     }
     
     Ok(())
 }
 
-/// Legacy function for backward compatibility
-pub fn init_tcp_emulation(ip: &str, port: u16) -> Result<(), &'static str> {
-    init_tcp_emulation_with_mode(ip, port, TcpEmulationMode::Client)
-}
-
-/// Legacy function for backward compatibility  
-pub fn set_tcp_address(addr: &str) {
-    let mut tcp_addr = TCP_ADDRESS.lock();
-    *tcp_addr = Some(String::from(addr));
-    debug!("TCP emulation address set to {}", addr);
-}
-
 /// Start TCP server for destination instances (blocking call)
 pub fn start_tcp_server_sync(addr: &str) -> Result<(), TdVmcallError> {
-    debug!("Starting TCP server on {}", addr);
     
     let listener = TcpListener::bind(addr)
         .map_err(|e| {
-            warn!("Failed to bind TCP listener to {}: {}", addr, e);
+            error!("Failed to bind TCP listener to {}: {}", addr, e);
             TdVmcallError::Other
         })?;
         
-    debug!("TCP server listening on {}", addr);
-    
     // Accept the first connection and store it globally
-    let (stream, peer_addr) = listener.accept()
+    let (stream, _peer_addr) = listener.accept()
         .map_err(|e| {
-            warn!("Failed to accept TCP connection: {}", e);
+            error!("Failed to accept TCP connection: {}", e);
             TdVmcallError::Other
         })?;
         
-    debug!("TCP server accepted connection from {}", peer_addr);
-    
     // Store the stream globally for send/receive operations
     {
         let mut tcp_stream = TCP_STREAM.lock();
@@ -137,22 +122,18 @@ pub fn connect_tcp_client() -> Result<(), TdVmcallError> {
         match tcp_addr.as_ref() {
             Some(addr) => addr.clone(),
             None => {
-                warn!("TCP address not configured. Please set address before connecting.");
+                error!("TCP address not configured. Please set address before connecting.");
                 return Err(TdVmcallError::Other);
             }
         }
     };
     
-    debug!("Connecting to TCP server at {}", addr);
-    
     let stream = TcpStream::connect(&addr)
         .map_err(|e| {
-            warn!("Failed to connect to TCP server at {}: {}", addr, e);
+            error!("Failed to connect to TCP server at {}: {}", addr, e);
             TdVmcallError::Other
         })?;
         
-    debug!("Connected to TCP server at {}", addr);
-    
     // Store the stream globally for send/receive operations
     {
         let mut tcp_stream = TCP_STREAM.lock();
@@ -164,52 +145,45 @@ pub fn connect_tcp_client() -> Result<(), TdVmcallError> {
 
 /// Send raw data over TCP connection
 pub fn tcp_send_data(data: &[u8]) -> Result<(), TdVmcallError> {
-    debug!("TCP send {} bytes", data.len());
     
     let mut stream_guard = TCP_STREAM.lock();
     let stream = stream_guard.as_mut().ok_or_else(|| {
-        warn!("No TCP connection available for sending data");
+        error!("No TCP connection available for sending data");
         TdVmcallError::Other
     })?;
     
     // Send data length first (4 bytes, little endian)
     let length = data.len() as u32;
     let len_bytes = length.to_le_bytes();
-    trace!(
-        "TCP send header (LE u32): {:#04x} {:#04x} {:#04x} {:#04x} -> {}",
-        len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3], length
-    );
     stream
         .write_all(&len_bytes)
         .map_err(|e| {
-            warn!("Failed to write length header: {}", e);
+            error!("Failed to write length header: {}", e);
             TdVmcallError::Other
         })?;
     
     // Send raw data
     stream.write_all(data)
         .map_err(|e| {
-            warn!("Failed to write data payload: {}", e);
+            error!("Failed to write data payload: {}", e);
             TdVmcallError::Other
         })?;
     
     stream.flush()
         .map_err(|e| {
-            warn!("Failed to flush TCP stream: {}", e);
+            error!("Failed to flush TCP stream: {}", e);
             TdVmcallError::Other
         })?;
     
-    debug!("TCP send complete ({} bytes)", data.len());
     Ok(())
 }
 
 /// Receive raw data from TCP connection
 pub fn tcp_receive_data() -> Result<Vec<u8>, TdVmcallError> {
-    debug!("TCP receive waiting");
     
     let mut stream_guard = TCP_STREAM.lock();
     let stream = stream_guard.as_mut().ok_or_else(|| {
-        warn!("No TCP connection available for receiving data");
+        error!("No TCP connection available for receiving data");
         TdVmcallError::Other
     })?;
     
@@ -218,27 +192,21 @@ pub fn tcp_receive_data() -> Result<Vec<u8>, TdVmcallError> {
     stream
         .read_exact(&mut length_bytes)
         .map_err(|e| {
-            warn!("Failed to read length header: {}", e);
+            error!("Failed to read length header: {}", e);
             TdVmcallError::Other
         })?;
     
     let length = u32::from_le_bytes(length_bytes) as usize;
-    trace!(
-        "TCP recv header (LE u32): {:#04x} {:#04x} {:#04x} {:#04x} -> {}",
-        length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3], length
-    );
-    trace!("Expecting to receive {} bytes", length);
     
     // Read raw data
     let mut buffer = vec![0u8; length];
     stream
         .read_exact(&mut buffer)
         .map_err(|e| {
-            warn!("Failed to read data payload: {}", e);
+            error!("Failed to read data payload: {}", e);
             TdVmcallError::Other
         })?;
     
-    debug!("TCP receive complete ({} bytes)", length);
     Ok(buffer)
 }
 
@@ -266,7 +234,7 @@ fn format_tdx_buffer(buffer: &mut [u8], status: u32, payload: &[u8]) {
     let copy_len = (buffer.len() - 8).min(payload.len());
 
     if copy_len < payload.len() {
-        warn!(
+        error!(
             "TDX buffer payload truncated: have space={} wanted={}",
             buffer.len() - 8,
             payload.len()
@@ -287,18 +255,13 @@ fn format_tdx_buffer(buffer: &mut [u8], status: u32, payload: &[u8]) {
 
 /// TCP emulation for tdvmcall_migtd_send
 pub fn tdvmcall_migtd_send_sync(
-    mig_request_id: u64,
+    _mig_request_id: u64,
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
-    debug!(
-        "tdvmcall_migtd_send_sync: request_id={} interrupt={}",
-        mig_request_id, interrupt
-    );
     
     // Parse TDX buffer format to extract payload
     let (_status, _length, payload) = parse_tdx_buffer(data_buffer);
-    trace!("tdvmcall_migtd_send_sync: payload_len={}", payload.len());
     
     // Send payload over TCP
     tcp_send_data(payload)?;
@@ -306,7 +269,6 @@ pub fn tdvmcall_migtd_send_sync(
     // Update buffer to indicate success (status = 1, no payload response for send)
     format_tdx_buffer(data_buffer, 1, &[]);
     
-    trace!("tdvmcall_migtd_send_sync: done");
     // Trigger the registered interrupt callback to emulate VMM signaling
     intr::trigger(interrupt);
     Ok(())
@@ -314,24 +276,17 @@ pub fn tdvmcall_migtd_send_sync(
 
 /// TCP emulation for tdvmcall_migtd_receive
 pub fn tdvmcall_migtd_receive_sync(
-    mig_request_id: u64,
+    _mig_request_id: u64,
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
-    debug!(
-        "tdvmcall_migtd_receive_sync: request_id={} interrupt={}",
-        mig_request_id, interrupt
-    );
     
     // Receive payload over TCP
     let received_payload = tcp_receive_data()?;
     
-    debug!("tdvmcall_migtd_receive_sync: received {} bytes", received_payload.len());
-    
     // Format response into TDX buffer (status = 1 for success)
     format_tdx_buffer(data_buffer, 1, &received_payload);
     
-    trace!("tdvmcall_migtd_receive_sync: done");
     // Trigger the registered interrupt callback to emulate VMM signaling
     intr::trigger(interrupt);
     Ok(())
@@ -342,7 +297,6 @@ pub fn tdvmcall_migtd_waitforrequest(
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
-    debug!("tdvmcall_migtd_waitforrequest: interrupt={}", interrupt);
 
     // data_buffer is a VmcallServiceResponse buffer prepared by caller.
     // We must fill the response data area with ServiceMigWaitForReqResponse (vmcall-raw layout).
@@ -356,7 +310,7 @@ pub fn tdvmcall_migtd_waitforrequest(
     // offset 56..64: binding_handle u64
     const HEADER_LEN: usize = 24; // VmcallServiceResponse header size
     if data_buffer.len() < HEADER_LEN + 64 {
-        warn!(
+        error!(
             "waitforrequest buffer too small: have={} need={}",
             data_buffer.len(),
             HEADER_LEN + 64
@@ -393,13 +347,11 @@ pub fn tdvmcall_migtd_waitforrequest(
         // binding_handle
         resp[56..64].copy_from_slice(&st.binding_handle.to_le_bytes());
 
-        trace!("tdvmcall_migtd_waitforrequest: response written for id={}", st.request_id);
         // Signal completion via interrupt
         intr::trigger(interrupt);
         Ok(())
     } else {
         // No pending request yet; do not signal. Caller will poll again.
-        debug!("tdvmcall_migtd_waitforrequest: no pending request");
         Ok(())
     }
 }
@@ -421,12 +373,10 @@ pub fn tdvmcall_migtd_reportstatus(
     
     // For now, we'll simulate a successful status report
     // In a real implementation, this could send status over TCP if needed
-    trace!("reportstatus: simulate success for request_id={}", mig_request_id);
     
     // Update buffer with success status
     format_tdx_buffer(data_buffer, 1, &[]); // Status 1 = success
     
-    trace!("tdvmcall_migtd_reportstatus: done");
     // Emulate VMM signaling back to the TD that reportstatus completed
     log::info!("tdvmcall_migtd_reportstatus: triggering interrupt 0x{:02x}", interrupt);
     intr::trigger(interrupt);

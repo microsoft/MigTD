@@ -22,15 +22,13 @@ pub use original_tdx_tdcall::{TdVmcallError, TdcallArgs};
 // Export constants that we need from the original library
 pub const TDCALL_STATUS_SUCCESS: u64 = 0;
 
-// Our TCP emulation module (only when feature is enabled)
-#[cfg(feature = "tcp-emulation")]
-pub mod tcp_emulation;
+// Our TDX emulation module
+pub mod tdx_emu;
 
-// Re-export TCP configuration functions when emulation is enabled
-#[cfg(feature = "tcp-emulation")]
-pub use tcp_emulation::{
-    init_tcp_emulation, init_tcp_emulation_with_mode, start_tcp_server_sync,
-    set_tcp_address, connect_tcp_client, TcpEmulationMode,
+// Re-export TDX emulation functions 
+pub use tdx_emu::{
+    init_tcp_emulation_with_mode, start_tcp_server_sync,
+    connect_tcp_client, TcpEmulationMode,
     tcp_send_data, tcp_receive_data
 };
 
@@ -50,9 +48,8 @@ pub mod tdx {
         tdvmcall_get_quote, tdvmcall_service,
     };
 
-    // Export emulated MigTD functions when TCP emulation is enabled
-    #[cfg(feature = "tcp-emulation")]
-    pub use crate::tcp_emulation::{
+    // Export emulated MigTD functions
+    pub use crate::tdx_emu::{
         tdvmcall_migtd_waitforrequest,
         tdvmcall_migtd_reportstatus,
         tdvmcall_migtd_send_sync as tdvmcall_migtd_send,
@@ -60,27 +57,17 @@ pub mod tdx {
         tdcall_servtd_rd,
         tdcall_servtd_wr,
         tdcall_sys_rd,
-    tdcall_sys_wr,
-    };
-
-    // Export original MigTD functions when TCP emulation is disabled
-    #[cfg(not(feature = "tcp-emulation"))]
-    pub use original_tdx_tdcall::tdx::{
-        tdvmcall_migtd_waitforrequest,
-        tdvmcall_migtd_reportstatus,
-        tdvmcall_migtd_send,
-        tdvmcall_migtd_receive,
+        tdcall_sys_wr,
     };
 }
 
 // Add td_call emulation support
-#[cfg(feature = "tcp-emulation")]
 pub fn td_call(args: &mut TdcallArgs) -> u64 {
     const TDVMCALL_SYS_RD: u64 = 0x0000b;
     
     match args.rax {
         TDVMCALL_SYS_RD => {
-            match crate::tcp_emulation::tdcall_sys_rd(args.rcx) {
+            match crate::tdx_emu::tdcall_sys_rd(args.rcx) {
                 Ok((rdx, r8)) => {
                     args.rdx = rdx;
                     args.r8 = r8;
@@ -95,7 +82,3 @@ pub fn td_call(args: &mut TdcallArgs) -> u64 {
         }
     }
 }
-
-// When tcp-emulation is disabled, re-export the original function
-#[cfg(not(feature = "tcp-emulation"))]
-pub use original_tdx_tdcall::td_call;

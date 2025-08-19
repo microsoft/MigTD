@@ -10,8 +10,8 @@ license = "BSD-2-Clause-Patent"
 # Original tdx-tdcall for non-emulated functions
 original-tdx-tdcall = { package = "tdx-tdcall", path = "../../td-shim/tdx-tdcall" }
 
-# Core dependencies for emulation (only when tcp-emulation feature is enabled)
-tokio = { version = "1.0", features = ["net", "sync", "time", "rt", "rt-multi-thread", "io-util"], default-features = false, optional = true }
+# Core dependencies for emulation
+tokio = { version = "1.0", features = ["net", "sync", "time", "rt", "rt-multi-thread", "io-util"], default-features = false }
 log = { version = "0.4", default-features = false }
 
 # For compatibility with original tdx-tdcall interface
@@ -22,7 +22,6 @@ interrupt-emu = { path = "../interrupt-emu", package = "interrupt-emu" }
 
 [features]
 default = []
-tcp-emulation = ["tokio"]
 no-std = []
 
 [lib]

@@ -23,7 +23,6 @@ cargo image --no-default-features --features stack-guard,vmcall-raw,azcvm-emulat
 # Or set in Cargo.toml dependencies
 [dependencies.tdx-tdcall]
 path = "../deps/td-shim-AzCVMEmu/tdx-tdcall"
-features = ["tcp-emulation"]
 ```
 
 ### 2. Configuration
@@ -78,7 +77,6 @@ In `src/devices/vmcall_raw/Cargo.toml`:
 [dependencies.tdx-tdcall]
 # Use emulated version for AzCVMEmu builds
 path = "../../../deps/td-shim-AzCVMEmu/tdx-tdcall"
-features = ["tcp-emulation"]
 
 # Or use original for real TDX builds  
 # path = "../../../deps/td-shim/tdx-tdcall"
@@ -90,7 +88,7 @@ In main `Cargo.toml`:
 
 ```toml
 [features]
-azcvm-emulation = ["vmcall_raw/tcp-emulation"]
+azcvm-emulation = ["vmcall_raw/AzCVMEmu"]
 ```
 
 ### 3. Build commands
