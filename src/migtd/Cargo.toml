@@ -37,7 +37,7 @@ td-loader = { path = "../../deps/td-shim/td-loader"}
 td-paging = { path = "../../deps/td-shim/td-paging"}
 # td-payload provides SharedMemory and other primitives; in AzCVMEmu we replace it
 # with a lightweight emulated implementation that works in host mode.
-td-payload = { path = "../../deps/td-shim/td-payload", features = ["tdx"], optional = true }
+td-payload = { path = "../../deps/td-shim/td-payload", features = ["tdx"] }
 td-payload-emu = { path = "../../deps/td-shim-AzCVMEmu/td-payload-emu", optional = true }
 td-shim-interface = { path = "../../deps/td-shim/td-shim-interface", optional = false }
 td-shim = { path = "../../deps/td-shim/td-shim", optional = false }
@@ -76,8 +76,7 @@ AzCVMEmu = [
 ]
 cet-shstk = ["td-payload/cet-shstk"]
 coverage = ["minicov"]
-# In non-emulation builds, use the real td-payload crate
-main = ["attestation", "policy/log", "td-payload"]
+main = ["attestation", "policy/log"]
 stack-guard = ["td-payload/stack-guard"]
 virtio-vsock = ["vsock/virtio-vsock"]
 virtio-serial = ["virtio_serial"]
