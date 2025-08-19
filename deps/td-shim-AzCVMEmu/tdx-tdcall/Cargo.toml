@@ -14,6 +14,10 @@ original-tdx-tdcall = { package = "tdx-tdcall", path = "../../td-shim/tdx-tdcall
 tokio = { version = "1.0", features = ["net", "sync", "time", "rt", "rt-multi-thread", "io-util"], default-features = false }
 log = { version = "0.4", default-features = false }
 
+# Azure CVM specific dependencies
+az-tdx-vtpm = "0.7"
+zerocopy = { version = "0.7", default-features = false }
+
 # For compatibility with original tdx-tdcall interface
 bitflags = "2.0"
 spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }

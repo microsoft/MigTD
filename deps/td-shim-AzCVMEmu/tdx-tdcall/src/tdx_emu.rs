@@ -476,3 +476,85 @@ pub fn tdcall_sys_wr(field_identifier: u64, value: u64) -> core::result::Result<
     SYS_FIELDS.lock().insert(field_identifier, value);
     Ok(())
 }
+
+/// Emulation for TDG.VP.VMCALL<GetQuote>: Generate TD-Quote using vTPM
+/// This mimics the exact API signature of tdx_tdcall::tdx::tdvmcall_get_quote
+pub fn tdvmcall_get_quote(buffer: &mut [u8]) -> Result<(), original_tdx_tdcall::TdVmcallError> {
+    use original_tdx_tdcall::TdVmcallError;
+
+    log::info!("AzCVMEmu: tdvmcall_get_quote emulated using vTPM interface");
+
+    // TDX GHCI GetQuote buffer format:
+    // Offset 0-7:   Version (u64, filled by TD)
+    // Offset 8-15:  Status (u64, filled by VMM) - 0=success, 0xFFFFFFFFFFFFFFFF=in_flight
+    // Offset 16-23: TDREPORT length (u64, filled by TD)
+    // Offset 24-31: Quote buffer length (u64, filled by TD)
+    // Offset 32+:   TDREPORT data (filled by TD)
+    // After TDREPORT: Quote data (filled by VMM)
+
+    if buffer.len() < 32 {
+        error!("GetQuote buffer too small: need at least 32 bytes for header");
+        return Err(TdVmcallError::VmcallOperandInvalid);
+    }
+
+    // Read the TDREPORT length from the buffer
+    let tdreport_length = u64::from_le_bytes([
+        buffer[16], buffer[17], buffer[18], buffer[19],
+        buffer[20], buffer[21], buffer[22], buffer[23],
+    ]) as usize;
+
+    if tdreport_length == 0 || buffer.len() < 32 + tdreport_length {
+        error!("GetQuote buffer invalid: tdreport_length={} buffer_len={}", tdreport_length, buffer.len());
+        return Err(TdVmcallError::VmcallOperandInvalid);
+    }
+
+    // Extract the TDREPORT data (which contains the report data we need)
+    let tdreport_data = &buffer[32..32 + tdreport_length];
+    
+    // For TD report, we typically use the first 48 bytes as report data
+    // In a real TDREPORT, the report data is at a specific offset
+    // For simplicity, we'll use the first 48 bytes or pad with zeros if shorter
+    let mut report_data = [0u8; 48];
+    let copy_len = core::cmp::min(48, tdreport_data.len());
+    report_data[..copy_len].copy_from_slice(&tdreport_data[..copy_len]);
+
+    // Use the existing emulated quote generation
+    let quote = match crate::tdreport_emu::get_quote_emulated(&report_data) {
+        Ok(quote) => quote,
+        Err(e) => {
+            error!("Failed to generate quote in AzCVMEmu mode: {:?}", e);
+            // Set status to error
+            let error_status = 0x8000000000000000u64; // GET_QUOTE_ERROR
+            let status_bytes = error_status.to_le_bytes();
+            buffer[8..16].copy_from_slice(&status_bytes);
+            return Err(TdVmcallError::Other);
+        }
+    };
+
+    // Check if there's enough space after TDREPORT for the quote
+    let quote_start_offset = 32 + tdreport_length;
+    if buffer.len() < quote_start_offset + quote.len() {
+        error!("GetQuote buffer too small for quote: need {} bytes, have {}", 
+               quote_start_offset + quote.len(), buffer.len());
+        // Set status to error
+        let error_status = 0x8000000000000000u64; // GET_QUOTE_ERROR
+        let status_bytes = error_status.to_le_bytes();
+        buffer[8..16].copy_from_slice(&status_bytes);
+        return Err(TdVmcallError::VmcallOperandInvalid);
+    }
+
+    // Write the generated quote after the TDREPORT
+    buffer[quote_start_offset..quote_start_offset + quote.len()].copy_from_slice(&quote);
+
+    // Update the Quote buffer length field
+    let quote_length_bytes = (quote.len() as u64).to_le_bytes();
+    buffer[24..32].copy_from_slice(&quote_length_bytes);
+
+    // Set status to success (0)
+    let success_status = 0u64;
+    let status_bytes = success_status.to_le_bytes();
+    buffer[8..16].copy_from_slice(&status_bytes);
+    
+    log::info!("AzCVMEmu: tdvmcall_get_quote completed successfully, quote size: {}", quote.len());
+    Ok(())
+}

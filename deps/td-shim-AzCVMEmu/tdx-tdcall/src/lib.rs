@@ -13,17 +13,20 @@
 extern crate alloc;
 
 // Import the original tdx-tdcall as a dependency
-use original_tdx_tdcall;
+pub use original_tdx_tdcall;
 
 // Re-export all the standard tdx-tdcall types and constants
 // Re-export error types and constants that are needed
-pub use original_tdx_tdcall::{TdVmcallError, TdcallArgs};
+pub use original_tdx_tdcall::{TdVmcallError, TdcallArgs, TdCallError};
 
 // Export constants that we need from the original library
 pub const TDCALL_STATUS_SUCCESS: u64 = 0;
 
 // Our TDX emulation module
 pub mod tdx_emu;
+
+// Our emulated tdreport module
+pub mod tdreport_emu;
 
 // Re-export TDX emulation functions 
 pub use tdx_emu::{
@@ -45,11 +48,12 @@ pub mod tdx {
         tdvmcall_mmio_read, tdvmcall_mmio_write,
         tdvmcall_mapgpa, tdvmcall_rdmsr, tdvmcall_wrmsr,
         tdvmcall_cpuid, tdvmcall_setup_event_notify,
-        tdvmcall_get_quote, tdvmcall_service,
+        tdvmcall_service,
     };
 
-    // Export emulated MigTD functions
+    // Export emulated functions
     pub use crate::tdx_emu::{
+        tdvmcall_get_quote,
         tdvmcall_migtd_waitforrequest,
         tdvmcall_migtd_reportstatus,
         tdvmcall_migtd_send_sync as tdvmcall_migtd_send,
@@ -59,6 +63,45 @@ pub mod tdx {
         tdcall_sys_rd,
         tdcall_sys_wr,
     };
+}
+
+// Emulated tdreport module for AzCVMEmu compatibility
+pub mod tdreport {
+    use crate::tdreport_emu::tdcall_report_emulated;
+    use az_tdx_vtpm::tdx::TdReport as AzTdReport;
+    use original_tdx_tdcall::TdCallError;
+
+    // Re-export some useful constants and types from original
+    pub use original_tdx_tdcall::tdreport::{TD_REPORT_SIZE, TdxReport};
+
+    /// Emulated tdcall_report function for AzCVMEmu mode
+    /// Now returns the exact same error type as the original for perfect compatibility
+    pub fn tdcall_report(additional_data: &[u8; 64]) -> Result<TdxReport, TdCallError> {
+        let az_td_report = tdcall_report_emulated(additional_data)?;
+        
+        // Create a full 1024-byte TdxReport from the az-tdx-vtpm TdReport
+        // We need to copy the az-tdx-vtpm data into a properly sized buffer
+        let mut tdx_report_bytes = [0u8; TD_REPORT_SIZE];
+        
+        // Convert az_td_report to bytes using pointer cast
+        let az_report_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &az_td_report as *const AzTdReport as *const u8,
+                core::mem::size_of::<AzTdReport>()
+            )
+        };
+        
+        let copy_size = core::cmp::min(az_report_bytes.len(), TD_REPORT_SIZE);
+        tdx_report_bytes[..copy_size].copy_from_slice(&az_report_bytes[..copy_size]);
+        
+        // Convert the full 1024-byte buffer to TdxReport
+        let tdx_report = unsafe {
+            // Safety: We have a properly sized 1024-byte buffer that matches TdxReport layout
+            core::mem::transmute::<[u8; TD_REPORT_SIZE], TdxReport>(tdx_report_bytes)
+        };
+        
+        Ok(tdx_report)
+    }
 }
 
 // Add td_call emulation support

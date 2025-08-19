@@ -6,6 +6,10 @@ use crypto::{
     x509::{DerError, ObjectIdentifier},
     Error as CryptoError,
 };
+
+#[cfg(feature = "AzCVMEmu")]
+use tdx_tdcall_emu::original_tdx_tdcall::TdCallError;
+#[cfg(not(feature = "AzCVMEmu"))]
 use tdx_tdcall::TdCallError;
 
 #[cfg(feature = "main")]
