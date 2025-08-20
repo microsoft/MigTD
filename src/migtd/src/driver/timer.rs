@@ -4,20 +4,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Once;
-
-// Import td-payload APIs based on build mode
-#[cfg(feature = "AzCVMEmu")]
-use td_payload_emu::arch::apic::*;
-#[cfg(feature = "AzCVMEmu")]
-use td_payload_emu::arch::idt::{
-    register_interrupt_callback, InterruptCallback, InterruptStack,
-};
-#[cfg(not(feature = "AzCVMEmu"))]
 use td_payload::arch::apic::*;
-#[cfg(not(feature = "AzCVMEmu"))]
-use td_payload::arch::idt::{
-    register_interrupt_callback, InterruptCallback, InterruptStack,
-};
+use td_payload::arch::idt::{register_interrupt_callback, InterruptCallback, InterruptStack};
 
 /// A simple apic timer notification handler used to handle the
 /// time out events

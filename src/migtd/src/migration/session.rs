@@ -18,6 +18,8 @@ use spin::Mutex;
 use td_payload_emu::mm::shared::SharedMemory;
 #[cfg(not(feature = "AzCVMEmu"))]
 use td_payload::mm::shared::SharedMemory;
+#[cfg(not(feature = "AzCVMEmu"))]
+use crate::driver::ticks::with_timeout;
 #[cfg(feature = "AzCVMEmu")]
 use tdx_tdcall_emu::{
     td_call,
@@ -57,6 +59,18 @@ struct ExchangeInformation {
     min_ver: u16,
     max_ver: u16,
     key: MigrationSessionKey,
+}
+
+// Local timeout helper: only for AzCVMEmu. Non-AzCVMEmu uses ticks::with_timeout.
+#[cfg(feature = "AzCVMEmu")]
+pub async fn with_timeout<F: core::future::Future>(
+    timeout: core::time::Duration,
+    fut: F,
+) -> core::result::Result<F::Output, crate::driver::ticks::TimeoutError> {
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(v) => Ok(v),
+    Err(_elapsed) => Err(crate::driver::ticks::TimeoutError),
+    }
 }
 
 impl Default for ExchangeInformation {
@@ -410,7 +424,6 @@ pub fn report_status(status: u8, request_id: u64) -> Result<()> {
 
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
-    use crate::driver::ticks::with_timeout;
     use core::time::Duration;
 
     const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
