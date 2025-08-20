@@ -1715,27 +1715,6 @@ fn init_collateral() {
     });
 }
 
-/// Set custom collateral data (useful for testing or runtime updates)
-/// Returns true if successful, false otherwise
-pub fn set_collateral_data(data: &[u8]) -> bool {
-    match COLLATERAL.lock() {
-        Ok(mut collateral) => {
-            collateral.clear();
-            collateral.extend_from_slice(data);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-/// Get the current collateral data size
-pub fn get_collateral_size() -> usize {
-    init_collateral();
-    match COLLATERAL.lock() {
-        Ok(collateral) => collateral.len(),
-        Err(_) => 0,
-    }
-}
 
 /// Quote header structure for servtd_get_quote
 #[repr(C)]
