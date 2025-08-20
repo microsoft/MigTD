@@ -19,9 +19,7 @@ use super::*;
 use crate::event_log::get_event_log;
 use verify::*;
 #[cfg(feature = "AzCVMEmu")]
-use tdx_tdcall_emu::tdreport;
-#[cfg(not(feature = "AzCVMEmu"))]
-use tdx_tdcall::tdreport;
+use tdx_tdcall_emu as tdx_tdcall;
 
 type Result<T> = core::result::Result<T, RatlsError>;
 
@@ -102,9 +100,8 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
     // Generate the TD Report that contains the public key hash as nonce
     let mut additional_data = [0u8; 64];
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
-    let td_report = tdreport::tdcall_report(&additional_data)?;
+    let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
     attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
-
 }
 
 fn verify_server_cert(cert: &[u8], quote: &[u8]) -> core::result::Result<(), CryptoError> {
@@ -192,9 +189,6 @@ mod verify {
     fn verify_public_key(verified_report: &[u8], public_key: &[u8]) -> CryptoResult<()> {
         #[cfg(feature = "AzCVMEmu")]
         {
-            // In AzCVMEmu mode, we don't verify the public key in the report
-            // This is acceptable for testing/development but would not be secure in production
-            log::warn!("AzCVMEmu mode: Skipping public key verification in report");
             return Ok(());
         }
 
