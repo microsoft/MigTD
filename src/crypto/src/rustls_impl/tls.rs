@@ -947,20 +947,11 @@ pub(crate) struct TlsTimeProvider;
 
 impl TimeProvider for TlsTimeProvider {
     fn current_time(&self) -> Option<UnixTime> {
-        // In AzCVMEmu mode, avoid calling get_sys_time() entirely since it crashes
-        // when trying to access CMOS RTC I/O ports in emulation
+        // Avoid RTC access in AzCVMEmu; use a fixed timestamp.
         #[cfg(feature = "AzCVMEmu")]
         {
-            // Use a fixed timestamp (Jan 1, 2024) for AzCVMEmu mode
-            let fallback_timestamp = 1704067200i64; // Unix timestamp for 2024-01-01 00:00:00 UTC
-            return Some(UnixTime::since_unix_epoch(Duration::new(
-                fallback_timestamp as u64,
-                0,
-            )));
+            return Some(UnixTime::since_unix_epoch(Duration::new(1704067200u64, 0)));
         }
-        
-        // For non-AzCVMEmu mode, use the real system time
-        #[cfg(not(feature = "AzCVMEmu"))]
         Some(UnixTime::since_unix_epoch(Duration::new(
             sys_time::get_sys_time()? as u64,
             0,

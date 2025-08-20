@@ -9,7 +9,6 @@ use td_layout::build_time::{TD_SHIM_CONFIG_BASE, TD_SHIM_CONFIG_SIZE};
 
 #[cfg(not(feature = "AzCVMEmu"))]
 use td_shim_interface::td_uefi_pi::{fv, pi};
-
 #[cfg(feature = "AzCVMEmu")]
 use td_shim_interface_emu::td_uefi_pi::{fv, pi};
 

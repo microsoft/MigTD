@@ -18,8 +18,6 @@ use crypto::{
 use super::*;
 use crate::event_log::get_event_log;
 use verify::*;
-
-// Conditional imports for tdx_tdcall based on feature
 #[cfg(feature = "AzCVMEmu")]
 use tdx_tdcall_emu::tdreport;
 #[cfg(not(feature = "AzCVMEmu"))]
@@ -104,8 +102,6 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
     // Generate the TD Report that contains the public key hash as nonce
     let mut additional_data = [0u8; 64];
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
-    
-
     let td_report = tdreport::tdcall_report(&additional_data)?;
     attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
 
@@ -237,8 +233,8 @@ mod verify {
             .extensions
             .as_ref()
             .ok_or(CryptoError::ParseCertificate)?;
-        let _ = parse_extensions(extensions).ok_or(CryptoError::ParseCertificate)?;
-        
+    let _ = parse_extensions(extensions).ok_or(CryptoError::ParseCertificate)?;
+
         // As the remote attestation is disabled, the certificate can't be verified. Aways return
         // success for test purpose.
         Ok(())

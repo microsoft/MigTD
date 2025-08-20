@@ -189,7 +189,6 @@ fn sleep() {
 
 #[cfg(test)]
 fn main() {}
-
 // FIXME: remove when https://github.com/Amanieu/minicov/issues/12 is fixed.
 #[cfg(all(feature = "coverage", target_os = "none"))]
 #[no_mangle]

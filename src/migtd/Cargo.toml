@@ -29,51 +29,33 @@ r-efi = "3.2.0"
 scroll = { version = "0.10", default-features = false, features = ["derive"]}
 spin = "0.9.2"
 tdx-tdcall = { path = "../../deps/td-shim/tdx-tdcall"}
-# Use emulated tdx-tdcall for AzCVMEmu feature
-tdx-tdcall-emu = { path = "../../deps/td-shim-AzCVMEmu/tdx-tdcall", optional = true, package = "tdx-tdcall-emu" }
 td-logger = { path = "../../deps/td-shim/td-logger", features = ["tdx"] }
 td-layout = { path = "../../deps/td-shim/td-layout"}
 td-loader = { path = "../../deps/td-shim/td-loader"}
 td-paging = { path = "../../deps/td-shim/td-paging"}
-# td-payload provides SharedMemory and other primitives; in AzCVMEmu we replace it
-# with a lightweight emulated implementation that works in host mode.
 td-payload = { path = "../../deps/td-shim/td-payload", features = ["tdx"] }
-td-payload-emu = { path = "../../deps/td-shim-AzCVMEmu/td-payload-emu", optional = true }
-td-shim-interface = { path = "../../deps/td-shim/td-shim-interface", optional = false }
-td-shim = { path = "../../deps/td-shim/td-shim", optional = false }
-td-shim-interface-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim-interface", optional = true, features = ["std"] }
-td-shim-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim", optional = true }
+td-shim-interface = { path = "../../deps/td-shim/td-shim-interface"}
 virtio = { path="../devices/virtio" }
 vsock = { path="../devices/vsock", default-features = false, optional = true }
 virtio_serial = { path="../devices/virtio_serial", optional = true }
-vmcall_raw = { path="../devices/vmcall_raw", optional = true, default-features = false }
-env_logger = { version = "0.10.0", optional = true }
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread"], optional = true }
-az-tdx-vtpm = { version = "0.7", optional = true }
+vmcall_raw = { path="../devices/vmcall_raw", optional = true }
 x86 = "0.47.0"
 x86_64 = { version = "0.14", default-features = false, features = ["instructions"] }
 zerocopy = { version = "0.7", features = ["derive"] }
+
+# AzCVMEmu optional deps (grouped)
+tdx-tdcall-emu = { path = "../../deps/td-shim-AzCVMEmu/tdx-tdcall", optional = true }
+td-payload-emu = { path = "../../deps/td-shim-AzCVMEmu/td-payload-emu", optional = true }
+td-shim-interface-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim-interface", optional = true, features = ["std"] }
+td-shim-emu = { path = "../../deps/td-shim-AzCVMEmu/td-shim", optional = true }
+env_logger = { version = "0.10.0", optional = true }
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread"], optional = true }
 
 minicov = { version = "0.2", default-features = false, optional = true }
 td-benchmark = { path = "../../deps/td-shim/devtools/td-benchmark", default-features = false,  optional = true }
 
 [features]
 default = ["virtio-vsock"]
-AzCVMEmu = [
-	"main",                     # Include main feature (and thus td-payload)
-	"attestation/AzCVMEmu",     # Include attestation AzCVMEmu-specific features
-	"crypto/AzCVMEmu",
-	"policy/AzCVMEmu",
-	"vmcall-raw",
-	"vmcall_raw/AzCVMEmu",
-	"td-shim-interface-emu",
-	"td-shim-emu",
-	"tdx-tdcall-emu",
-	"az-tdx-vtpm",
-	"td-payload-emu",           # Use emulated td-payload that inherits from real one
-	"env_logger",
-	"tokio",
-]
 cet-shstk = ["td-payload/cet-shstk"]
 coverage = ["minicov"]
 main = ["attestation", "policy/log"]
@@ -86,3 +68,17 @@ vmcall-raw = ["vmcall_raw"]
 test_heap_size = ["td-benchmark", "td-payload/test_heap_size"]
 test_stack_size = ["td-benchmark"]
 test_disable_ra_and_accept_all = ["attestation/test"] # Dangerous: can only be used for test purpose to bypass the remote attestation
+AzCVMEmu = [
+	"main",                     # Include main feature by default
+	"attestation/AzCVMEmu",
+	"crypto/AzCVMEmu",
+	"policy/AzCVMEmu",
+	"vmcall-raw",               # Include vmcall-raw feature by default
+	"vmcall_raw/AzCVMEmu",
+	"td-shim-interface-emu",
+	"td-shim-emu",
+	"tdx-tdcall-emu",
+	"td-payload-emu",
+	"env_logger",
+	"tokio",
+]

@@ -19,11 +19,15 @@ use td_payload_emu::mm::shared::SharedMemory;
 #[cfg(not(feature = "AzCVMEmu"))]
 use td_payload::mm::shared::SharedMemory;
 #[cfg(feature = "AzCVMEmu")]
-use tdx_tdcall_emu::{td_call, tdx, TdcallArgs};
+use tdx_tdcall_emu::{
+    td_call,
+    tdx::{self, tdcall_servtd_wr},
+    TdcallArgs,
+};
 #[cfg(not(feature = "AzCVMEmu"))]
 use tdx_tdcall::{
     td_call,
-    tdx,
+    tdx::{self, tdcall_servtd_wr},
     TdcallArgs,
 };
 use zerocopy::AsBytes;
@@ -632,7 +636,7 @@ fn cal_mig_version(
 }
 
 fn set_mig_version(info: &MigrationInformation, mig_ver: u16) -> Result<()> {
-    tdx::tdcall_servtd_wr(
+    tdcall_servtd_wr(
         info.mig_info.binding_handle,
         TDCS_FIELD_MIG_VERSION,
         mig_ver as u64,
