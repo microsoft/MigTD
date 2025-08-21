@@ -48,11 +48,10 @@ pub fn main() {
     
     // Initialize event log emulation
     td_shim_emu::event_log::init_event_log();
-
-    // Initialize emulation layer
-    initialize_emulation();
-    // Parse command line arguments and set up wait_for_request() emulation
+    // Parse command line arguments first so `-h` works without env vars/files
     parse_commandline_args();
+    // Initialize emulation layer (requires env vars/files); skipped if `-h` exited
+    initialize_emulation();
     
     // Continue with the main runtime flow
     runtime_main_emu();
@@ -67,8 +66,9 @@ fn initialize_emulation() {
             path
         },
         Err(_) => {
-            log::error!("MIGTD_POLICY_FILE environment variable not set");
-            std::process::exit(1);
+            println!("MIGTD_POLICY_FILE environment variable not set");
+            print_usage();
+            process::exit(1);
         }
     };
     
@@ -78,20 +78,23 @@ fn initialize_emulation() {
             path
         },
         Err(_) => {
-            log::error!("MIGTD_ROOT_CA_FILE environment variable not set");
-            std::process::exit(1);
+            println!("MIGTD_ROOT_CA_FILE environment variable not set");
+            print_usage();
+            process::exit(1);
         }
     };
     
     // Check if files exist before attempting to initialize
     if !std::path::Path::new(&policy_file_path).exists() {
-        log::error!("Policy file not found: {}", policy_file_path);
-        std::process::exit(1);
+        println!("Policy file not found: {}", policy_file_path);
+        print_usage();
+        process::exit(1);
     }
     
     if !std::path::Path::new(&root_ca_file_path).exists() {
-        log::error!("Root CA file not found: {}", root_ca_file_path);
-        std::process::exit(1);
+        println!("Root CA file not found: {}", root_ca_file_path);
+        print_usage();
+        process::exit(1);
     }
     
     // Initialize file-based emulation with real file access
@@ -138,8 +141,6 @@ fn parse_commandline_args() {
     let mut is_source = true;
     let mut target_td_uuid = [1, 2, 3, 4];
     let mut binding_handle = 0x1234;
-    let mut policy_id = 0u64;
-    let mut comm_id = 0u64;
     let mut destination_ip: Option<String> = None;
     let mut destination_port: Option<u16> = None;
     let mut help_requested = false;
@@ -152,8 +153,9 @@ fn parse_commandline_args() {
                     mig_request_id = id;
                     i += 2;
                 } else {
-                    log::error!("Invalid request ID value: {}", args[i + 1]);
-                    std::process::exit(1);
+                    println!("Invalid request ID value: {}", args[i + 1]);
+                    print_usage();
+                    process::exit(1);
                 }
             }
             "--role" | "-m" if i + 1 < args.len() => {
@@ -167,8 +169,9 @@ fn parse_commandline_args() {
                         i += 2;
                     }
                     _ => {
-                        log::error!("Invalid role value: {}. Use 'source' or 'destination'", args[i + 1]);
-                        std::process::exit(1);
+                        println!("Invalid role value: {}. Use 'source' or 'destination'", args[i + 1]);
+                        print_usage();
+                        process::exit(1);
                     }
                 }
             }
@@ -182,8 +185,9 @@ fn parse_commandline_args() {
                     target_td_uuid = [u1, u2, u3, u4];
                     i += 5;
                 } else {
-                    log::error!("Invalid UUID values. Expected 4 unsigned integers");
-                    std::process::exit(1);
+                    println!("Invalid UUID values. Expected 4 unsigned integers");
+                    print_usage();
+                    process::exit(1);
                 }
             }
             "--binding" | "-b" if i + 1 < args.len() => {
@@ -198,26 +202,9 @@ fn parse_commandline_args() {
                     binding_handle = handle;
                     i += 2;
                 } else {
-                    log::error!("Invalid binding handle value: {}", args[i + 1]);
-                    std::process::exit(1);
-                }
-            }
-            "--policy-id" | "-p" if i + 1 < args.len() => {
-                if let Ok(id) = args[i + 1].parse::<u64>() {
-                    policy_id = id;
-                    i += 2;
-                } else {
-                    log::error!("Invalid policy ID value: {}", args[i + 1]);
-                    std::process::exit(1);
-                }
-            }
-            "--comm-id" | "-c" if i + 1 < args.len() => {
-                if let Ok(id) = args[i + 1].parse::<u64>() {
-                    comm_id = id;
-                    i += 2;
-                } else {
-                    log::error!("Invalid communication ID value: {}", args[i + 1]);
-                    std::process::exit(1);
+                    println!("Invalid binding handle value: {}", args[i + 1]);
+                    print_usage();
+                    process::exit(1);
                 }
             }
             "--dest-ip" | "-d" if i + 1 < args.len() => {
@@ -229,8 +216,9 @@ fn parse_commandline_args() {
                     destination_port = Some(port);
                     i += 2;
                 } else {
-                    log::error!("Invalid destination port value: {}", args[i + 1]);
-                    std::process::exit(1);
+                    println!("Invalid destination port value: {}", args[i + 1]);
+                    print_usage();
+                    process::exit(1);
                 }
             }
             "--help" | "-h" => {
@@ -238,7 +226,7 @@ fn parse_commandline_args() {
                 i += 1;
             }
             _ => {
-                log::error!("Unknown argument: {}", args[i]);
+                println!("Unknown argument: {}", args[i]);
                 help_requested = true;
                 i += 1;
             }
@@ -258,8 +246,8 @@ fn parse_commandline_args() {
         info.migration_source = if is_source { 1 } else { 0 };
         info.target_td_uuid = [target_td_uuid[0] as u64, target_td_uuid[1] as u64, target_td_uuid[2] as u64, target_td_uuid[3] as u64];
         info.binding_handle = binding_handle;
-        info.mig_policy_id = policy_id;
-        info.communication_id = comm_id;
+        info.mig_policy_id = 0;
+        info.communication_id = 0;
         info
     };
     
@@ -268,8 +256,6 @@ fn parse_commandline_args() {
     log::info!("  Role: {}", if is_source { "Source" } else { "Destination" });
     log::info!("  Target TD UUID: {:?}", target_td_uuid);
     log::info!("  Binding Handle: {:#x}", binding_handle);
-    log::info!("  Policy ID: {}", policy_id);
-    log::info!("  Communication ID: {}", comm_id);
     
     if let Some(ip) = &destination_ip {
         log::info!("  Destination IP: {}", ip);
@@ -341,21 +327,21 @@ fn print_usage() {
     println!("Required Environment Variables:");
     println!("  MIGTD_POLICY_FILE          Path to the migration policy file");
     println!("  MIGTD_ROOT_CA_FILE         Path to the root CA certificate file");
+    println!("  Note: Accessing a vTPM (e.g., /dev/tpmrm0) may require sudo or proper device permissions.");
+    println!("        If using TPM2-TSS, you may need to export TSS2_TCTI=device:/dev/tpmrm0");
     println!();
     println!("Command Line Options:");
     println!("  --request-id, -r ID        Set migration request ID (default: 1)");
     println!("  --role, -m ROLE            Set role as 'source' or 'destination' (default: source)");
     println!("  --uuid, -u U1 U2 U3 U4     Set target TD UUID as four integers (default: 1 2 3 4)");
     println!("  --binding, -b HANDLE       Set binding handle as hex or decimal (default: 0x1234)");
-    println!("  --policy-id, -p ID         Set migration policy ID (default: 0)");
-    println!("  --comm-id, -c ID           Set communication ID (default: 0)");
     println!("  --dest-ip, -d IP           Set destination IP address for connection (default: 127.0.0.1)");
     println!("  --dest-port, -t PORT       Set destination port for connection (default: 8001)");
     println!("  --help, -h                 Show this help message");
     println!();
     println!("Examples:");
-    println!("  export MIGTD_POLICY_FILE=/path/to/policy.bin");
-    println!("  export MIGTD_ROOT_CA_FILE=/path/to/root_ca.bin");
+    println!("  export MIGTD_POLICY_FILE=config/policy.json");
+    println!("  export MIGTD_ROOT_CA_FILE=config/Intel_SGX_Provisioning_Certification_RootCA.cer");
     println!("  ./migtd --role source --request-id 42");
     println!("  ./migtd -m destination -r 42 -b 0x5678");
     println!("  ./migtd --role source --dest-ip 192.168.1.100 --dest-port 8001");
