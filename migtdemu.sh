@@ -50,6 +50,7 @@ show_usage() {
     echo "  --test                       Enable test mode (skips remote attestation and uses mock quotes)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
+    echo "  --log-level LEVEL            Set Rust log level (trace, debug, info, warn, error) (default: debug for debug builds, info for release builds)"
     echo "  -h, --help                   Show this help message"
     echo
     echo "Notes:"
@@ -67,6 +68,8 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --test --role source              # Build with test mode (no Azure CVM/TPM required)"
     echo "  $0 --test --both                     # Run both source and destination in test mode"
+    echo "  $0 --log-level debug --role source   # Run with debug log level"
+    echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
 }
 
 # Function to check if file exists
@@ -156,6 +159,7 @@ DEST_PORT="$DEFAULT_DEST_PORT"
 POLICY_FILE="$DEFAULT_POLICY_FILE"
 ROOT_CA_FILE="$DEFAULT_ROOT_CA_FILE"
 BUILD_MODE="$DEFAULT_BUILD_MODE"
+CUSTOM_LOG_LEVEL=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -202,6 +206,10 @@ while [[ $# -gt 0 ]]; do
         --no-sudo)
             USE_SUDO=false
             shift
+            ;;
+        --log-level)
+            CUSTOM_LOG_LEVEL="$2"
+            shift 2
             ;;
         --build)
             # Keep for backward compatibility, but it's now always enabled
@@ -331,7 +339,9 @@ if [[ -z "$RUST_BACKTRACE" ]]; then
     RUST_BACKTRACE="$DEFAULT_RUST_BACKTRACE"
 fi
 if [[ -z "$RUST_LOG" ]]; then
-    if [[ "$BUILD_MODE" == "debug" ]]; then
+    if [[ -n "$CUSTOM_LOG_LEVEL" ]]; then
+        RUST_LOG="$CUSTOM_LOG_LEVEL"
+    elif [[ "$BUILD_MODE" == "debug" ]]; then
         RUST_LOG="$DEFAULT_RUST_LOG_DEBUG"
     else
         RUST_LOG="$DEFAULT_RUST_LOG_RELEASE"
@@ -391,14 +401,17 @@ if [[ "$RUN_BOTH" == true ]]; then
     echo
     # Run source in foreground; on failure, show last logs and exit non-zero
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}" || FAILED=true
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
+        SRC_EXIT_CODE=$?
     else
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}" || FAILED=true
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
+        SRC_EXIT_CODE=$?
     fi
-    if [[ "$FAILED" == true ]]; then
+    echo -e "${BLUE}Source migtd exit code: $SRC_EXIT_CODE${NC}"
+    if [[ "$SRC_EXIT_CODE" -ne 0 ]]; then
         echo -e "${RED}Source run failed. Last 100 lines of destination log:${NC}"
         tail -n 100 dest.out.log || true
-        exit 1
+        exit $SRC_EXIT_CODE
     fi
 else
     # Single role run
@@ -419,7 +432,11 @@ else
     echo
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
         run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        EXIT_CODE=$?
     else
         run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        EXIT_CODE=$?
     fi
+    echo -e "${BLUE}MigTD exit code: $EXIT_CODE${NC}"
+    exit $EXIT_CODE
 fi

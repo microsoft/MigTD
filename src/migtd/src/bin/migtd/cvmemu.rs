@@ -53,8 +53,9 @@ pub fn main() {
     // Initialize emulation layer (requires env vars/files); skipped if `-h` exited
     initialize_emulation();
     
-    // Continue with the main runtime flow
-    runtime_main_emu();
+    // Continue with the main runtime flow and exit with the returned code
+    let exit_code = runtime_main_emu();
+    process::exit(exit_code);
 }
 
 /// Initialize emulation layer
@@ -118,7 +119,7 @@ fn initialize_emulation() {
 }
 
 /// Main runtime function for AzCVMEmu mode
-fn runtime_main_emu() {
+fn runtime_main_emu() -> i32 {
     // Dump basic information of MigTD (reusing from main.rs)
     basic_info();
 
@@ -128,8 +129,8 @@ fn runtime_main_emu() {
     // Register callback
     event::register_callback();
 
-    // Handle pre-migration for emulation mode
-    handle_pre_mig_emu();
+    // Handle pre-migration for emulation mode and return exit code
+    handle_pre_mig_emu()
 }
 
 fn parse_commandline_args() {
@@ -347,7 +348,7 @@ fn print_usage() {
     println!("  ./migtd --role source --dest-ip 192.168.1.100 --dest-port 8001");
 }
 
-fn handle_pre_mig_emu() {
+fn handle_pre_mig_emu() -> i32 {
   
     // For AzCVMEmu, create an async runtime and run the standard flow once
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
@@ -396,5 +397,5 @@ fn handle_pre_mig_emu() {
         }
     });
 
-    process::exit(exit_code);
+    exit_code
 }
