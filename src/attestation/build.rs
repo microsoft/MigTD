@@ -51,9 +51,10 @@ fn main() {
     );
 
     println!("cargo:rustc-link-search=native={}", search_dir);
-    
+
     // Use different linking approach based on feature
-    #[cfg(feature = "AzCVMEmu")] {
+    #[cfg(feature = "AzCVMEmu")]
+    {
         // Run the fixup script to create the modified library for AzCVMEmu
         let script_path = crate_path.join("fixup-libservtd-attest-lib.sh");
         let status = Command::new("bash")

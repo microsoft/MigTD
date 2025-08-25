@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
+#[cfg(not(feature = "AzCVMEmu"))]
+use crate::driver::ticks::with_timeout;
 #[cfg(feature = "vmcall-raw")]
 use crate::migration::event::VMCALL_MIG_REPORTSTATUS_FLAGS;
 use alloc::collections::BTreeSet;
@@ -14,20 +16,18 @@ use core::{future::poll_fn, mem::size_of, task::Poll};
 use event::VMCALL_SERVICE_FLAG;
 use lazy_static::lazy_static;
 use spin::Mutex;
+#[cfg(not(feature = "AzCVMEmu"))]
+use td_payload::mm::shared::SharedMemory;
 #[cfg(feature = "AzCVMEmu")]
 use td_payload_emu::mm::shared::SharedMemory;
 #[cfg(not(feature = "AzCVMEmu"))]
-use td_payload::mm::shared::SharedMemory;
-#[cfg(not(feature = "AzCVMEmu"))]
-use crate::driver::ticks::with_timeout;
-#[cfg(feature = "AzCVMEmu")]
-use tdx_tdcall_emu::{
+use tdx_tdcall::{
     td_call,
     tdx::{self, tdcall_servtd_wr},
     TdcallArgs,
 };
-#[cfg(not(feature = "AzCVMEmu"))]
-use tdx_tdcall::{
+#[cfg(feature = "AzCVMEmu")]
+use tdx_tdcall_emu::{
     td_call,
     tdx::{self, tdcall_servtd_wr},
     TdcallArgs,
@@ -69,7 +69,7 @@ pub async fn with_timeout<F: core::future::Future>(
 ) -> core::result::Result<F::Output, crate::driver::ticks::TimeoutError> {
     match tokio::time::timeout(timeout, fut).await {
         Ok(v) => Ok(v),
-    Err(_elapsed) => Err(crate::driver::ticks::TimeoutError),
+        Err(_elapsed) => Err(crate::driver::ticks::TimeoutError),
     }
 }
 

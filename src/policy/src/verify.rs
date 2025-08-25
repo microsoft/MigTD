@@ -692,7 +692,9 @@ fn replay_event_log(event_log: &[u8], report_peer: &Report) -> Result<(), Policy
         //In AzCVMEmu mode, RTMR extension is emulated (no-op), RTMR in MigTD QUOTE won't match eventlog.
         //Return OK in this development evnvironment.
         #[cfg(feature = "AzCVMEmu")]
-        { Ok(()) }
+        {
+            Ok(())
+        }
         #[cfg(not(feature = "AzCVMEmu"))]
         Err(PolicyError::InvalidEventLog)
     }

@@ -17,9 +17,9 @@ use crypto::{
 
 use super::*;
 use crate::event_log::get_event_log;
-use verify::*;
 #[cfg(feature = "AzCVMEmu")]
 use tdx_tdcall_emu as tdx_tdcall;
+use verify::*;
 
 type Result<T> = core::result::Result<T, RatlsError>;
 
