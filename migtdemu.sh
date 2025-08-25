@@ -379,7 +379,7 @@ if [[ "$RUN_BOTH" == true ]]; then
     fi
 
     # Trap to cleanup background process on exit
-    trap 'echo -e "\n${YELLOW}Stopping destination (PID ${DEST_PID})...${NC}"; kill ${DEST_PID} >/dev/null 2>&1 || true' EXIT
+    trap 'echo -e "\n${YELLOW}Cleaning up destination process (PID ${DEST_PID})...${NC}"; if kill -0 ${DEST_PID} 2>/dev/null; then kill ${DEST_PID} >/dev/null 2>&1 || true; wait ${DEST_PID} 2>/dev/null || true; fi' EXIT
 
     echo -e "${BLUE}Starting source (foreground)...${NC}"
     SRC_ARGS=(
@@ -408,6 +408,21 @@ if [[ "$RUN_BOTH" == true ]]; then
         SRC_EXIT_CODE=$?
     fi
     echo -e "${BLUE}Source migtd exit code: $SRC_EXIT_CODE${NC}"
+    
+    # Check destination exit code before stopping it
+    if kill -0 "$DEST_PID" 2>/dev/null; then
+        echo -e "${BLUE}Destination is still running, stopping it...${NC}"
+        kill "$DEST_PID" >/dev/null 2>&1 || true
+        wait "$DEST_PID" 2>/dev/null || true
+        DEST_EXIT_CODE=$?
+        echo -e "${BLUE}Destination migtd exit code: $DEST_EXIT_CODE${NC}"
+    else
+        # Destination already exited, get its exit code
+        wait "$DEST_PID" 2>/dev/null || true
+        DEST_EXIT_CODE=$?
+        echo -e "${BLUE}Destination migtd exit code: $DEST_EXIT_CODE${NC}"
+    fi
+    
     if [[ "$SRC_EXIT_CODE" -ne 0 ]]; then
         echo -e "${RED}Source run failed. Last 100 lines of destination log:${NC}"
         tail -n 100 dest.out.log || true
