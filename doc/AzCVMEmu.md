@@ -9,9 +9,17 @@ For development and testing MigTD core logic e2e flows, including RATLS with TDX
 
 **Note:** The `AzCVMEmu` feature only works with the `vmcall-raw` transport feature. When building with `AzCVMEmu`, the `main` and `vmcall-raw` features are enabled by default. You do not need to include them explicitly in the `--features` list.
 
+**Production build** (requires Azure CVM + TPM2‑TSS):
 ```
 cargo build --no-default-features --features "AzCVMEmu" --bin migtd
 ```
+
+**Test build** (development/testing - no Azure CVM required):
+```
+cargo build --no-default-features --features "AzCVMEmu,test_disable_ra_and_accept_all" --bin migtd
+```
+
+**⚠️ Warning**: The `test_disable_ra_and_accept_all` feature bypasses remote attestation entirely and uses mock TD reports/quotes. This is **dangerous** and should **only** be used for development and testing purposes, never in production.
 
 This builds the `migtd` binary and required dependencies.
 
@@ -25,7 +33,8 @@ This enables MigTD to run as a standard command-line application with:
 
 
 Prerequisites:
-- [Azure v6 TDX CVM](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcesv6-series?tabs=sizebasic), running Ubuntu 24.04 or 22.04
+- [Azure v6 TDX CVM](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcesv6-series?tabs=sizebasic), running Ubuntu 24.04 or 22.04 (for production builds)
+- For testing with `test_disable_ra_and_accept_all` feature: any Linux system with Rust toolchain (no Azure CVM required)
 - TPM2‑TSS runtime is typically required at runtime because AzCVMEmu uses `az-tdx-vtpm`, which initializes TPM via `tss-esapi` by default.
 	- Ubuntu 24.04 minimal runtime packages:
 		- `libtss2-esys` (e.g., `libtss2-esys-3.0.2-0t64`)
@@ -33,6 +42,7 @@ Prerequisites:
 	- Optional: `tpm2-tools` (debug/inspection), other TCTIs like `libtss2-tcti-mssim0`.
 	- Build-time: if build errors mention missing TSS2 headers, install `libtss2-dev`.
 	- The runner script auto-sets `TSS2_TCTI=device:/dev/tpmrm0` when the device exists and may enable sudo if permissions are insufficient.
+	- **Note**: When using `test_disable_ra_and_accept_all` feature, TPM2‑TSS is **not required** as mock TD reports and quotes are used instead of real TPM operations.
 
 Ubuntu 24.04 quick install (example):
 
@@ -58,10 +68,17 @@ The easiest way to run MigTD in AzCVMEmu mode is using the provided `migtdemu.sh
 
 # Run with custom configuration
 ./migtdemu.sh --role source --request-id 42 --dest-ip 192.168.1.100 --dest-port 8002
+
+# Test mode (no Azure CVM/TPM required)
+./migtdemu.sh --test --role source
+
+# Test mode with both source and destination
+./migtdemu.sh --test --both
 ```
 
 Script capabilities at a glance:
 - Builds MigTD with `--no-default-features --features AzCVMEmu` in the selected mode (debug/release).
+- With `--test` flag: Builds with `--features "AzCVMEmu,test_disable_ra_and_accept_all"` for mock attestation.
 - Validates and sets required env vars: `MIGTD_POLICY_FILE` and `MIGTD_ROOT_CA_FILE`.
 - Auto-sets `RUST_BACKTRACE` (1) and `RUST_LOG` (debug in debug builds, info in release) unless already set.
 - If `/dev/tpmrm0` (or TPM2-ABRMD socket) is present and permissions are insufficient, it automatically enables sudo even if `--no-sudo` is passed.
@@ -126,6 +143,17 @@ Direct run examples (no script):
 
 # Terminal 2: Start source MigTD connecting to the destination
 ./migtdemu.sh --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8001
+
+# Test mode examples (no Azure CVM/TPM required):
+# Terminal 1: Start destination MigTD in test mode
+./migtdemu.sh --test --role destination --request-id 42
+
+# Terminal 2: Start source MigTD in test mode
+./migtdemu.sh --test --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8001
+
+# Or run both on same machine with test mode:
+./migtdemu.sh --test --both --request-id 42
+```
 
 # Debug mode example
 ./migtdemu.sh --debug --role destination --request-id 123

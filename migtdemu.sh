@@ -19,6 +19,7 @@ DEFAULT_DEST_PORT="8001"
 DEFAULT_BUILD_MODE="release"
 USE_SUDO=true
 RUN_BOTH=false
+USE_TEST_MODE=false
 DEFAULT_RUST_BACKTRACE="1"
 # Default RUST_LOG: verbose in debug, info in release; can be overridden by env
 DEFAULT_RUST_LOG_DEBUG="debug"
@@ -46,6 +47,7 @@ show_usage() {
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
     echo "  --debug                      Build in debug mode (default: release)"
     echo "  --release                    Build in release mode (default)"
+    echo "  --test                       Enable test mode (skips remote attestation and uses mock quotes)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
     echo "  -h, --help                   Show this help message"
@@ -54,12 +56,17 @@ show_usage() {
     echo "  - TPM2TSS flows often require access to /dev/tpmrm0 or tpm2-abrmd."
     echo "    If those devices are present and you lack permissions, this script will"
     echo "    automatically enable sudo even if --no-sudo is specified."
+    echo "  - Test mode (--test) disables remote attestation and uses mock TD reports/quotes,"
+    echo "    eliminating the need for Azure CVM environment or TPM2-TSS dependencies."
+    echo "    This is useful for development and testing on any Linux system."
     echo
     echo "Examples:"
     echo "  $0                                    # Build release and run as source with defaults"
     echo "  $0 --role destination                # Build release and run as destination"
     echo "  $0 --debug --role source             # Build debug and run as source"
     echo "  $0 --release --role destination      # Build release and run as destination"
+    echo "  $0 --test --role source              # Build with test mode (no Azure CVM/TPM required)"
+    echo "  $0 --test --both                     # Run both source and destination in test mode"
 }
 
 # Function to check if file exists
@@ -76,6 +83,11 @@ check_file() {
 
 # Detect TPM access needs and force sudo when the current user lacks permissions
 maybe_force_sudo_due_to_tpm() {
+    # Skip TPM checks in test mode since it uses mock attestation
+    if [[ "$USE_TEST_MODE" == true ]]; then
+        return 0
+    fi
+    
     # Only relevant if user requested no sudo explicitly
     if [[ "$USE_SUDO" == false ]]; then
         local need_sudo=false
@@ -112,15 +124,23 @@ maybe_force_sudo_due_to_tpm() {
 # Function to build MigTD
 build_migtd() {
     local build_mode="$1"
-    echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
+    local test_mode="$2"
+    
+    local features="AzCVMEmu"
+    if [[ "$test_mode" == true ]]; then
+        features="AzCVMEmu,test_disable_ra_and_accept_all"
+        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + test features (mock attestation)...${NC}"
+    else
+        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
+    fi
     
     if [[ "$build_mode" == "debug" ]]; then
-        if ! cargo build --features "AzCVMEmu" --no-default-features; then
+        if ! cargo build --features "$features" --no-default-features; then
             echo -e "${RED}Error: Failed to build MigTD in debug mode${NC}" >&2
             exit 1
         fi
     else
-        if ! cargo build --release --features "AzCVMEmu" --no-default-features; then
+        if ! cargo build --release --features "$features" --no-default-features; then
             echo -e "${RED}Error: Failed to build MigTD in release mode${NC}" >&2
             exit 1
         fi
@@ -171,6 +191,10 @@ while [[ $# -gt 0 ]]; do
             BUILD_MODE="release"
             shift
             ;;
+        --test)
+            USE_TEST_MODE=true
+            shift
+            ;;
         --both)
             RUN_BOTH=true
             shift
@@ -207,7 +231,7 @@ fi
 cd "$(dirname "$0")"
 
 # Always build MigTD
-build_migtd "$BUILD_MODE"
+build_migtd "$BUILD_MODE" "$USE_TEST_MODE"
 
 # Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
@@ -283,6 +307,11 @@ echo -e "${BLUE}Setting up environment variables...${NC}"
 # Display configuration
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Build mode: $BUILD_MODE"
+if [[ "$USE_TEST_MODE" == true ]]; then
+    echo "  Test mode: enabled (mock attestation, no TPM/Azure CVM required)"
+else
+    echo "  Test mode: disabled (requires TPM/Azure CVM for attestation)"
+fi
 if [[ "$RUN_BOTH" == true ]]; then
     echo "  Mode: both (destination then source)"
 else
@@ -311,7 +340,7 @@ fi
 
 # Prefer TPM resource manager device for TPM2TSS if present
 TSS2_TCTI_AUTO=""
-if [[ -e /dev/tpmrm0 ]]; then
+if [[ "$USE_TEST_MODE" != true && -e /dev/tpmrm0 ]]; then
     TSS2_TCTI_AUTO="device:/dev/tpmrm0"
 fi
 
