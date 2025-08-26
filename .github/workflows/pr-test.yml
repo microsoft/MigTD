@@ -3,7 +3,7 @@ name: Pull Request Testing
 # Trigger on pull request events
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ feature/AzCVMEmu ]
     types: [opened, synchronize, reopened]
     paths-ignore:
       - "**.md"
@@ -98,7 +98,7 @@ jobs:
           if [[ $EXIT_CODE -eq 0 ]]; then
             echo "✅ Emulation test completed successfully"
             echo "test_status=success" >> $GITHUB_OUTPUT
-          elif [[ $EXIT_CODE -eq 124 ]]; then
+          } elif [[ $EXIT_CODE -eq 124 ]]; then
             echo "❌ Emulation test timed out after 300 seconds"
             echo "test_status=timeout" >> $GITHUB_OUTPUT
             exit 1
