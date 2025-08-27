@@ -19,7 +19,7 @@ DEFAULT_DEST_PORT="8001"
 DEFAULT_BUILD_MODE="release"
 USE_SUDO=true
 RUN_BOTH=false
-USE_TEST_MODE=false
+SKIP_RA=false
 DEFAULT_RUST_BACKTRACE="1"
 # Default RUST_LOG: verbose in debug, info in release; can be overridden by env
 DEFAULT_RUST_LOG_DEBUG="debug"
@@ -47,7 +47,7 @@ show_usage() {
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
     echo "  --debug                      Build in debug mode (default: release)"
     echo "  --release                    Build in release mode (default)"
-    echo "  --test                       Enable test mode (skips remote attestation and uses mock quotes)"
+    echo "  --skip-ra                    Skip remote attestation (uses mock TD reports/quotes for non-TDX environments)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
     echo "  --log-level LEVEL            Set Rust log level (trace, debug, info, warn, error) (default: debug for debug builds, info for release builds)"
@@ -57,8 +57,8 @@ show_usage() {
     echo "  - TPM2TSS flows often require access to /dev/tpmrm0 or tpm2-abrmd."
     echo "    If those devices are present and you lack permissions, this script will"
     echo "    automatically enable sudo even if --no-sudo is specified."
-    echo "  - Test mode (--test) disables remote attestation and uses mock TD reports/quotes,"
-    echo "    eliminating the need for Azure CVM environment or TPM2-TSS dependencies."
+    echo "  - Skip RA mode (--skip-ra) disables remote attestation and uses mock TD reports/quotes,"
+    echo "    allowing MigTD to run in non-TDX, non-Azure CVM environments without TPM2-TSS dependencies."
     echo "    This is useful for development and testing on any Linux system."
     echo
     echo "Examples:"
@@ -66,8 +66,8 @@ show_usage() {
     echo "  $0 --role destination                # Build release and run as destination"
     echo "  $0 --debug --role source             # Build debug and run as source"
     echo "  $0 --release --role destination      # Build release and run as destination"
-    echo "  $0 --test --role source              # Build with test mode (no Azure CVM/TPM required)"
-    echo "  $0 --test --both                     # Run both source and destination in test mode"
+    echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
+    echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
 }
@@ -86,8 +86,8 @@ check_file() {
 
 # Detect TPM access needs and force sudo when the current user lacks permissions
 maybe_force_sudo_due_to_tpm() {
-    # Skip TPM checks in test mode since it uses mock attestation
-    if [[ "$USE_TEST_MODE" == true ]]; then
+    # Skip TPM checks in skip RA mode since it uses mock attestation
+    if [[ "$SKIP_RA" == true ]]; then
         return 0
     fi
     
@@ -127,12 +127,12 @@ maybe_force_sudo_due_to_tpm() {
 # Function to build MigTD
 build_migtd() {
     local build_mode="$1"
-    local test_mode="$2"
+    local skip_ra="$2"
     
     local features="AzCVMEmu"
-    if [[ "$test_mode" == true ]]; then
+    if [[ "$skip_ra" == true ]]; then
         features="AzCVMEmu,test_disable_ra_and_accept_all"
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + test features (mock attestation)...${NC}"
+        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + skip RA features (mock attestation)...${NC}"
     else
         echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
     fi
@@ -195,8 +195,8 @@ while [[ $# -gt 0 ]]; do
             BUILD_MODE="release"
             shift
             ;;
-        --test)
-            USE_TEST_MODE=true
+        --skip-ra)
+            SKIP_RA=true
             shift
             ;;
         --both)
@@ -239,7 +239,7 @@ fi
 cd "$(dirname "$0")"
 
 # Always build MigTD
-build_migtd "$BUILD_MODE" "$USE_TEST_MODE"
+build_migtd "$BUILD_MODE" "$SKIP_RA"
 
 # Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
@@ -315,10 +315,10 @@ echo -e "${BLUE}Setting up environment variables...${NC}"
 # Display configuration
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Build mode: $BUILD_MODE"
-if [[ "$USE_TEST_MODE" == true ]]; then
-    echo "  Test mode: enabled (mock attestation, no TPM/Azure CVM required)"
+if [[ "$SKIP_RA" == true ]]; then
+    echo "  Skip RA mode: enabled (mock attestation, no TDX/Azure CVM/TPM required)"
 else
-    echo "  Test mode: disabled (requires TPM/Azure CVM for attestation)"
+    echo "  Skip RA mode: disabled (requires TDX/Azure CVM/TPM for attestation)"
 fi
 if [[ "$RUN_BOTH" == true ]]; then
     echo "  Mode: both (destination then source)"
@@ -350,7 +350,7 @@ fi
 
 # Prefer TPM resource manager device for TPM2TSS if present
 TSS2_TCTI_AUTO=""
-if [[ "$USE_TEST_MODE" != true && -e /dev/tpmrm0 ]]; then
+if [[ "$SKIP_RA" != true && -e /dev/tpmrm0 ]]; then
     TSS2_TCTI_AUTO="device:/dev/tpmrm0"
 fi
 
