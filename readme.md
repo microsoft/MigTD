@@ -122,6 +122,11 @@ To use vmcall-raw for the guest-host communication:
 cargo image --no-default-features --features stack-guard,vmcall-raw
 ```
 
+To generate IGVM format using vmcall-raw for the guest-host communication with logging enabled:
+```
+cargo image --no-default-features --features vmcall-raw,stack-guard,main,test_disable_ra_and_accept_all,vmcall-interrupt --log-level info --image-format igvm
+```
+
 ### Build for Azure CVM Emulation (AzCVMEmu)
 
 To build MigTD as a standard Rust app that can run in Azure TDX CVM environment, for development and testing purpose:
@@ -138,6 +143,11 @@ TD attributes, XFAM etc. An example configuration can be found in `config/servtd
 To generate the SERVTD_HASH_INFO of a MigTD binary with a default TD configuration at `config/servtd_info.json`:
 ```
 cargo hash --image /path/to/migtd.bin
+```
+
+And for IGVM format, update --image path like shown below
+```
+cargo hash --image /path/to/migtd.igvm
 ```
 
 You can also specify a custom configuration in the same format with `config/servtd_info.json`
