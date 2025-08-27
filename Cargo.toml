@@ -24,7 +24,8 @@ default-members = [
 
 exclude = [
     "deps/td-shim",
-    "deps/rustls"
+    "deps/rustls",
+    "deps/td-shim-AzCVMEmu"
     ]
 
 resolver = "2"
@@ -44,3 +45,4 @@ lto = true
 
 [patch.crates-io]
 ring = { path = "deps/td-shim/library/ring" }
+az-tdx-vtpm = { version = "0.7", git = "https://github.com/kinvolk/azure-cvm-tooling", package = "az-tdx-vtpm" }

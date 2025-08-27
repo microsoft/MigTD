@@ -132,6 +132,7 @@ pub struct MigtdMigpolicy {
 }
 
 #[repr(u8)]
+#[derive(Copy, Clone)]
 pub enum MigrationResult {
     Success = 0,
     InvalidParameter = 1,

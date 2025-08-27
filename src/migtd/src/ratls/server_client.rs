@@ -17,6 +17,8 @@ use crypto::{
 
 use super::*;
 use crate::event_log::get_event_log;
+#[cfg(feature = "AzCVMEmu")]
+use tdx_tdcall_emu as tdx_tdcall;
 use verify::*;
 
 type Result<T> = core::result::Result<T, RatlsError>;
@@ -99,7 +101,6 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
     let mut additional_data = [0u8; 64];
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
     let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
-
     attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
 }
 
@@ -186,6 +187,12 @@ mod verify {
     }
 
     fn verify_public_key(verified_report: &[u8], public_key: &[u8]) -> CryptoResult<()> {
+        if cfg!(feature = "AzCVMEmu") {
+            // In AzCVMEmu mode, REPORTDATA is constructed differently.
+            // Bypass public key hash check in this development environment.
+            log::warn!("AzCVMEmu mode: Skipping public key verification in TD report. This is NOT secure for production use.");
+            return Ok(());
+        }
         const PUBLIC_KEY_HASH_SIZE: usize = 48;
 
         let report_data = &verified_report[520..520 + PUBLIC_KEY_HASH_SIZE];
