@@ -126,14 +126,17 @@ pub fn init_with_real_file_reader() {
     crate::td_uefi_pi::fv::set_file_reader(real_file_reader);
 }
 
-// In a real implementation with file system access, this could be implemented as:
-/*
-#[cfg(feature = "std")]
-pub fn real_file_reader(path: &str) -> Option<Vec<u8>> {
-    use std::fs;
-    match fs::read(path) {
-        Ok(data) => Some(data),
-        Err(_) => None,
-    }
+/// Initialize file-based emulation with real files at specified paths
+/// 
+/// This function loads the policy and root CA files immediately from the filesystem
+/// and stores them in the emulation buffers.
+pub fn init_file_based_emulation_with_real_files(policy_path: &str, root_ca_path: &str) -> bool {
+    // Set the file reader first
+    crate::td_uefi_pi::fv::set_file_reader(real_file_reader);
+    
+    // Load the files immediately
+    let policy_loaded = crate::td_uefi_pi::fv::load_policy_from_file(policy_path);
+    let root_ca_loaded = crate::td_uefi_pi::fv::load_root_ca_from_file(root_ca_path);
+    
+    policy_loaded && root_ca_loaded
 }
-*/

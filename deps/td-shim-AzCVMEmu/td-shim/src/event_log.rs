@@ -11,12 +11,9 @@
 
 use cc_measurement::{
     log::{CcEventLogError, CcEventLogWriter},
-    CcEventHeader, TcgPcrEventHeader, TpmlDigestValues, TpmtHa, TpmuHa, 
     UefiPlatformFirmwareBlob2, EV_EFI_PLATFORM_FIRMWARE_BLOB2, EV_PLATFORM_CONFIG_FLAGS,
-    TcgEfiSpecIdevent, TcgEfiSpecIdEventAlgorithmSize,
 };
 use core::{mem::size_of, ptr::slice_from_raw_parts, ptr, slice};
-use zerocopy::{AsBytes, FromBytes};
 
 pub const CCEL_CC_TYPE_TDX: u8 = 2;
 
@@ -41,7 +38,8 @@ impl MockCcel {
         init_event_log();
         
         unsafe {
-            if let Some(log) = &EVENT_LOG {
+            let event_log_ptr = ptr::addr_of!(EVENT_LOG);
+            if let Some(log) = (*event_log_ptr).as_ref() {
                 Some(Self::new(log.data.as_ptr(), EVENT_LOG_BUFFER_SIZE))
             } else {
                 None
@@ -186,7 +184,7 @@ impl<T> MockOnce<T> {
 }
 
 // Define the size of the event log buffer as a constant for better maintainability
-pub const EVENT_LOG_BUFFER_SIZE: usize = 16384; // Increased from 4096 to 16384 (16KB)
+pub const EVENT_LOG_BUFFER_SIZE: usize = 32768; // Buffer size 32768 (32KB)
 
 pub struct EventLogEmulator {
     data: [u8; EVENT_LOG_BUFFER_SIZE], // Fixed size buffer defined by constant
@@ -241,8 +239,10 @@ pub fn get_ccel() -> Option<&'static MockCcel> {
         // Initialize if needed
         init_event_log();
         
-        if let Some(log) = &mut EVENT_LOG {
-            Some(MOCK_CCEL_ONCE.call_once(|| {
+        let event_log_ptr = ptr::addr_of_mut!(EVENT_LOG);
+        if let Some(log) = (*event_log_ptr).as_mut() {
+            let mock_ccel_ptr = ptr::addr_of_mut!(MOCK_CCEL_ONCE);
+            Some((*mock_ccel_ptr).call_once(|| {
                 MockCcel::new(log.data.as_ptr(), EVENT_LOG_BUFFER_SIZE)
             }))
         } else {
@@ -252,9 +252,10 @@ pub fn get_ccel() -> Option<&'static MockCcel> {
 }
 
 /// Mock event_log_slice function to align with non-AzCVMEmu API
-pub fn event_log_slice(ccel: &MockCcel) -> &'static mut [u8] {
+pub fn event_log_slice(_ccel: &MockCcel) -> &'static mut [u8] {
     unsafe {
-        if let Some(log) = &mut EVENT_LOG {
+        let event_log_ptr = ptr::addr_of_mut!(EVENT_LOG);
+        if let Some(log) = (*event_log_ptr).as_mut() {
             log.event_log_slice()
         } else {
             // This shouldn't happen if properly initialized
@@ -266,11 +267,12 @@ pub fn event_log_slice(ccel: &MockCcel) -> &'static mut [u8] {
 /// Initialize the event log emulator
 pub fn init_event_log() {
     unsafe {
-        if EVENT_LOG.is_none() {
-            EVENT_LOG = Some(EventLogEmulator::new());
+        let event_log_ptr = ptr::addr_of_mut!(EVENT_LOG);
+        if (*event_log_ptr).is_none() {
+            *event_log_ptr = Some(EventLogEmulator::new());
             // Add expected event at the beginning of the log
             // ToDo: Add MigTDCore event to support relevant policy rules
-            populate_TcgPcr_event_log();
+            populate_tcg_pcr_event_log();
         }
     }
 }
@@ -281,7 +283,8 @@ pub fn get_event_log() -> Option<&'static [u8]> {
     init_event_log();
     
     unsafe {
-        if let Some(log) = &EVENT_LOG {
+        let event_log_ptr = ptr::addr_of!(EVENT_LOG);
+        if let Some(log) = (*event_log_ptr).as_ref() {
             Some(log.full_buffer())
         } else {
             None
@@ -295,7 +298,8 @@ pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
     init_event_log();
     
     unsafe {
-        if let Some(log) = &mut EVENT_LOG {
+        let event_log_ptr = ptr::addr_of_mut!(EVENT_LOG);
+        if let Some(log) = (*event_log_ptr).as_mut() {
             Some(log.full_buffer_mut())
         } else {
             None
@@ -303,9 +307,10 @@ pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
     }
 }
 
-fn populate_TcgPcr_event_log() {
+fn populate_tcg_pcr_event_log() {
     unsafe {
-        if let Some(log) = &mut EVENT_LOG {
+        let event_log_ptr = ptr::addr_of_mut!(EVENT_LOG);
+        if let Some(log) = (*event_log_ptr).as_mut() {
             // Create a proper TCG event log starting with TcgPcrEventHeader
             // This is what the policy verification expects to find
             
@@ -317,26 +322,26 @@ fn populate_TcgPcr_event_log() {
             let spec_id_event = TcgEfiSpecIdevent::default();
             
             // Create TcgPcrEventHeader for the first event
-            let pcr_header = TcgPcrEventHeader {
-                mr_index: 0,
-                event_type: 0x80000003, // EV_NO_ACTION
-                digest: [0u8; 20], // SHA1 digest (zeros for EV_NO_ACTION)
-                event_size: size_of::<TcgEfiSpecIdevent>() as u32,
-            };
-            
-            // Write the headers to the event log
-            let mut offset = 0;
-            
-            // Write TcgPcrEventHeader
-            let pcr_header_bytes = pcr_header.as_bytes();
-            log.data[offset..offset + pcr_header_bytes.len()].copy_from_slice(pcr_header_bytes);
-            offset += pcr_header_bytes.len();
-            
-            // Write TcgEfiSpecIdevent
-            let spec_id_bytes = spec_id_event.as_bytes();
-            log.data[offset..offset + spec_id_bytes.len()].copy_from_slice(spec_id_bytes);
-            
-            // No need to track size - parsing logic will determine the written portion
+    let pcr_header = TcgPcrEventHeader {
+        mr_index: 0,
+        event_type: 0x80000003, // EV_NO_ACTION
+        digest: [0u8; 20], // SHA1 digest (zeros for EV_NO_ACTION)
+        event_size: size_of::<TcgEfiSpecIdevent>() as u32,
+    };
+    
+    // Write the headers to the event log
+    let mut offset = 0;
+    
+    // Write TcgPcrEventHeader
+    let pcr_header_bytes = pcr_header.as_bytes();
+    log.data[offset..offset + pcr_header_bytes.len()].copy_from_slice(pcr_header_bytes);
+    offset += pcr_header_bytes.len();
+    
+    // Write TcgEfiSpecIdevent
+    let spec_id_bytes = spec_id_event.as_bytes();
+    log.data[offset..offset + spec_id_bytes.len()].copy_from_slice(spec_id_bytes);
+    
+    // No need to track size - parsing logic will determine the written portion
         }
     }
 }

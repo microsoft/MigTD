@@ -39,14 +39,10 @@ pub mod file_ops;
 
 // Re-export key functions for convenience
 pub use td_uefi_pi::fv::{
-    init_file_based_emulation,
-    init_file_based_emulation_with_paths,
-    init_file_based_emulation_with_pattern,
-    init_file_based_emulation_with_real_files,
-    init_file_based_emulation_with_real_files_default,
-    load_policy_data,
-    load_root_ca_data,
-    set_policy_file_path,
-    set_root_ca_file_path,
-    set_file_reader,
+    set_policy_data,
+    set_root_ca_data,
+    load_policy_from_file,
+    load_root_ca_from_file,
 };
+
+pub use file_ops::init_file_based_emulation_with_real_files;
