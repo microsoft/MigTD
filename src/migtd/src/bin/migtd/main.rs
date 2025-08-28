@@ -16,7 +16,25 @@ use migtd::migration::data::MigrationInformation;
 use migtd::migration::session::*;
 use migtd::migration::MigrationResult;
 use migtd::{config, event_log, migration};
+use sha2::{Digest, Sha384};
 use spin::Mutex;
+use tdx_tdcall::tdreport;
+
+// Local trait to convert TdInfo to bytes without external dependency
+trait TdInfoAsBytes {
+    fn as_bytes(&self) -> &[u8];
+}
+
+impl TdInfoAsBytes for tdreport::TdInfo {
+    fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            core::slice::from_raw_parts(
+                self as *const _ as *const u8,
+                core::mem::size_of::<tdreport::TdInfo>(),
+            )
+        }
+    }
+}
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -42,6 +60,9 @@ pub fn runtime_main() {
 
     // Measure the input data
     do_measurements();
+
+    // calculate the hash of the TD info and log it
+    print_td_info_hash();
 
     migration::event::register_callback();
 
@@ -76,6 +97,20 @@ fn do_measurements() {
 
     // Get root certificate from CFV and measure it into RMTR
     get_ca_and_measure(event_log);
+}
+
+fn print_td_info_hash() {
+    let tdx_report = tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE]);
+    info!("tdx_report: {:?}", tdx_report);
+
+    let td_info = tdx_report.unwrap().td_info;
+    info!("td_info: {:?}", td_info);
+
+    let mut hasher = Sha384::new();
+    hasher.update(td_info.as_bytes());
+
+    let hash = hasher.finalize();
+    info!("TD Info Hash: {:x}", hash);
 }
 
 fn measure_test_feature(event_log: &mut [u8]) {

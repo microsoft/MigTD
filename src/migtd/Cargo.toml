@@ -45,12 +45,13 @@ zerocopy = { version = "0.7", features = ["derive"] }
 
 minicov = { version = "0.2", default-features = false, optional = true }
 td-benchmark = { path = "../../deps/td-shim/devtools/td-benchmark", default-features = false,  optional = true }
+sha2 = { version = "0.10.2", default-features = false, optional = true }
 
 [features]
 default = ["virtio-vsock"]
 cet-shstk = ["td-payload/cet-shstk"]
 coverage = ["minicov"]
-main = ["attestation", "policy/log"]
+main = ["attestation", "policy/log", "sha2"]
 stack-guard = ["td-payload/stack-guard"]
 virtio-vsock = ["vsock/virtio-vsock"]
 virtio-serial = ["virtio_serial"]
