@@ -59,6 +59,7 @@ pub fn runtime_main() {
 
 fn basic_info() {
     info!("MigTD Version - {}\n", MIGTD_VERSION);
+    info!("ACC Hello World MigTD\n");
 }
 
 fn do_measurements() {
