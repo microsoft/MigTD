@@ -18,7 +18,6 @@ use migtd::migration::MigrationResult;
 use migtd::{config, event_log, migration};
 use sha2::{Digest, Sha384};
 use spin::Mutex;
-use sha2::{Digest, Sha384};
 use tdx_tdcall::tdreport;
 
 // Local trait to convert TdInfo to bytes without external dependency
