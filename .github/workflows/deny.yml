@@ -1,10 +1,10 @@
 name: cargo-deny
 on:
   push:
-    branches: [ "main", "feature/AzCVMEmu" ]
+    branches: [ "main" ]
   pull_request:
     # The branches below must be a subset of the branches above
-    branches: [ "main", "feature/AzCVMEmu" ]
+    branches: [ "main" ]
   schedule:
     - cron: '0 0 * * *'
 
