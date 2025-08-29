@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "AzCVMEmu"), no_std)]
+#![cfg_attr(not(feature = "AzCVMEmu"), no_main)]
 
 extern crate alloc;
 
@@ -18,6 +18,9 @@ use migtd::migration::MigrationResult;
 use migtd::{config, event_log, migration};
 use spin::Mutex;
 
+#[cfg(feature = "AzCVMEmu")]
+mod cvmemu;
+
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Event IDs that will be used to tag the event log
@@ -25,6 +28,7 @@ const TAGGED_EVENT_ID_POLICY: u32 = 0x1;
 const TAGGED_EVENT_ID_ROOT_CA: u32 = 0x2;
 const TAGGED_EVENT_ID_TEST: u32 = 0x32;
 
+#[cfg(not(feature = "AzCVMEmu"))]
 #[no_mangle]
 pub extern "C" fn main() {
     #[cfg(feature = "test_stack_size")]
@@ -32,6 +36,12 @@ pub extern "C" fn main() {
         td_benchmark::StackProfiling::init(0x5a5a_5a5a_5a5a_5a5a, 0xd000);
     }
     runtime_main()
+}
+
+// AzCVMEmu entry point - standard Rust main function
+#[cfg(feature = "AzCVMEmu")]
+fn main() {
+    cvmemu::main();
 }
 
 pub fn runtime_main() {
@@ -57,11 +67,11 @@ pub fn runtime_main() {
     handle_pre_mig();
 }
 
-fn basic_info() {
+pub fn basic_info() {
     info!("MigTD Version - {}\n", MIGTD_VERSION);
 }
 
-fn do_measurements() {
+pub fn do_measurements() {
     // Get the event log recorded by firmware
     let event_log = event_log::get_event_log_mut().expect("Failed to get the event log");
 
