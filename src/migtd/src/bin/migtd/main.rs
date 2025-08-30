@@ -10,7 +10,7 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
-use log::info;
+use log::{debug, info};
 use migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT;
 use migtd::migration::data::MigrationInformation;
 use migtd::migration::session::*;
@@ -181,6 +181,8 @@ fn handle_pre_mig() {
             .await;
 
             if let Ok(request) = wait_for_request().await {
+                info!("New migration request received");
+                debug!("wait_for_request returned : {:?}", request);
                 *PENDING_REQUEST.lock() = Some(request);
             }
         }
