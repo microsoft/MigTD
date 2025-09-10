@@ -83,3 +83,5 @@ AzCVMEmu = [
 	"env_logger",
 	"tokio",
 ]
+test_accept_all = [] # Test flag: Skip policy verification
+test_reject_all = [] # Test flag: Force migration status to always report unsupported
