@@ -1,10 +1,12 @@
 name: Integration (Emulation Mode)
 
-# Trigger on pull request events
+# Trigger on push and pull request events
 on:
+  push:
+    paths-ignore:
+      - "**.md"
+      - "doc/**"
   pull_request:
-    branches: [ feature/AzCVMEmu ]
-    types: [opened, synchronize, reopened]
     paths-ignore:
       - "**.md"
       - "doc/**"
@@ -85,11 +87,11 @@ jobs:
         run: |
           echo "Running MigTD emulation tests with both source and destination..."
           echo "This will start destination, then source, and test the migration flow"
-          echo "Command: ./migtdemu.sh --test --both --no-sudo --log-level info"
+          echo "Command: ./migtdemu.sh --skip-ra --both --no-sudo --log-level info"
           
           # Run the test with timeout and capture exit code
           set +e
-          timeout 300 ./migtdemu.sh --test --both --no-sudo --log-level info
+          timeout 300 ./migtdemu.sh --skip-ra --both --no-sudo --log-level info
           EXIT_CODE=$?
           set -e
           
@@ -141,7 +143,7 @@ jobs:
           echo "=== Test Summary ==="
           echo "- Built MigTD with AzCVMEmu and test_disable_ra_and_accept_all features"
           echo "- Ran emulation test with both source and destination instances"
-          echo "- Test mode enabled (mock attestation, no TPM/Azure CVM required)"
+          echo "- Skip RA mode enabled (mock attestation, no TPM/Azure CVM required)"
 
       - name: Upload test artifacts on failure
         if: failure()
