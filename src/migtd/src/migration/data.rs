@@ -229,6 +229,7 @@ impl Default for MigrationSessionKey {
     }
 }
 
+#[derive(Debug)]
 pub struct MigrationInformation {
     pub mig_info: MigtdMigrationInformation,
     #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
