@@ -11,7 +11,9 @@ use std::process;
 
 use migtd;
 use migtd::migration::event;
-use migtd::migration::session::{exchange_msk, report_status};
+use migtd::migration::session::{report_status};
+#[cfg(not(feature = "test_reject_all"))]
+use migtd::migration::session::exchange_msk;
 use migtd::migration::{MigrationResult, MigtdMigrationInformation};
 
 use tdx_tdcall_emu::tdx_emu::{set_emulated_mig_request, EmuMigRequest};
@@ -367,16 +369,30 @@ fn handle_pre_mig_emu() -> i32 {
     let exit_code: i32 = rt.block_on(async move {
         match migtd::migration::session::wait_for_request().await {
             Ok(req) => {
-                // Call exchange_msk() and log its immediate outcome
-                let res = exchange_msk(&req).await;
-                match &res {
-                    Ok(_) => log::info!("exchange_msk() returned Ok"),
-                    Err(e) => log::error!(
-                        "exchange_msk() returned error code {}",
-                        migration_result_code(e)
-                    ),
-                }
-                let status = res.map(|_| MigrationResult::Success).unwrap_or_else(|e| e);
+                // Determine the status based on enabled features
+                let res = {
+                    #[cfg(feature = "test_reject_all")]
+                    {
+                        // Don't execute exchange_msk, just return Unsupported
+                        log::info!("test_reject_all feature enabled - skipping exchange_msk and returning Unsupported");
+                        Err(MigrationResult::Unsupported)
+                    }
+                    #[cfg(not(feature = "test_reject_all"))]
+                    {
+                        // Normal behavior - call exchange_msk() and log its immediate outcome
+                        let res = exchange_msk(&req).await;
+                        match &res {
+                            Ok(_) => log::info!("exchange_msk() returned Ok"),
+                            Err(e) => log::error!(
+                                "exchange_msk() returned error code {}",
+                                migration_result_code(e)
+                            ),
+                        }
+                        res
+                    }
+                };
+                
+                let status = res.map(|_: ()| MigrationResult::Success).unwrap_or_else(|e| e);
 
                 // Derive a numeric code without moving `status`
                 let status_code_u8 = status as u8;
