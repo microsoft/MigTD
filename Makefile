@@ -6,8 +6,11 @@ pre-build:
 	git submodule update --init --recursive
 	./sh_script/preparation.sh
 
+
+build-igvm-all: pre-build build-igvm generate-hash
+
 build-igvm:
-	cargo image --no-default-features --features vmcall-raw,stack-guard,main,test_disable_ra_and_accept_all --log-level info --image-format igvm --output $(IGVM_FILE)
+	cargo image --no-default-features --features vmcall-raw,stack-guard,main,test_accept_all,vmcall-interrupt,oneshot-apic --log-level info --image-format igvm --output $(IGVM_FILE)
 
 build-AzCVMEmu:
 	cargo build --no-default-features --features AzCVMEmu
