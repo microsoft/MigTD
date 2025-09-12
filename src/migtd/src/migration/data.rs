@@ -104,15 +104,18 @@ const RESPONSE_HEADER_LENGTH: usize = 24;
 
 impl<'a> VmcallServiceResponse<'a> {
     pub fn try_read(data: &'a [u8]) -> Option<Self> {
+        log::info!("Data len {}, response header length {}\n", data.len(), RESPONSE_HEADER_LENGTH);
         if data.len() < RESPONSE_HEADER_LENGTH {
+            log::info!("Data len is smaller than response header length\n");
             return None;
         }
         // Safty:
         // length of slice response has been checked
         let length = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
-
+        log::info!("Response length: {}\n", length);
         // Validate the content read from VMM input data
         if length < RESPONSE_HEADER_LENGTH || length > data.len() {
+            log::info!("Response length is smaller than response header length or larger than data length\n");
             return None;
         }
         Some(Self { data })

@@ -26,7 +26,8 @@ lazy_static! {
 
 fn vmcall_service_callback(_stack: &mut InterruptStack) {
     VMCALL_SERVICE_FLAG.store(true, Ordering::SeqCst);
-
+    log::info!("Inside vmcall service callback\n");
+    log::info!("VMCALL_SERVICE_FLAG set to {}\n", VMCALL_SERVICE_FLAG.load(Ordering::SeqCst));
     for (_key, flag) in VMCALL_MIG_REPORTSTATUS_FLAGS.lock().iter() {
         flag.store(true, Ordering::SeqCst);
     }

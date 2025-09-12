@@ -159,6 +159,8 @@ pub fn query() -> Result<()> {
         .copy_to_private_shadow()
         .ok_or(MigrationResult::OutOfResource)?;
 
+    log::info!("Received interrupt");
+    log::info!("Response: {:?}", private_mem);
     // Parse the response data
     // Check the GUID of the reponse
     let rsp =
@@ -200,15 +202,23 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
 
         poll_fn(|_cx| {
             if VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
+                log::info!("VMCALL_SERVICE_FLAG is true\n");
                 VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
             } else {
+                log::info!("VMCALL_SERVICE_FLAG is false\n");
                 return Poll::Pending;
             }
 
+            log::info!("Interrupt triggered\n");
+            log::info!("data_buffer content: {:?}\n", data_buffer.as_bytes());
             let (data_status, _data_length) = process_buffer(data_buffer);
 
             let slice = &data_buffer[12..12 + 56];
             let wfr = parse_ghci_waitforrequest_response(slice);
+            log::info!("Migtd response migration request ID: {}\n", wfr.mig_request_id);
+            log::info!("Migtd response migration source: {}\n", wfr.migration_source);
+            log::info!("Migtd response target TD UUID: {:?}\n", wfr.target_td_uuid);
+            log::info!("Migtd response binding handle: {}\n", wfr.binding_handle);
 
             let data_status_bytes = data_status.to_le_bytes();
             if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
@@ -216,6 +226,8 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
             }
 
             let request_id = wfr.mig_request_id;
+            log::info!("MidTD waiting for Request ID: {}", request_id);
+
             VMCALL_MIG_REPORTSTATUS_FLAGS
                 .lock()
                 .insert(request_id, AtomicBool::new(false));
@@ -450,7 +462,7 @@ pub fn report_status(status: u8, request_id: u64) -> Result<()> {
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     use core::time::Duration;
-
+    log::info!("Entering MSK exchange\n");
     const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
 
     #[cfg(feature = "vmcall-raw")]

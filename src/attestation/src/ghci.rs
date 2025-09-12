@@ -12,6 +12,7 @@ use td_payload::arch::apic::{disable, enable_and_hlt};
 use td_payload::arch::idt::{register_interrupt_callback, InterruptCallback, InterruptStack};
 use td_payload::mm::shared::SharedMemory;
 use tdx_tdcall::tdx::tdvmcall_get_quote;
+use log::info;
 
 use crate::binding::AttestLibError;
 
@@ -40,9 +41,9 @@ pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i3
     shared.as_mut_bytes()[..len as usize].copy_from_slice(input);
 
     let notify_registered = set_vmm_notification();
-
-    if tdvmcall_get_quote(shared.as_mut_bytes()).is_err() {
-        return AttestLibError::QuoteFailure as i32;
+    if let Err(err) = tdvmcall_get_quote(shared.as_mut_bytes()) {
+        info!("tdvmcall_get_quote failed with error: {:?}\n", err);
+        info!("tdvmcall_get_quote failed with error: {}\n", err as i32);
     }
 
     if let Err(err) = wait_for_quote_completion(notify_registered, shared.as_bytes()) {
