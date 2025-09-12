@@ -20,6 +20,8 @@ DEFAULT_BUILD_MODE="release"
 USE_SUDO=true
 RUN_BOTH=false
 SKIP_RA=false
+TEST_ACCEPT_ALL=false
+TEST_REJECT_ALL=false
 DEFAULT_RUST_BACKTRACE="1"
 # Default RUST_LOG: verbose in debug, info in release; can be overridden by env
 DEFAULT_RUST_LOG_DEBUG="debug"
@@ -48,6 +50,8 @@ show_usage() {
     echo "  --debug                      Build in debug mode (default: release)"
     echo "  --release                    Build in release mode (default)"
     echo "  --skip-ra                    Skip remote attestation (uses mock TD reports/quotes for non-TDX environments)"
+    echo "  --test-accept-all            Enable test_accept_all feature (bypass RATLS for vmcall-raw)"
+    echo "  --test-reject-all            Enable test_reject_all feature (reject all migrations for testing)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
     echo "  --log-level LEVEL            Set Rust log level (trace, debug, info, warn, error) (default: debug for debug builds, info for release builds)"
@@ -68,6 +72,9 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
+    echo "  $0 --test-accept-all --role source   # Build with test_accept_all (bypass RATLS for vmcall-raw)"
+    echo "  $0 --test-reject-all --role dest     # Build with test_reject_all (reject all migrations)"
+    echo "  $0 --test-accept-all --both          # Run both with RATLS bypass for testing"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
 }
@@ -128,14 +135,28 @@ maybe_force_sudo_due_to_tpm() {
 build_migtd() {
     local build_mode="$1"
     local skip_ra="$2"
+    local test_accept_all="$3"
+    local test_reject_all="$4"
     
     local features="AzCVMEmu"
+    local feature_description="AzCVMEmu"
+    
     if [[ "$skip_ra" == true ]]; then
-        features="AzCVMEmu,test_disable_ra_and_accept_all"
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + skip RA features (mock attestation)...${NC}"
-    else
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
+        features="$features,test_disable_ra_and_accept_all"
+        feature_description="$feature_description + skip RA"
     fi
+    
+    if [[ "$test_accept_all" == true ]]; then
+        features="$features,test_accept_all"
+        feature_description="$feature_description + test_accept_all"
+    fi
+    
+    if [[ "$test_reject_all" == true ]]; then
+        features="$features,test_reject_all"
+        feature_description="$feature_description + test_reject_all"
+    fi
+    
+    echo -e "${BLUE}Building MigTD in $build_mode mode with features: $feature_description...${NC}"
     
     if [[ "$build_mode" == "debug" ]]; then
         if ! cargo build --features "$features" --no-default-features; then
@@ -199,6 +220,14 @@ while [[ $# -gt 0 ]]; do
             SKIP_RA=true
             shift
             ;;
+        --test-accept-all)
+            TEST_ACCEPT_ALL=true
+            shift
+            ;;
+        --test-reject-all)
+            TEST_REJECT_ALL=true
+            shift
+            ;;
         --both)
             RUN_BOTH=true
             shift
@@ -239,7 +268,7 @@ fi
 cd "$(dirname "$0")"
 
 # Always build MigTD
-build_migtd "$BUILD_MODE" "$SKIP_RA"
+build_migtd "$BUILD_MODE" "$SKIP_RA" "$TEST_ACCEPT_ALL" "$TEST_REJECT_ALL"
 
 # Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
