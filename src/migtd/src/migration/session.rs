@@ -183,7 +183,7 @@ pub fn query() -> Result<()> {
 
 pub async fn wait_for_request() -> Result<MigrationInformation> {
     log::info!("Waiting for migration request from VMM");
-    
+
     #[cfg(feature = "vmcall-raw")]
     {
         let data_status: u64 = 0;
@@ -240,7 +240,10 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
                 Poll::Pending
             } else {
                 REQUESTS.lock().insert(request_id);
-                log::info!("Successfully received migration request with ID: {}", request_id);
+                log::info!(
+                    "Successfully received migration request with ID: {}",
+                    request_id
+                );
                 Poll::Ready(Ok(mig_info))
             }
         })
@@ -466,53 +469,63 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             .connect()
             .await
             .map_err(|_e| MigrationResult::InvalidParameter)?;
-        
+
         log::info!("Successfully established vmcall-raw connection");
 
         // Feature gate: bypass RATLS when test_accept_all is enabled
         #[cfg(feature = "test_accept_all")]
         {
             log::info!("test_accept_all feature enabled - bypassing RATLS for vmcall-raw");
-            
+
             let mut remote_information = ExchangeInformation::default();
             let mut exchange_information = exchange_info(&info)?;
 
             if info.is_src() {
                 log::info!("Acting as migration source - sending exchange information");
-                vmcall_raw_instance.send(exchange_information.as_bytes(), 0)
+                vmcall_raw_instance
+                    .send(exchange_information.as_bytes(), 0)
                     .await
                     .map_err(|_| MigrationResult::NetworkError)?;
                 log::info!("Src Successfully sent exchange information to destination");
-                
-                let size = vmcall_raw_instance.recv(remote_information.as_bytes_mut(), 0)
+
+                let size = vmcall_raw_instance
+                    .recv(remote_information.as_bytes_mut(), 0)
                     .await
                     .map_err(|_| MigrationResult::NetworkError)?;
                 if size < size_of::<ExchangeInformation>() {
                     return Err(MigrationResult::NetworkError);
                 }
-                log::info!("Src Successfully received remote exchange information from destination");
+                log::info!(
+                    "Src Successfully received remote exchange information from destination"
+                );
             } else {
                 log::info!("Acting as migration destination - waiting for exchange information");
-                let size = vmcall_raw_instance.recv(remote_information.as_bytes_mut(), 0)
+                let size = vmcall_raw_instance
+                    .recv(remote_information.as_bytes_mut(), 0)
                     .await
                     .map_err(|_| MigrationResult::NetworkError)?;
                 if size < size_of::<ExchangeInformation>() {
                     return Err(MigrationResult::NetworkError);
                 }
                 log::info!("Dst Successfully received remote exchange information from source");
-                
-                vmcall_raw_instance.send(exchange_information.as_bytes(), 0)
+
+                vmcall_raw_instance
+                    .send(exchange_information.as_bytes(), 0)
                     .await
                     .map_err(|_| MigrationResult::NetworkError)?;
                 log::info!("Dst Successfully sent exchange information to source");
             }
-            vmcall_raw_instance.shutdown().await.map_err(|_e| MigrationResult::InvalidParameter)?;
+            vmcall_raw_instance
+                .shutdown()
+                .await
+                .map_err(|_e| MigrationResult::InvalidParameter)?;
             log::info!("vmcall-raw connection closed successfully");
 
-            let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
+            let mig_ver =
+                cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
             set_mig_version(info, mig_ver)?;
             log::info!("Migration version negotiated successfully: {}", mig_ver);
-            
+
             write_msk(&info.mig_info, &remote_information.key)?;
 
             log::info!("Set MSK and report status\n");
@@ -527,7 +540,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         {
             log::info!("Using RATLS for secure vmcall-raw communication");
             let transport = vmcall_raw_instance;
-            
+
             let mut remote_information = ExchangeInformation::default();
             let mut exchange_information = exchange_info(&info)?;
 
@@ -546,7 +559,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
                 )
                 .await??;
                 log::info!("Successfully sent exchange information via TLS");
-                
+
                 let size = with_timeout(
                     TLS_TIMEOUT,
                     ratls_client.read(remote_information.as_bytes_mut()),
@@ -556,7 +569,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
                     return Err(MigrationResult::NetworkError);
                 }
                 log::info!("Successfully received remote exchange information via TLS");
-                
+
                 ratls_client
                     .transport_mut()
                     .shutdown()
@@ -575,7 +588,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
                 )
                 .await??;
                 log::info!("Successfully sent exchange information via TLS");
-                
+
                 let size = with_timeout(
                     TLS_TIMEOUT,
                     ratls_server.read(remote_information.as_bytes_mut()),
@@ -585,7 +598,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
                     return Err(MigrationResult::NetworkError);
                 }
                 log::info!("Successfully received remote exchange information via TLS");
-                
+
                 ratls_server
                     .transport_mut()
                     .shutdown()
@@ -593,10 +606,11 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
                     .map_err(|_e| MigrationResult::InvalidParameter)?;
             }
 
-            let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
+            let mig_ver =
+                cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
             set_mig_version(info, mig_ver)?;
             log::info!("Migration version negotiated successfully: {}", mig_ver);
-            
+
             write_msk(&info.mig_info, &remote_information.key)?;
 
             log::info!("Set MSK and report status\n");
@@ -613,125 +627,125 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
         log::info!("Starting MSK exchange using TLS transport");
         let transport;
 
-    #[cfg(feature = "virtio-serial")]
-    {
-        use virtio_serial::VirtioSerialPort;
-        const VIRTIO_SERIAL_PORT_ID: u32 = 1;
+        #[cfg(feature = "virtio-serial")]
+        {
+            use virtio_serial::VirtioSerialPort;
+            const VIRTIO_SERIAL_PORT_ID: u32 = 1;
 
-        let port = VirtioSerialPort::new(VIRTIO_SERIAL_PORT_ID);
-        port.open()?;
-        transport = port;
-    };
+            let port = VirtioSerialPort::new(VIRTIO_SERIAL_PORT_ID);
+            port.open()?;
+            transport = port;
+        };
 
-    #[cfg(not(feature = "virtio-serial"))]
-    #[cfg(not(feature = "vmcall-raw"))]
-    {
-        use vsock::{stream::VsockStream, VsockAddr};
+        #[cfg(not(feature = "virtio-serial"))]
+        #[cfg(not(feature = "vmcall-raw"))]
+        {
+            use vsock::{stream::VsockStream, VsockAddr};
 
-        #[cfg(feature = "virtio-vsock")]
-        let mut vsock = VsockStream::new()?;
+            #[cfg(feature = "virtio-vsock")]
+            let mut vsock = VsockStream::new()?;
 
-        #[cfg(feature = "vmcall-vsock")]
-        let mut vsock = VsockStream::new_with_cid(
-            info.mig_socket_info.mig_td_cid,
-            info.mig_info.mig_request_id,
-        )?;
+            #[cfg(feature = "vmcall-vsock")]
+            let mut vsock = VsockStream::new_with_cid(
+                info.mig_socket_info.mig_td_cid,
+                info.mig_info.mig_request_id,
+            )?;
 
-        // Establish the vsock connection with host
-        vsock
-            .connect(&VsockAddr::new(
-                info.mig_socket_info.mig_td_cid as u32,
-                info.mig_socket_info.mig_channel_port,
-            ))
-            .await?;
-        log::info!("Successfully established vsock connection");
-        transport = vsock;
-    };
+            // Establish the vsock connection with host
+            vsock
+                .connect(&VsockAddr::new(
+                    info.mig_socket_info.mig_td_cid as u32,
+                    info.mig_socket_info.mig_channel_port,
+                ))
+                .await?;
+            log::info!("Successfully established vsock connection");
+            transport = vsock;
+        };
 
-    let mut remote_information = ExchangeInformation::default();
-    let mut exchange_information = exchange_info(&info)?;
+        let mut remote_information = ExchangeInformation::default();
+        let mut exchange_information = exchange_info(&info)?;
 
-    // Establish TLS layer connection and negotiate the MSK
-    if info.is_src() {
-        log::info!("Acting as migration source - establishing TLS client connection");
-        // TLS client
-        let mut ratls_client =
-            ratls::client(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+        // Establish TLS layer connection and negotiate the MSK
+        if info.is_src() {
+            log::info!("Acting as migration source - establishing TLS client connection");
+            // TLS client
+            let mut ratls_client =
+                ratls::client(transport).map_err(|_| MigrationResult::SecureSessionError)?;
 
-        log::info!("TLS client connection established successfully");
-        // MigTD-S send Migration Session Forward key to peer
-        with_timeout(
-            TLS_TIMEOUT,
-            ratls_client.write(exchange_information.as_bytes()),
-        )
-        .await??;
-        log::info!("Successfully sent exchange information via TLS");
-        
-        let size = with_timeout(
-            TLS_TIMEOUT,
-            ratls_client.read(remote_information.as_bytes_mut()),
-        )
-        .await??;
-        if size < size_of::<ExchangeInformation>() {
-            return Err(MigrationResult::NetworkError);
+            log::info!("TLS client connection established successfully");
+            // MigTD-S send Migration Session Forward key to peer
+            with_timeout(
+                TLS_TIMEOUT,
+                ratls_client.write(exchange_information.as_bytes()),
+            )
+            .await??;
+            log::info!("Successfully sent exchange information via TLS");
+
+            let size = with_timeout(
+                TLS_TIMEOUT,
+                ratls_client.read(remote_information.as_bytes_mut()),
+            )
+            .await??;
+            if size < size_of::<ExchangeInformation>() {
+                return Err(MigrationResult::NetworkError);
+            }
+            log::info!("Successfully received remote exchange information via TLS");
+
+            #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
+            ratls_client.transport_mut().shutdown().await?;
+
+            #[cfg(all(feature = "vmcall-raw", not(feature = "test_accept_all")))]
+            ratls_client
+                .transport_mut()
+                .shutdown()
+                .await
+                .map_err(|_e| MigrationResult::InvalidParameter)?;
+        } else {
+            log::info!("Acting as migration destination - establishing TLS server connection");
+            // TLS server
+            let mut ratls_server =
+                ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+
+            log::info!("TLS server connection established successfully");
+            with_timeout(
+                TLS_TIMEOUT,
+                ratls_server.write(exchange_information.as_bytes()),
+            )
+            .await??;
+            log::info!("Successfully sent exchange information via TLS");
+
+            let size = with_timeout(
+                TLS_TIMEOUT,
+                ratls_server.read(remote_information.as_bytes_mut()),
+            )
+            .await??;
+            if size < size_of::<ExchangeInformation>() {
+                return Err(MigrationResult::NetworkError);
+            }
+            log::info!("Successfully received remote exchange information via TLS");
+
+            #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
+            ratls_server.transport_mut().shutdown().await?;
+
+            #[cfg(all(feature = "vmcall-raw", not(feature = "test_accept_all")))]
+            ratls_server
+                .transport_mut()
+                .shutdown()
+                .await
+                .map_err(|_e| MigrationResult::InvalidParameter)?;
         }
-        log::info!("Successfully received remote exchange information via TLS");
-        
-        #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-        ratls_client.transport_mut().shutdown().await?;
 
-        #[cfg(all(feature = "vmcall-raw", not(feature = "test_accept_all")))]
-        ratls_client
-            .transport_mut()
-            .shutdown()
-            .await
-            .map_err(|_e| MigrationResult::InvalidParameter)?;
-    } else {
-        log::info!("Acting as migration destination - establishing TLS server connection");
-        // TLS server
-        let mut ratls_server =
-            ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+        let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
+        set_mig_version(info, mig_ver)?;
+        log::info!("Migration version negotiated successfully: {}", mig_ver);
 
-        log::info!("TLS server connection established successfully");
-        with_timeout(
-            TLS_TIMEOUT,
-            ratls_server.write(exchange_information.as_bytes()),
-        )
-        .await??;
-        log::info!("Successfully sent exchange information via TLS");
-        
-        let size = with_timeout(
-            TLS_TIMEOUT,
-            ratls_server.read(remote_information.as_bytes_mut()),
-        )
-        .await??;
-        if size < size_of::<ExchangeInformation>() {
-            return Err(MigrationResult::NetworkError);
-        }
-        log::info!("Successfully received remote exchange information via TLS");
-        
-        #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-        ratls_server.transport_mut().shutdown().await?;
+        write_msk(&info.mig_info, &remote_information.key)?;
 
-        #[cfg(all(feature = "vmcall-raw", not(feature = "test_accept_all")))]
-        ratls_server
-            .transport_mut()
-            .shutdown()
-            .await
-            .map_err(|_e| MigrationResult::InvalidParameter)?;
-    }
+        log::info!("Set MSK and report status\n");
+        exchange_information.key.clear();
+        remote_information.key.clear();
 
-    let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
-    set_mig_version(info, mig_ver)?;
-    log::info!("Migration version negotiated successfully: {}", mig_ver);
-    
-    write_msk(&info.mig_info, &remote_information.key)?;
-
-    log::info!("Set MSK and report status\n");
-    exchange_information.key.clear();
-    remote_information.key.clear();
-
-    Ok(())
+        Ok(())
     } // Close the #[cfg(not(feature = "vmcall-raw"))] block
 }
 
@@ -752,7 +766,11 @@ fn exchange_info(info: &MigrationInformation) -> Result<ExchangeInformation> {
     }
     exchange_info.min_ver = min_version as u16;
     exchange_info.max_ver = max_version as u16;
-    log::info!("Exchange information prepared successfully - version range: {}-{}", min_version, max_version);
+    log::info!(
+        "Exchange information prepared successfully - version range: {}-{}",
+        min_version,
+        max_version
+    );
 
     Ok(exchange_info)
 }

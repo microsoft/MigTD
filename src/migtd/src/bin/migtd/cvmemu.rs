@@ -11,9 +11,9 @@ use std::process;
 
 use migtd;
 use migtd::migration::event;
-use migtd::migration::session::{report_status};
 #[cfg(not(feature = "test_reject_all"))]
 use migtd::migration::session::exchange_msk;
+use migtd::migration::session::report_status;
 use migtd::migration::{MigrationResult, MigtdMigrationInformation};
 
 use tdx_tdcall_emu::tdx_emu::{set_emulated_mig_request, EmuMigRequest};
@@ -391,7 +391,6 @@ fn handle_pre_mig_emu() -> i32 {
                         res
                     }
                 };
-                
                 let status = res.map(|_: ()| MigrationResult::Success).unwrap_or_else(|e| e);
 
                 // Derive a numeric code without moving `status`

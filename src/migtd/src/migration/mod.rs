@@ -115,7 +115,7 @@ pub struct MigtdStreamSocketInfo {
 }
 
 #[repr(C)]
-#[derive(Pread, Pwrite)]
+#[derive(Debug, Pread, Pwrite)]
 pub struct MigtdMigpolicyInfo {
     // Unique identifier of the policy, it can be used by MigtdMigrationInformation
     pub mig_policy_id: u64,
@@ -124,6 +124,7 @@ pub struct MigtdMigpolicyInfo {
     pub mig_policy_size: u32,
 }
 
+#[derive(Debug)]
 pub struct MigtdMigpolicy {
     pub header: MigtdMigpolicyInfo,
 
