@@ -10,7 +10,7 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
-use log::info;
+use log::{debug, info};
 use migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT;
 use migtd::migration::data::MigrationInformation;
 use migtd::migration::session::*;
@@ -181,6 +181,8 @@ fn handle_pre_mig() {
             .await;
 
             if let Ok(request) = wait_for_request().await {
+                info!("New migration request received");
+                debug!("wait_for_request returned : {:?}", request);
                 *PENDING_REQUEST.lock() = Some(request);
             }
         }
@@ -193,25 +195,24 @@ fn handle_pre_mig() {
         // The async task waiting for VMM response is always in the queue
         let new_request = PENDING_REQUEST.lock().take();
 
-            if let Some(request) = new_request {
-                async_runtime::add_task(async move {
-
-                    // Determine the status based on enabled features
-                    let status = {
-                        #[cfg(feature = "test_reject_all")]
-                        {
-                            // Don't execute exchange_msk, just return Unsupported
-                            MigrationResult::Unsupported
-                        }
-                        #[cfg(not(feature = "test_reject_all"))]
-                        {
-                            // Normal behavior - execute and use the actual result
-                            let exchange_result = exchange_msk(&request).await;
-                            exchange_result
-                                .map(|_| MigrationResult::Success)
-                                .unwrap_or_else(|e| e)
-                        }
-                    };
+        if let Some(request) = new_request {
+            async_runtime::add_task(async move {
+                // Determine the status based on enabled features
+                let status = {
+                    #[cfg(feature = "test_reject_all")]
+                    {
+                        // Don't execute exchange_msk, just return Unsupported
+                        MigrationResult::Unsupported
+                    }
+                    #[cfg(not(feature = "test_reject_all"))]
+                    {
+                        // Normal behavior - execute and use the actual result
+                        let exchange_result = exchange_msk(&request).await;
+                        exchange_result
+                            .map(|_| MigrationResult::Success)
+                            .unwrap_or_else(|e| e)
+                    }
+                };
 
                 #[cfg(feature = "vmcall-raw")]
                 {
