@@ -1,9 +1,11 @@
 IGVM_FILE ?= target/release/migtd.igvm
 LOG_LEVEL ?= info
+# Common features for IGVM images
+IGVM_FEATURES_BASE ?= vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic
 # test_accept_all feature skips policy verification, bypasses RATLS security
-IGVM_FEATURES_ACCEPT_ALL ?= vmcall-raw,stack-guard,main,test_accept_all,vmcall-interrupt,oneshot-apic
+IGVM_FEATURES_ACCEPT_ALL ?= $(IGVM_FEATURES_BASE),test_accept_all
 # test_reject_all feature forces migrations to be rejected by returning Unsupported and skipping exchange_msk
-IGVM_FEATURES_REJECT_ALL ?= vmcall-raw,stack-guard,main,test_reject_all,vmcall-interrupt,oneshot-apic
+IGVM_FEATURES_REJECT_ALL ?= $(IGVM_FEATURES_BASE),test_reject_all
 AZCVMEMU_FEATURES ?= AzCVMEmu
 
 pre-build:
@@ -34,7 +36,6 @@ generate-hash:
 
 build-igvm-all: pre-build build-igvm generate-hash
 
-# test_reject_all feature forces migrations to be rejected by returning Unsupported and skipping exchange_msk
 build-igvm-reject:
 	cargo image --no-default-features --features $(IGVM_FEATURES_REJECT_ALL) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
