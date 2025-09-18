@@ -111,16 +111,16 @@ pub fn do_measurements() {
 
 fn print_td_info_hash() {
     let tdx_report = tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE]);
-    info!("tdx_report: {:?}", tdx_report);
+    info!("tdx_report: {:?}\n", tdx_report);
 
     let td_info = tdx_report.unwrap().td_info;
-    info!("td_info: {:?}", td_info);
+    info!("td_info: {:?}\n", td_info);
 
     let mut hasher = Sha384::new();
     hasher.update(td_info.as_bytes());
 
     let hash = hasher.finalize();
-    info!("TD Info Hash: {:x}", hash);
+    info!("TD Info Hash: {:x}\n", hash);
 }
 
 fn measure_test_feature(event_log: &mut [u8]) {
@@ -181,8 +181,8 @@ fn handle_pre_mig() {
             .await;
 
             if let Ok(request) = wait_for_request().await {
-                info!("New migration request received");
-                debug!("wait_for_request returned : {:?}", request);
+                info!("New migration request received \n");
+                debug!("wait_for_request returned : {:?} \n", request);
                 *PENDING_REQUEST.lock() = Some(request);
             }
         }
@@ -202,6 +202,7 @@ fn handle_pre_mig() {
                     #[cfg(feature = "test_reject_all")]
                     {
                         // Don't execute exchange_msk, just return Unsupported
+                        info!("wait_for_request returning MigrationResult::Unsupported \n");
                         MigrationResult::Unsupported
                     }
                     #[cfg(not(feature = "test_reject_all"))]
