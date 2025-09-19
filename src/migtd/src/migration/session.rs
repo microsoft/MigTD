@@ -576,7 +576,9 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
                     .await
                     .map_err(|_e| MigrationResult::InvalidParameter)?;
             } else {
-                log::info!("Acting as migration destination - establishing TLS server connection\n");
+                log::info!(
+                    "Acting as migration destination - establishing TLS server connection\n"
+                );
                 // TLS server
                 let mut ratls_server =
                     ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;

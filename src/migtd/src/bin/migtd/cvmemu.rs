@@ -259,7 +259,10 @@ fn parse_commandline_args() {
 
     log::info!("Migration information:\n");
     log::info!("  Request ID: {}\n", mig_request_id);
-    log::info!("  Role: {}\n", if is_source { "Source" } else { "Destination" });
+    log::info!(
+        "  Role: {}\n",
+        if is_source { "Source" } else { "Destination" }
+    );
     log::info!("  Target TD UUID: {:?}\n", target_td_uuid);
     log::info!("  Binding Handle: {:#x}\n", binding_handle);
 
@@ -308,7 +311,10 @@ fn parse_commandline_args() {
         use tdx_tdcall_emu::tdx_emu::connect_tcp_client;
         match connect_tcp_client() {
             Ok(_) => {
-                log::info!("Successfully connected to destination server at: {}\n", addr);
+                log::info!(
+                    "Successfully connected to destination server at: {}\n",
+                    addr
+                );
             }
             Err(e) => {
                 log::error!(
