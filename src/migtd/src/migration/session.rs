@@ -359,7 +359,6 @@ pub fn shutdown() -> Result<()> {
 }
 
 #[cfg(feature = "vmcall-raw")]
-<<<<<<< HEAD
 fn process_buffer(buffer: &mut [u8]) -> (u64, u32) {
     assert!(buffer.len() >= 12, "Buffer too small!");
     let (header, _payload_buffer) = buffer.split_at_mut(12); // Split at 12th byte
@@ -371,8 +370,6 @@ fn process_buffer(buffer: &mut [u8]) -> (u64, u32) {
 }
 
 #[cfg(feature = "vmcall-raw")]
-=======
->>>>>>> main
 pub async fn report_status(status: u8, request_id: u64) -> Result<()> {
     let data_status: u64 = 0;
     let data_length: u32 = 0;
