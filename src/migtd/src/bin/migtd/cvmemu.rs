@@ -64,7 +64,7 @@ fn initialize_emulation() {
     // Get file paths from environment variables
     let policy_file_path = match env::var("MIGTD_POLICY_FILE") {
         Ok(path) => {
-            log::info!("MIGTD_POLICY_FILE set to: {}", path);
+            log::info!("MIGTD_POLICY_FILE set to: {}\n", path);
             path
         }
         Err(_) => {
@@ -76,7 +76,7 @@ fn initialize_emulation() {
 
     let root_ca_file_path = match env::var("MIGTD_ROOT_CA_FILE") {
         Ok(path) => {
-            log::info!("MIGTD_ROOT_CA_FILE set to: {}", path);
+            log::info!("MIGTD_ROOT_CA_FILE set to: {}\n", path);
             path
         }
         Err(_) => {
@@ -108,9 +108,9 @@ fn initialize_emulation() {
         td_shim_interface_emu::init_file_based_emulation_with_real_files(policy_path, root_ca_path);
 
     if result {
-        log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:");
-        log::info!("  Policy: {}", policy_file_path);
-        log::info!("  Root CA: {}", root_ca_file_path);
+        log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:\n");
+        log::info!("  Policy: {}\n", policy_file_path);
+        log::info!("  Root CA: {}\n", root_ca_file_path);
     } else {
         log::error!("Failed to initialize file-based emulation");
         std::process::exit(1);
@@ -257,20 +257,17 @@ fn parse_commandline_args() {
         info
     };
 
-    log::info!("Migration information:");
-    log::info!("  Request ID: {}", mig_request_id);
-    log::info!(
-        "  Role: {}",
-        if is_source { "Source" } else { "Destination" }
-    );
-    log::info!("  Target TD UUID: {:?}", target_td_uuid);
-    log::info!("  Binding Handle: {:#x}", binding_handle);
+    log::info!("Migration information:\n");
+    log::info!("  Request ID: {}\n", mig_request_id);
+    log::info!("  Role: {}\n", if is_source { "Source" } else { "Destination" });
+    log::info!("  Target TD UUID: {:?}\n", target_td_uuid);
+    log::info!("  Binding Handle: {:#x}\n", binding_handle);
 
     if let Some(ip) = &destination_ip {
-        log::info!("  Destination IP: {}", ip);
+        log::info!("  Destination IP: {}\n", ip);
     }
     if let Some(port) = destination_port {
-        log::info!("  Destination Port: {}", port);
+        log::info!("  Destination Port: {}\n", port);
     }
 
     // Determine IP and port (either from command line or use defaults)
@@ -296,7 +293,7 @@ fn parse_commandline_args() {
         let addr = format!("{}:{}", tcp_ip, tcp_port);
         match start_tcp_server_sync(&addr) {
             Ok(_) => {
-                log::info!("TCP server started successfully on: {}", addr);
+                log::info!("TCP server started successfully on: {}\n", addr);
             }
             Err(e) => {
                 log::error!("Failed to start TCP server: {:?}", e);
@@ -311,7 +308,7 @@ fn parse_commandline_args() {
         use tdx_tdcall_emu::tdx_emu::connect_tcp_client;
         match connect_tcp_client() {
             Ok(_) => {
-                log::info!("Successfully connected to destination server at: {}", addr);
+                log::info!("Successfully connected to destination server at: {}\n", addr);
             }
             Err(e) => {
                 log::error!(
@@ -374,7 +371,7 @@ fn handle_pre_mig_emu() -> i32 {
                     #[cfg(feature = "test_reject_all")]
                     {
                         // Don't execute exchange_msk, just return Unsupported
-                        log::info!("test_reject_all feature enabled - skipping exchange_msk and returning Unsupported");
+                        log::info!("test_reject_all feature enabled - skipping exchange_msk and returning Unsupported\n");
                         Err(MigrationResult::Unsupported)
                     }
                     #[cfg(not(feature = "test_reject_all"))]
@@ -382,7 +379,7 @@ fn handle_pre_mig_emu() -> i32 {
                         // Normal behavior - call exchange_msk() and log its immediate outcome
                         let res = exchange_msk(&req).await;
                         match &res {
-                            Ok(_) => log::info!("exchange_msk() returned Ok"),
+                            Ok(_) => log::info!("exchange_msk() returned Ok\n"),
                             Err(e) => log::error!(
                                 "exchange_msk() returned error code {}",
                                 migration_result_code(e)
@@ -400,11 +397,11 @@ fn handle_pre_mig_emu() -> i32 {
                 if let Err(e) = report_status(status_code_u8, req.mig_info.mig_request_id).await {
                     log::error!("report_status failed with code {}", e as u8);
                 } else {
-                    log::info!("report_status completed successfully");
+                    log::info!("report_status completed successfully\n");
                 }
 
                 if status_code_u8 == MigrationResult::Success as u8 {
-                    log::info!("Migration key exchange successful!");
+                    log::info!("Migration key exchange successful!\n");
                     0
                 } else {
                     let status_code = status_code_u8 as i32;
