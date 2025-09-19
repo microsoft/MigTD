@@ -40,3 +40,6 @@ build-igvm-reject:
 	cargo image --no-default-features --features $(IGVM_FEATURES_REJECT_ALL) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
 build-igvm-reject-all: pre-build build-igvm-reject generate-hash
+
+test-migtd-emu:
+	./migtdemu.sh --both
