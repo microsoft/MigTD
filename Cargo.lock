@@ -149,7 +149,8 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "az-cvm-vtpm"
 version = "0.7.4"
-source = "git+https://github.com/kinvolk/azure-cvm-tooling#29ef1581561e85a3a2313f80c738aabe064c4bc4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b3d0900c6757c9674b05b0479236458297026e25fb505186dc8d7735091a21c"
 dependencies = [
  "bincode",
  "jsonwebkey",
@@ -168,7 +169,8 @@ dependencies = [
 [[package]]
 name = "az-tdx-vtpm"
 version = "0.7.4"
-source = "git+https://github.com/kinvolk/azure-cvm-tooling#29ef1581561e85a3a2313f80c738aabe064c4bc4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04849677b3c0704d4593d89940cde0dc0caad2202bf9fb29352e153782b91ff8"
 dependencies = [
  "az-cvm-vtpm",
  "base64-url",

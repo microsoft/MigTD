@@ -210,7 +210,6 @@ pub fn tcp_receive_data() -> Result<Vec<u8>, TdVmcallError> {
     Ok(buffer)
 }
 
-<<<<<<< HEAD
 /// Helper function to parse GHCI 1.5 buffer format
 fn parse_ghci_buffer(buffer: &[u8]) -> (u64, u32, &[u8]) {
     if buffer.len() < 12 {
@@ -222,55 +221,27 @@ fn parse_ghci_buffer(buffer: &[u8]) -> (u64, u32, &[u8]) {
     let length = u32::from_le_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]);
     let max_payload_len = (buffer.len() - 12).min(length as usize);
     let payload = &buffer[12..12 + max_payload_len];
-=======
-/// Helper function to parse TDX buffer format
-fn parse_tdx_buffer(buffer: &[u8]) -> (u32, u32, &[u8]) {
-    if buffer.len() < 8 {
-        return (0, 0, &[]);
-    }
-    
-    let status = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
-    let length = u32::from_le_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]);
-    let max_payload_len = (buffer.len() - 8).min(length as usize);
-    let payload = &buffer[8..8 + max_payload_len];
->>>>>>> main
     
     (status, length, payload)
 }
 
-<<<<<<< HEAD
 /// Helper function to format GHCI 1.5 buffer format
 fn format_ghci_buffer(buffer: &mut [u8], status: u64, payload: &[u8]) {
     if buffer.len() < 12 {
-=======
-/// Helper function to format TDX buffer format
-fn format_tdx_buffer(buffer: &mut [u8], status: u32, payload: &[u8]) {
-    if buffer.len() < 8 {
->>>>>>> main
         return;
     }
 
     // Compute how much we can actually copy into the caller-provided buffer.
-<<<<<<< HEAD
     let copy_len = (buffer.len() - 12).min(payload.len());
 
     if copy_len < payload.len() {
         error!(
             "GHCI buffer payload truncated: have space={} wanted={}",
             buffer.len() - 12,
-=======
-    let copy_len = (buffer.len() - 8).min(payload.len());
-
-    if copy_len < payload.len() {
-        error!(
-            "TDX buffer payload truncated: have space={} wanted={}",
-            buffer.len() - 8,
->>>>>>> main
             payload.len()
         );
     }
 
-<<<<<<< HEAD
     // Write status (8 bytes) and the ACTUAL length we copied (4 bytes)
     let status_bytes = status.to_le_bytes();
     let length_bytes = (copy_len as u32).to_le_bytes();
@@ -280,17 +251,6 @@ fn format_tdx_buffer(buffer: &mut [u8], status: u32, payload: &[u8]) {
 
     if copy_len > 0 {
         buffer[12..12 + copy_len].copy_from_slice(&payload[..copy_len]);
-=======
-    // Write status and the ACTUAL length we copied to avoid consumers overrunning buffers.
-    let status_bytes = status.to_le_bytes();
-    let length_bytes = (copy_len as u32).to_le_bytes();
-
-    buffer[0..4].copy_from_slice(&status_bytes);
-    buffer[4..8].copy_from_slice(&length_bytes);
-
-    if copy_len > 0 {
-        buffer[8..8 + copy_len].copy_from_slice(&payload[..copy_len]);
->>>>>>> main
     }
 }
 
@@ -301,23 +261,14 @@ pub fn tdvmcall_migtd_send_sync(
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
     
-<<<<<<< HEAD
     // Parse GHCI 1.5 buffer format to extract payload
     let (_status, _length, payload) = parse_ghci_buffer(data_buffer);
-=======
-    // Parse TDX buffer format to extract payload
-    let (_status, _length, payload) = parse_tdx_buffer(data_buffer);
->>>>>>> main
     
     // Send payload over TCP
     tcp_send_data(payload)?;
     
     // Update buffer to indicate success (status = 1, no payload response for send)
-<<<<<<< HEAD
     format_ghci_buffer(data_buffer, 1, &[]);
-=======
-    format_tdx_buffer(data_buffer, 1, &[]);
->>>>>>> main
     
     // Trigger the registered interrupt callback to emulate VMM signaling
     intr::trigger(interrupt);
@@ -334,13 +285,8 @@ pub fn tdvmcall_migtd_receive_sync(
     // Receive payload over TCP
     let received_payload = tcp_receive_data()?;
     
-<<<<<<< HEAD
     // Format response into GHCI 1.5 buffer (status = 1 for success)
     format_ghci_buffer(data_buffer, 1, &received_payload);
-=======
-    // Format response into TDX buffer (status = 1 for success)
-    format_tdx_buffer(data_buffer, 1, &received_payload);
->>>>>>> main
     
     // Trigger the registered interrupt callback to emulate VMM signaling
     intr::trigger(interrupt);
@@ -353,7 +299,6 @@ pub fn tdvmcall_migtd_waitforrequest(
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
 
-<<<<<<< HEAD
     // data_buffer uses the new GHCI 1.5 buffer format:
     // Bytes 0-7: status (u64) - filled by VMM/emulation
     // Bytes 8-11: length (u32) - filled by VMM/emulation  
@@ -370,24 +315,6 @@ pub fn tdvmcall_migtd_waitforrequest(
             "waitforrequest buffer too small: have={} need={}",
             data_buffer.len(),
             HEADER_LEN + PAYLOAD_LEN
-=======
-    // data_buffer is a VmcallServiceResponse buffer prepared by caller.
-    // We must fill the response data area with ServiceMigWaitForReqResponse (vmcall-raw layout).
-    // Layout (little endian):
-    // offset 0: data_status u32 (1 = success)
-    // offset 4: request_type u32 (0)
-    // offset 8: mig_request_id u64
-    // offset 16: migration_source u8
-    // offset 17..24: reserved [7] = 0
-    // offset 24..56: target_td_uuid [u64;4]
-    // offset 56..64: binding_handle u64
-    const HEADER_LEN: usize = 24; // VmcallServiceResponse header size
-    if data_buffer.len() < HEADER_LEN + 64 {
-        error!(
-            "waitforrequest buffer too small: have={} need={}",
-            data_buffer.len(),
-            HEADER_LEN + 64
->>>>>>> main
         );
         return Err(TdVmcallError::Other);
     }
@@ -399,7 +326,6 @@ pub fn tdvmcall_migtd_waitforrequest(
     };
 
     if let Some(st) = maybe_req {
-<<<<<<< HEAD
         // Fill GHCI header
         let status = 1u64; // Success
         let length = PAYLOAD_LEN as u32;
@@ -425,29 +351,6 @@ pub fn tdvmcall_migtd_waitforrequest(
         }
         // binding_handle
         payload[48..56].copy_from_slice(&st.binding_handle.to_le_bytes());
-=======
-        let resp = &mut data_buffer[HEADER_LEN..HEADER_LEN + 64];
-        // data_status = 1
-        resp[0..4].copy_from_slice(&1u32.to_le_bytes());
-        // request_type = 0
-        resp[4..8].copy_from_slice(&0u32.to_le_bytes());
-        // mig_request_id
-        resp[8..16].copy_from_slice(&st.request_id.to_le_bytes());
-        // migration_source
-        resp[16] = st.migration_source;
-        // reserved
-        for b in &mut resp[17..24] {
-            *b = 0;
-        }
-        // target_td_uuid [u64;4]
-        let mut off = 24usize;
-        for v in st.target_td_uuid.iter() {
-            resp[off..off + 8].copy_from_slice(&v.to_le_bytes());
-            off += 8;
-        }
-        // binding_handle
-        resp[56..64].copy_from_slice(&st.binding_handle.to_le_bytes());
->>>>>>> main
 
         // Signal completion via interrupt
         intr::trigger(interrupt);
@@ -471,21 +374,13 @@ pub fn tdvmcall_migtd_reportstatus(
     );
     
     // Parse current buffer data (we don't use the payload in status report)
-<<<<<<< HEAD
     let (_status, _length, _payload) = parse_ghci_buffer(data_buffer);
-=======
-    let (_status, _length, _payload) = parse_tdx_buffer(data_buffer);
->>>>>>> main
     
     // For now, we'll simulate a successful status report
     // In a real implementation, this could send status over TCP if needed
     
     // Update buffer with success status
-<<<<<<< HEAD
     format_ghci_buffer(data_buffer, 1, &[]); // Status 1 = success
-=======
-    format_tdx_buffer(data_buffer, 1, &[]); // Status 1 = success
->>>>>>> main
     
     // Emulate VMM signaling back to the TD that reportstatus completed
     log::info!("tdvmcall_migtd_reportstatus: triggering interrupt 0x{:02x}", interrupt);
