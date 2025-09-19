@@ -12,8 +12,7 @@ use std::process;
 use migtd;
 use migtd::migration::event;
 #[cfg(not(feature = "test_reject_all"))]
-use migtd::migration::session::exchange_msk;
-use migtd::migration::session::report_status;
+use migtd::migration::session::{exchange_msk, report_status};
 use migtd::migration::{MigrationResult, MigtdMigrationInformation};
 
 use tdx_tdcall_emu::tdx_emu::{set_emulated_mig_request, EmuMigRequest};

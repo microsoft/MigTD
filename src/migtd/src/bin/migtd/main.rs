@@ -39,6 +39,9 @@ impl TdInfoAsBytes for tdreport::TdInfo {
 #[cfg(feature = "AzCVMEmu")]
 mod cvmemu;
 
+#[cfg(feature = "AzCVMEmu")]
+mod cvmemu;
+
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Event IDs that will be used to tag the event log
