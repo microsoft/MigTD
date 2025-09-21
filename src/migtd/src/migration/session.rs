@@ -358,7 +358,6 @@ pub fn shutdown() -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(feature = "vmcall-raw")]
 pub async fn report_status(status: u8, request_id: u64) -> Result<()> {
     let data_status: u64 = 0;
