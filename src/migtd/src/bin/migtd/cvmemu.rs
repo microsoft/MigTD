@@ -62,7 +62,7 @@ fn initialize_emulation() {
     // Get file paths from environment variables
     let policy_file_path = match env::var("MIGTD_POLICY_FILE") {
         Ok(path) => {
-            log::info!("MIGTD_POLICY_FILE set to: {}", path);
+            log::info!("MIGTD_POLICY_FILE set to: {}\n", path);
             path
         }
         Err(_) => {
@@ -74,7 +74,7 @@ fn initialize_emulation() {
 
     let root_ca_file_path = match env::var("MIGTD_ROOT_CA_FILE") {
         Ok(path) => {
-            log::info!("MIGTD_ROOT_CA_FILE set to: {}", path);
+            log::info!("MIGTD_ROOT_CA_FILE set to: {}\n", path);
             path
         }
         Err(_) => {
@@ -106,11 +106,11 @@ fn initialize_emulation() {
         td_shim_interface_emu::init_file_based_emulation_with_real_files(policy_path, root_ca_path);
 
     if result {
-        log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:");
-        log::info!("  Policy: {}", policy_file_path);
-        log::info!("  Root CA: {}", root_ca_file_path);
+        log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:\n");
+        log::info!("  Policy: {}\n", policy_file_path);
+        log::info!("  Root CA: {}\n", root_ca_file_path);
     } else {
-        log::error!("Failed to initialize file-based emulation");
+        log::error!("Failed to initialize file-based emulation\n");
         std::process::exit(1);
     }
 }
@@ -255,20 +255,20 @@ fn parse_commandline_args() {
         info
     };
 
-    log::info!("Migration information:");
-    log::info!("  Request ID: {}", mig_request_id);
+    log::info!("Migration information:\n");
+    log::info!("  Request ID: {}\n", mig_request_id);
     log::info!(
         "  Role: {}",
         if is_source { "Source" } else { "Destination" }
     );
-    log::info!("  Target TD UUID: {:?}", target_td_uuid);
-    log::info!("  Binding Handle: {:#x}", binding_handle);
+    log::info!("  Target TD UUID: {:?}\n", target_td_uuid);
+    log::info!("  Binding Handle: {:#x}\n", binding_handle);
 
     if let Some(ip) = &destination_ip {
-        log::info!("  Destination IP: {}", ip);
+        log::info!("  Destination IP: {}\n", ip);
     }
     if let Some(port) = destination_port {
-        log::info!("  Destination Port: {}", port);
+        log::info!("  Destination Port: {}\n", port);
     }
 
     // Determine IP and port (either from command line or use defaults)
@@ -284,7 +284,7 @@ fn parse_commandline_args() {
 
     // Initialize TCP emulation
     if let Err(e) = init_tcp_emulation_with_mode(tcp_ip, tcp_port, mode) {
-        log::error!("Failed to initialize TCP emulation: {}", e);
+        log::error!("Failed to initialize TCP emulation: {}\n", e);
         std::process::exit(1);
     }
 
@@ -294,10 +294,10 @@ fn parse_commandline_args() {
         let addr = format!("{}:{}", tcp_ip, tcp_port);
         match start_tcp_server_sync(&addr) {
             Ok(_) => {
-                log::info!("TCP server started successfully on: {}", addr);
+                log::info!("TCP server started successfully on: {}\n", addr);
             }
             Err(e) => {
-                log::error!("Failed to start TCP server: {:?}", e);
+                log::error!("Failed to start TCP server: {:?}\n", e);
                 std::process::exit(1);
             }
         }
@@ -309,11 +309,11 @@ fn parse_commandline_args() {
         use tdx_tdcall_emu::tdx_emu::connect_tcp_client;
         match connect_tcp_client() {
             Ok(_) => {
-                log::info!("Successfully connected to destination server at: {}", addr);
+                log::info!("Successfully connected to destination server at: {}\n", addr);
             }
             Err(e) => {
                 log::error!(
-                    "Failed to connect to destination server at {}: {:?}",
+                    "Failed to connect to destination server at {}: {:?}\n",
                     addr,
                     e
                 );

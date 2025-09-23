@@ -190,7 +190,9 @@ mod verify {
         if cfg!(feature = "AzCVMEmu") {
             // In AzCVMEmu mode, REPORTDATA is constructed differently.
             // Bypass public key hash check in this development environment.
-            log::warn!("AzCVMEmu mode: Skipping public key verification in TD report. This is NOT secure for production use.");
+            log::warn!(
+                "AzCVMEmu mode: Skipping public key verification in TD report. This is NOT secure for production use.\n"
+            );
             return Ok(());
         }
         const PUBLIC_KEY_HASH_SIZE: usize = 48;
