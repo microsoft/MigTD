@@ -309,7 +309,10 @@ fn parse_commandline_args() {
         use tdx_tdcall_emu::tdx_emu::connect_tcp_client;
         match connect_tcp_client() {
             Ok(_) => {
-                log::info!("Successfully connected to destination server at: {}\n", addr);
+                log::info!(
+                    "Successfully connected to destination server at: {}\n",
+                    addr
+                );
             }
             Err(e) => {
                 log::error!(
@@ -370,9 +373,9 @@ fn handle_pre_mig_emu() -> i32 {
                 // Call exchange_msk() and log its immediate outcome
                 let res = exchange_msk(&req).await;
                 match &res {
-                    Ok(_) => log::info!("exchange_msk() returned Ok"),
+                    Ok(_) => log::info!("exchange_msk() returned Ok\n"),
                     Err(e) => log::error!(
-                        "exchange_msk() returned error code {}",
+                        "exchange_msk() returned error code {}\n",
                         migration_result_code(e)
                     ),
                 }
@@ -383,23 +386,23 @@ fn handle_pre_mig_emu() -> i32 {
 
                 // Report status back via vmcall-raw emulation
                 if let Err(e) = report_status(status_code_u8, req.mig_info.mig_request_id).await {
-                    log::error!("report_status failed with code {}", e as u8);
+                    log::error!("report_status failed with code {}\n", e as u8);
                 } else {
-                    log::info!("report_status completed successfully");
+                    log::info!("report_status completed successfully\n");
                 }
 
                 if status_code_u8 == MigrationResult::Success as u8 {
-                    log::info!("Migration key exchange successful!");
+                    log::info!("Migration key exchange successful!\n");
                     0
                 } else {
                     let status_code = status_code_u8 as i32;
-                    log::error!("Migration key exchange failed with code: {}", status_code);
+                    log::error!("Migration key exchange failed with code: {}\n", status_code);
                     status_code
                 }
             }
             Err(e) => {
                 let status_code = e as u8 as i32;
-                log::error!("wait_for_request failed with code: {}", status_code);
+                log::error!("wait_for_request failed with code: {}\n", status_code);
                 status_code
             }
         }
