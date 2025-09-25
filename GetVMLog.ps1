@@ -60,9 +60,15 @@ if ($Help) {
     exit 0
 }
 
+# Start logging all output to file
+$LogFile = "GetVMLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+Start-Transcript -Path $LogFile -Append
+Write-Host "Logging to: $LogFile" -ForegroundColor Cyan
+
 # Validate required modules
 if (-not (Get-Module -ListAvailable -Name Hyper-V)) {
     Write-Error "Hyper-V PowerShell module is required but not available."
+    Stop-Transcript
     exit 1
 }
 
@@ -72,6 +78,8 @@ Write-Host "Timeout: $TimeoutSeconds seconds" -ForegroundColor Green
 
 # Construct the pipe path
 $pipePath = "\\.\pipe\$PipeName"
+Write-Host "Pipe path: $pipePath" -ForegroundColor Green
+
 try {
     Set-VMComPort -VMName $VmName -Number $ComPort -Path $pipePath
     Write-Host "VM COM port configured successfully" -ForegroundColor Green
@@ -89,28 +97,35 @@ Write-Host "Attempting to connect to pipe: $pipePath" -ForegroundColor Yellow
 Write-Host "Start the VM now." -ForegroundColor Yellow
 try {
     $pipeClient.Connect($TimeoutSeconds * 1000) # Convert to milliseconds
-	    Write-Host "Connected to pipe. Now listening for output. "
-	    
-	    # Create a stream reader
-	    $reader = New-Object System.IO.StreamReader($pipeClient)
-	    
-	    # Continuously read line-by-line until the server closes the connection
-	    while ($true) {
-	        $line = $reader.ReadLine()
-	        if ($line -eq $null) {
-	            # An empty read indicates the server has closed the pipe
-	            break
-	        }
-	        Write-Host "Received: $line"
-	    }
-	}
-	catch {
-	    Write-Host "An error occurred: $($_.Exception.Message)"
-	}
-	finally {
-	    # Clean up and close the connection
-	    if ($pipeClient.IsConnected) {
-	        $pipeClient.Dispose()
-	    }
-	    Write-Host "Disconnected from the pipe."
+    Write-Host "Connected to pipe. Now listening for output. "
+    
+    # Create a stream reader
+    $reader = New-Object System.IO.StreamReader($pipeClient)
+    
+    # Continuously read line-by-line until the server closes the connection
+    while ($true) {
+        $line = $reader.ReadLine()
+        if ($line -eq $null) {
+            # An empty read indicates the server has closed the pipe
+            Write-Warning "The VM has closed the pipe."
+            break
+        }
+        Write-Host "Received: $line"
+    }
+}
+catch {
+    Write-Host "An error occurred: $($_.Exception.Message)"
+}
+finally {
+    # Clean up and close the connection
+    if ($reader) {
+        $reader.Dispose()
+    }
+    if ($pipeClient.IsConnected) {
+        $pipeClient.Dispose()
+    }
+    Write-Host "Disconnected from the pipe."
+    
+    # Stop logging
+    Stop-Transcript
 }
