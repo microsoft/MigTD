@@ -12,7 +12,8 @@ IGVM_FEATURES_REJECT_ALL ?= $(IGVM_FEATURES_BASE),test_reject_all
 IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL ?= $(IGVM_FEATURES_BASE),test_disable_ra_and_accept_all
 
 .PHONY: help build-AzCVMEmu test-migtd-emu build-test-migtd-emu
-.PHONY: build-igvm-accept generate-hash-accept build-igvm-accept-all build-igvm-reject build-igvm-reject-all
+.PHONY: build-igvm-accept build-igvm-accept-all build-igvm-reject build-igvm-reject-all
+.PHONY: generate-hash-disable-RA build-igvm-disable-RA build-igvm-disable-RA-all
 .PHONY: pre-build build-igvm generate-hash build-igvm-all
 
 .DEFAULT_GOAL := build-igvm-all
