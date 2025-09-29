@@ -19,12 +19,14 @@ IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL ?= $(IGVM_FEATURES_BASE),test_disable_ra
 
 help:
 	@echo "Available targets:"
-	@echo "  build-AzCVMEmu        - Build with AzCVMEmu features"
-	@echo "  test-migtd-emu        - Run emulation tests"
-	@echo "  build-test-migtd-emu  - Build and run emulation tests"
-	@echo "  build-igvm-all        - Build IGVM with disabled RA"
-	@echo "  build-igvm-accept-all - Build IGVM with accept all policy"
-	@echo "  build-igvm-reject-all - Build IGVM with reject all policy"
+	@echo "  build-AzCVMEmu              - Build with AzCVMEmu features"
+	@echo "  test-migtd-emu              - Run emulation tests"
+	@echo "  build-test-migtd-emu        - Build and run emulation tests"
+	@echo "  build-igvm-all              - Build IGVM"
+	@echo "  build-igvm-accept-all       - Build IGVM with accept all policy"
+	@echo "  build-igvm-reject-all       - Build IGVM with reject all policy"
+	@echo "  build-igvm-disable-RA-all - Build IGVM with disabled RA and accept all policy"
+	
 
 build-AzCVMEmu:
 	cargo build --no-default-features --features $(AZCVMEMU_FEATURES)
@@ -54,20 +56,25 @@ pre-build:
 build-igvm-accept:
 	cargo image --no-default-features --features $(IGVM_FEATURES_ACCEPT_ALL) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
-generate-hash-accept:
+generate-hash:
 	cargo hash --image $(IGVM_FILE)
 
-build-igvm-accept-all: pre-build build-igvm-accept generate-hash-accept
+build-igvm-accept-all: pre-build build-igvm-accept generate-hash
 
-build-igvm:
+build-igvm-disable-RA:
 	cargo image --no-default-features --features $(IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
-generate-hash:
+generate-hash-disable-RA:
 	cargo hash --image $(IGVM_FILE) --test-disable-ra-and-accept-all
 
-build-igvm-all: pre-build build-igvm generate-hash
+build-igvm-disable-RA-all: pre-build build-igvm-disable-RA generate-hash-disable-RA
 
 build-igvm-reject:
 	cargo image --no-default-features --features $(IGVM_FEATURES_REJECT_ALL) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
 build-igvm-reject-all: pre-build build-igvm-reject generate-hash
+
+build-igvm:
+	cargo image --no-default-features --features $(IGVM_FEATURES_BASE) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
+
+build-igvm-all: pre-build build-igvm generate-hash
