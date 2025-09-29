@@ -26,8 +26,7 @@ help:
 	@echo "  build-igvm-all              - Build IGVM"
 	@echo "  build-igvm-accept-all       - Build IGVM with accept all policy"
 	@echo "  build-igvm-reject-all       - Build IGVM with reject all policy"
-	@echo "  build-igvm-disable-RA-all - Build IGVM with disabled RA and accept all policy"
-	
+	@echo "  build-igvm-disable-RA-all   - Build IGVM with disabled RA and accept all policy"
 
 build-AzCVMEmu:
 	cargo build --no-default-features --features $(AZCVMEMU_FEATURES)
