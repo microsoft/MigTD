@@ -12,7 +12,7 @@ use r_efi::efi::Guid;
 use crate::td_uefi_pi::pi::fv::FV_FILETYPE_RAW;
 
 // Static buffers to store emulated files
-static mut POLICY_BUFFER: [u8; 32768] = [0; 32768]; // 32KB for policy files
+static mut POLICY_BUFFER: [u8; 524288] = [0; 524288]; // 512KB for policy files (increased from 32KB)
 static mut POLICY_SIZE: usize = 0;
 static POLICY_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
