@@ -20,6 +20,7 @@ DEFAULT_BUILD_MODE="release"
 USE_SUDO=true
 RUN_BOTH=false
 SKIP_RA=false
+USE_POLICY_V2=false
 DEFAULT_RUST_BACKTRACE="1"
 # Default RUST_LOG: verbose in debug, info in release; can be overridden by env
 DEFAULT_RUST_LOG_DEBUG="debug"
@@ -47,6 +48,7 @@ show_usage() {
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
     echo "  --debug                      Build in debug mode (default: release)"
     echo "  --release                    Build in release mode (default)"
+    echo "  --policy-v2                  Enable policy v2 support (requires --policy-file to be specified)"
     echo "  --skip-ra                    Skip remote attestation (uses mock TD reports/quotes for non-TDX environments)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
@@ -68,6 +70,7 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
+    echo "  $0 --policy-v2 --policy-file ./config/policy_v2_test.json --skip-ra --both      # Run both with policy v2 and skip RA mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
 }
@@ -128,11 +131,22 @@ maybe_force_sudo_due_to_tpm() {
 build_migtd() {
     local build_mode="$1"
     local skip_ra="$2"
+    local use_policy_v2="$3"
     
     local features="AzCVMEmu"
+    if [[ "$use_policy_v2" == true ]]; then
+        features="$features,policy_v2"
+    fi
     if [[ "$skip_ra" == true ]]; then
-        features="AzCVMEmu,test_disable_ra_and_accept_all"
+        features="$features,test_disable_ra_and_accept_all"
+    fi
+
+    if [[ "$skip_ra" == true && "$use_policy_v2" == true ]]; then
+        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + policy v2 + skip RA features (mock attestation)...${NC}"
+    elif [[ "$skip_ra" == true ]]; then
         echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + skip RA features (mock attestation)...${NC}"
+    elif [[ "$use_policy_v2" == true ]]; then
+        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + policy v2 features...${NC}"
     else
         echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
     fi
@@ -195,6 +209,10 @@ while [[ $# -gt 0 ]]; do
             BUILD_MODE="release"
             shift
             ;;
+        --policy-v2)
+            USE_POLICY_V2=true
+            shift
+            ;;
         --skip-ra)
             SKIP_RA=true
             shift
@@ -235,11 +253,20 @@ if [[ "$RUN_BOTH" != true ]]; then
     fi
 fi
 
+# Validate policy v2 requirements
+if [[ "$USE_POLICY_V2" == true ]]; then
+    if [[ "$POLICY_FILE" == "$DEFAULT_POLICY_FILE" ]]; then
+        echo -e "${RED}Error: When using --policy-v2, you must explicitly specify a policy file with --policy-file${NC}" >&2
+        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_test.json --both${NC}" >&2
+        exit 1
+    fi
+fi
+
 # Change to MigTD directory
 cd "$(dirname "$0")"
 
 # Always build MigTD
-build_migtd "$BUILD_MODE" "$SKIP_RA"
+build_migtd "$BUILD_MODE" "$SKIP_RA" "$USE_POLICY_V2"
 
 # Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
@@ -315,6 +342,11 @@ echo -e "${BLUE}Setting up environment variables...${NC}"
 # Display configuration
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Build mode: $BUILD_MODE"
+if [[ "$USE_POLICY_V2" == true ]]; then
+    echo "  Policy version: v2"
+else
+    echo "  Policy version: v1 (default)"
+fi
 if [[ "$SKIP_RA" == true ]]; then
     echo "  Skip RA mode: enabled (mock attestation, no TDX/Azure CVM/TPM required)"
 else
