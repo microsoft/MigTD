@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-#[cfg(not(feature = "test"))]
+#[cfg(not(any(feature = "test", feature = "AzCVMEmu")))]
 pub(crate) use attest_lib_binding::*;
-#[cfg(feature = "test")]
+#[cfg(any(feature = "test", feature = "AzCVMEmu"))]
 pub(crate) use null_binding::*;
 
 #[allow(unused)]
@@ -59,7 +59,7 @@ pub struct QveCollateral {
     pub qe_identity_size: u32,
 }
 
-#[cfg(not(feature = "test"))]
+#[cfg(not(any(feature = "test", feature = "AzCVMEmu")))]
 mod attest_lib_binding {
     use super::*;
 
@@ -133,7 +133,7 @@ mod attest_lib_binding {
     }
 }
 
-#[cfg(feature = "test")]
+#[cfg(any(feature = "test", feature = "AzCVMEmu"))]
 mod null_binding {
     use super::*;
     use crate::TD_VERIFIED_REPORT_SIZE;
@@ -164,13 +164,13 @@ mod null_binding {
     #[cfg(feature = "attest-lib-ext")]
     #[no_mangle]
     pub unsafe extern "C" fn verify_quote_integrity_ex(
-        p_quote: *const ::core::ffi::c_void,
-        quote_size: u32,
-        root_pub_key: *const ::core::ffi::c_void,
-        root_pub_key_size: u32,
-        p_collateral: *const QveCollateral,
-        p_tdx_report_verify: *mut ::core::ffi::c_void,
-        p_tdx_report_verify_size: *mut u32,
+        _p_quote: *const ::core::ffi::c_void,
+        _quote_size: u32,
+        _root_pub_key: *const ::core::ffi::c_void,
+        _root_pub_key_size: u32,
+        _p_collateral: *const QveCollateral,
+        _p_tdx_report_verify: *mut ::core::ffi::c_void,
+        _p_tdx_report_verify_size: *mut u32,
     ) -> AttestLibError {
         AttestLibError::Success
     }
