@@ -10,11 +10,13 @@ IGVM_FEATURES_REJECT_ALL ?= $(IGVM_FEATURES_BASE),test_reject_all
 # test_disable_ra_and_accept_all feature disables remote attestation and skips policy verification, bypassing RATLS security
 # test feature skips the compilation of attestation library when the remote attestation is not enabled or needed
 IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL ?= $(IGVM_FEATURES_BASE),test_disable_ra_and_accept_all
+SERVTD_INFO ?= config/servtd_info.json
 
 .PHONY: help build-AzCVMEmu test-migtd-emu build-test-migtd-emu
 .PHONY: build-igvm-accept build-igvm-accept-all build-igvm-reject build-igvm-reject-all
 .PHONY: generate-hash-disable-RA build-igvm-disable-RA build-igvm-disable-RA-all
 .PHONY: pre-build build-igvm generate-hash build-igvm-all
+.PHONY: generate-hash-servtd-info build-EMR-igvm-all build-GNR-igvm-all
 
 .DEFAULT_GOAL := build-igvm-all
 
@@ -27,6 +29,8 @@ help:
 	@echo "  build-igvm-accept-all       - Build IGVM with accept all policy"
 	@echo "  build-igvm-reject-all       - Build IGVM with reject all policy"
 	@echo "  build-igvm-disable-RA-all   - Build IGVM with disabled RA and accept all policy"
+	@echo "  build-EMR-igvm-all          - Build IGVM for EMR"
+	@echo "  build-GNR-igvm-all          - Build IGVM for GNR"
 
 build-AzCVMEmu:
 	cargo build --no-default-features --features $(AZCVMEMU_FEATURES)
@@ -78,3 +82,12 @@ build-igvm:
 	cargo image --no-default-features --features $(IGVM_FEATURES_BASE) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
 build-igvm-all: pre-build build-igvm generate-hash
+
+generate-hash-servtd-info:
+	cargo hash --image $(IGVM_FILE) --servtd-info $(SERVTD_INFO)
+
+build-EMR-igvm-all: SERVTD_INFO := config/servtd_info_EMR.json
+build-EMR-igvm-all: pre-build build-igvm generate-hash-servtd-info
+
+build-GNR-igvm-all: SERVTD_INFO := config/servtd_info_GNR.json
+build-GNR-igvm-all: pre-build build-igvm generate-hash-servtd-info
