@@ -160,16 +160,25 @@ impl<'a> RawPolicyData<'a> {
         &self,
         issuer_chain: &[u8],
     ) -> Result<PolicyData<'a>, PolicyError> {
-        let signature = hex_string_to_bytes(&self.signature)?;
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            log::warn!("AzCVMEmu mode: Bypassing policy data signature verification for testing. This is NOT secure for production use.");
+            return Ok(serde_json::from_str::<PolicyData>(self.policy_data.get()).unwrap());
+        }
 
-        crypto::verify_cert_chain_and_signature(
-            issuer_chain,
-            self.policy_data.get().as_bytes(),
-            &signature,
-        )
-        .map_err(|_| PolicyError::SignatureVerificationFailed)?;
+        #[cfg(not(feature = "AzCVMEmu"))]
+        {
+            let signature = hex_string_to_bytes(&self.signature)?;
 
-        Ok(serde_json::from_str::<PolicyData>(self.policy_data.get()).unwrap())
+            crypto::verify_cert_chain_and_signature(
+                issuer_chain,
+                self.policy_data.get().as_bytes(),
+                &signature,
+            )
+            .map_err(|_| PolicyError::SignatureVerificationFailed)?;
+
+            Ok(serde_json::from_str::<PolicyData>(self.policy_data.get()).unwrap())
+        }
     }
 }
 

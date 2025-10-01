@@ -38,7 +38,8 @@ resolver = "2"
 panic = "abort" # disable stack unwinding on panic
 opt-level = "z"
 lto = true
-strip = true
+strip = false  # Keep debug symbols for debugging
+debug = true   # Enable debug info
 
 # the profile used for `cargo build --release`
 [profile.release]

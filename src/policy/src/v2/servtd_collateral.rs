@@ -45,17 +45,27 @@ impl<'a> RawServtdIdentity<'a> {
     }
 
     pub fn verify_signature(&self, issuer_chain: &[u8]) -> Result<TdIdentity, PolicyError> {
-        let signature = hex_string_to_bytes(&self.signature)?;
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            log::warn!("AzCVMEmu mode: Bypassing ServTD identity signature verification for testing. This is NOT secure for production use.");
+            return serde_json::from_str::<TdIdentity>(self.td_identity.get())
+                .map_err(|_| PolicyError::InvalidPolicy);
+        }
 
-        crypto::verify_cert_chain_and_signature(
-            issuer_chain,
-            self.td_identity.get().as_bytes(),
-            &signature,
-        )
-        .map_err(|_| PolicyError::SignatureVerificationFailed)?;
+        #[cfg(not(feature = "AzCVMEmu"))]
+        {
+            let signature = hex_string_to_bytes(&self.signature)?;
 
-        serde_json::from_str::<TdIdentity>(self.td_identity.get())
-            .map_err(|_| PolicyError::InvalidPolicy)
+            crypto::verify_cert_chain_and_signature(
+                issuer_chain,
+                self.td_identity.get().as_bytes(),
+                &signature,
+            )
+            .map_err(|_| PolicyError::SignatureVerificationFailed)?;
+
+            serde_json::from_str::<TdIdentity>(self.td_identity.get())
+                .map_err(|_| PolicyError::InvalidPolicy)
+        }
     }
 }
 
@@ -121,17 +131,27 @@ impl<'a> RawServtdTcbMapping<'a> {
     }
 
     pub fn verify_signature(&self, issuer_chain: &[u8]) -> Result<TdTcbMapping, PolicyError> {
-        let signature = hex_string_to_bytes(&self.signature)?;
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            log::warn!("AzCVMEmu mode: Bypassing ServTD TCB mapping signature verification for testing. This is NOT secure for production use.");
+            return serde_json::from_str::<TdTcbMapping>(self.td_tcb_mapping.get())
+                .map_err(|_| PolicyError::InvalidPolicy);
+        }
 
-        crypto::verify_cert_chain_and_signature(
-            issuer_chain,
-            self.td_tcb_mapping.get().as_bytes(),
-            &signature,
-        )
-        .map_err(|_| PolicyError::SignatureVerificationFailed)?;
+        #[cfg(not(feature = "AzCVMEmu"))]
+        {
+            let signature = hex_string_to_bytes(&self.signature)?;
 
-        serde_json::from_str::<TdTcbMapping>(self.td_tcb_mapping.get())
-            .map_err(|_| PolicyError::InvalidPolicy)
+            crypto::verify_cert_chain_and_signature(
+                issuer_chain,
+                self.td_tcb_mapping.get().as_bytes(),
+                &signature,
+            )
+            .map_err(|_| PolicyError::SignatureVerificationFailed)?;
+
+            serde_json::from_str::<TdTcbMapping>(self.td_tcb_mapping.get())
+                .map_err(|_| PolicyError::InvalidPolicy)
+        }
     }
 }
 
@@ -206,33 +226,42 @@ impl TdTcbMapping {
 
     #[inline]
     fn compare_measurements(pattern: &Measurements, target: &Measurements) -> bool {
-        if pattern.mrtd != target.mrtd
-            || pattern.rtmr0 != target.rtmr0
-            || pattern.rtmr1 != target.rtmr1
+        #[cfg(feature = "AzCVMEmu")]
         {
-            return false;
+            log::warn!("AzCVMEmu mode: Bypassing MigTD measurement comparison for testing. This is NOT secure for production use.");
+            return true; // Always return true to bypass measurement verification
         }
 
-        // Optional RTMR2 / RTMR3:
-        // If pattern provides a value -> target must also provide and match.
-        // If pattern is None -> treated as wildcard (ignore target value).
-        if let Some(_) = pattern.rtmr2 {
-            match (&pattern.rtmr2, &target.rtmr2) {
-                (Some(p), Some(t)) if p != t => return false,
-                (Some(_), None) => return false,
-                _ => {}
+        #[cfg(not(feature = "AzCVMEmu"))]
+        {
+            if pattern.mrtd != target.mrtd
+                || pattern.rtmr0 != target.rtmr0
+                || pattern.rtmr1 != target.rtmr1
+            {
+                return false;
             }
-        }
 
-        if let Some(_) = pattern.rtmr3 {
-            match (&pattern.rtmr3, &target.rtmr3) {
-                (Some(p), Some(t)) if p != t => return false,
-                (Some(_), None) => return false,
-                _ => {}
+            // Optional RTMR2 / RTMR3:
+            // If pattern provides a value -> target must also provide and match.
+            // If pattern is None -> treated as wildcard (ignore target value).
+            if let Some(_) = pattern.rtmr2 {
+                match (&pattern.rtmr2, &target.rtmr2) {
+                    (Some(p), Some(t)) if p != t => return false,
+                    (Some(_), None) => return false,
+                    _ => {}
+                }
             }
-        }
 
-        true
+            if let Some(_) = pattern.rtmr3 {
+                match (&pattern.rtmr3, &target.rtmr3) {
+                    (Some(p), Some(t)) if p != t => return false,
+                    (Some(_), None) => return false,
+                    _ => {}
+                }
+            }
+
+            true
+        }
     }
 }
 
