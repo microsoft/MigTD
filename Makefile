@@ -13,20 +13,20 @@ IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL ?= $(IGVM_FEATURES_BASE),test_disable_ra
 
 .PHONY: help build-AzCVMEmu test-migtd-emu build-test-migtd-emu
 .PHONY: build-igvm-accept build-igvm-accept-all build-igvm-reject build-igvm-reject-all
-.PHONY: generate-hash-disable-RA build-igvm-disable-RA build-igvm-disable-RA-all
+.PHONY: generate-hash-accept-all-tls build-igvm-accept-all-tls build-igvm-accept-all-tls-all
 .PHONY: pre-build build-igvm generate-hash build-igvm-all
 
 .DEFAULT_GOAL := build-igvm-all
 
 help:
 	@echo "Available targets:"
-	@echo "  build-AzCVMEmu              - Build with AzCVMEmu features"
-	@echo "  test-migtd-emu              - Run emulation tests"
-	@echo "  build-test-migtd-emu        - Build and run emulation tests"
-	@echo "  build-igvm-all              - Build IGVM"
-	@echo "  build-igvm-accept-all       - Build IGVM with accept all policy"
-	@echo "  build-igvm-reject-all       - Build IGVM with reject all policy"
-	@echo "  build-igvm-disable-RA-all   - Build IGVM with disabled RA and accept all policy"
+	@echo "  build-AzCVMEmu                  - Build with AzCVMEmu features"
+	@echo "  test-migtd-emu                  - Run emulation tests"
+	@echo "  build-test-migtd-emu            - Build and run emulation tests"
+	@echo "  build-igvm-all                  - Build IGVM"
+	@echo "  build-igvm-accept-all           - Build IGVM with accept all policy"
+	@echo "  build-igvm-reject-all           - Build IGVM with reject all policy"
+	@echo "  build-igvm-accept-all-tls-all   - Build IGVM with disabled RA and accept all policy with TLS"
 
 build-AzCVMEmu:
 	cargo build --no-default-features --features $(AZCVMEMU_FEATURES)
@@ -51,6 +51,7 @@ pre-build:
 		echo "x86_64-unknown-none target already installed"; \
 	fi
 	git submodule update --init --recursive
+	chmod +x ./sh_script/preparation.sh
 	./sh_script/preparation.sh
 
 build-igvm-accept:
@@ -61,13 +62,13 @@ generate-hash:
 
 build-igvm-accept-all: pre-build build-igvm-accept generate-hash
 
-build-igvm-disable-RA:
+build-igvm-accept-all-tls:
 	cargo image --no-default-features --features $(IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
-generate-hash-disable-RA:
+generate-hash-accept-all-tls:
 	cargo hash --image $(IGVM_FILE) --test-disable-ra-and-accept-all
 
-build-igvm-disable-RA-all: pre-build build-igvm-disable-RA generate-hash-disable-RA
+build-igvm-accept-all-tls-all: pre-build build-igvm-accept-all-tls generate-hash-accept-all-tls
 
 build-igvm-reject:
 	cargo image --no-default-features --features $(IGVM_FEATURES_REJECT_ALL) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
