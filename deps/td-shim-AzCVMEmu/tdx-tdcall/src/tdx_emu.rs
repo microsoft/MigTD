@@ -13,7 +13,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
-use log::{error, warn};
+use log::{error, warn, info};
 // Use interrupt-emu to fire callbacks registered by upper layers.
 use interrupt_emu as intr;
 use original_tdx_tdcall::{TdCallError, TdVmcallError};
@@ -62,12 +62,12 @@ pub fn set_emulated_mig_request(req: EmuMigRequest) {
 /// Set TCP address and mode for emulation
 pub fn init_tcp_emulation_with_mode(ip: &str, port: u16, mode: TcpEmulationMode) -> Result<(), &'static str> {
     let tcp_addr = format!("{}:{}", ip, port);
-    
+
     // Validate IP address format (basic validation)
     if ip.is_empty() {
         return Err("IP address cannot be empty");
     }
-    
+
     // Set the TCP configuration
     {
         let mut addr = TCP_ADDRESS.lock();
@@ -77,7 +77,7 @@ pub fn init_tcp_emulation_with_mode(ip: &str, port: u16, mode: TcpEmulationMode)
         let mut tcp_mode = TCP_MODE.lock();
         *tcp_mode = Some(mode.clone());
     }
-    
+
     match mode {
         TcpEmulationMode::Server => {
             // Server mode setup
@@ -86,32 +86,32 @@ pub fn init_tcp_emulation_with_mode(ip: &str, port: u16, mode: TcpEmulationMode)
             // Client mode setup
         }
     }
-    
+
     Ok(())
 }
 
 /// Start TCP server for destination instances (blocking call)
 pub fn start_tcp_server_sync(addr: &str) -> Result<(), TdVmcallError> {
-    
+
     let listener = TcpListener::bind(addr)
         .map_err(|e| {
             error!("Failed to bind TCP listener to {}: {}", addr, e);
             TdVmcallError::Other
         })?;
-        
+
     // Accept the first connection and store it globally
     let (stream, _peer_addr) = listener.accept()
         .map_err(|e| {
             error!("Failed to accept TCP connection: {}", e);
             TdVmcallError::Other
         })?;
-        
+
     // Store the stream globally for send/receive operations
     {
         let mut tcp_stream = TCP_STREAM.lock();
         *tcp_stream = Some(stream);
     }
-    
+
     Ok(())
 }
 
@@ -127,86 +127,117 @@ pub fn connect_tcp_client() -> Result<(), TdVmcallError> {
             }
         }
     };
-    
+
     let stream = TcpStream::connect(&addr)
         .map_err(|e| {
             error!("Failed to connect to TCP server at {}: {}", addr, e);
             TdVmcallError::Other
         })?;
-        
+
     // Store the stream globally for send/receive operations
     {
         let mut tcp_stream = TCP_STREAM.lock();
         *tcp_stream = Some(stream);
     }
-    
+
     Ok(())
 }
 
 /// Send raw data over TCP connection
 pub fn tcp_send_data(data: &[u8]) -> Result<(), TdVmcallError> {
-    
+
     let mut stream_guard = TCP_STREAM.lock();
     let stream = stream_guard.as_mut().ok_or_else(|| {
         error!("No TCP connection available for sending data");
         TdVmcallError::Other
     })?;
-    
+
+    info!("TCP send: sending {} bytes of data", data.len());
+
+    // Check for potential overflow when converting to u32
+    if data.len() > u32::MAX as usize {
+        error!("TCP send: data too large for u32 length field: {} bytes", data.len());
+        return Err(TdVmcallError::Other);
+    }
+
     // Send data length first (4 bytes, little endian)
     let length = data.len() as u32;
     let len_bytes = length.to_le_bytes();
+    info!("TCP send: length header: {} (0x{:x}) -> bytes: {:?}", length, length, len_bytes);
     stream
         .write_all(&len_bytes)
         .map_err(|e| {
-            error!("Failed to write length header: {}", e);
+            error!("Failed to write length header ({} bytes): {}", data.len(), e);
             TdVmcallError::Other
         })?;
-    
+
     // Send raw data
     stream.write_all(data)
         .map_err(|e| {
-            error!("Failed to write data payload: {}", e);
+            error!("Failed to write data payload ({} bytes): {}", data.len(), e);
             TdVmcallError::Other
         })?;
-    
+
     stream.flush()
         .map_err(|e| {
-            error!("Failed to flush TCP stream: {}", e);
+            error!("Failed to flush TCP stream ({} bytes): {}", data.len(), e);
             TdVmcallError::Other
         })?;
-    
+
+    info!("TCP send: successfully sent {} bytes", data.len());
     Ok(())
 }
 
 /// Receive raw data from TCP connection
 pub fn tcp_receive_data() -> Result<Vec<u8>, TdVmcallError> {
-    
+
     let mut stream_guard = TCP_STREAM.lock();
     let stream = stream_guard.as_mut().ok_or_else(|| {
         error!("No TCP connection available for receiving data");
         TdVmcallError::Other
     })?;
-    
+
     // Read data length first (4 bytes, little endian)
     let mut length_bytes = [0u8; 4];
     stream
         .read_exact(&mut length_bytes)
         .map_err(|e| {
-            error!("Failed to read length header: {}", e);
+            error!("Failed to read length header (connection may be closed): {} - length_bytes: {:?}", e, length_bytes);
             TdVmcallError::Other
         })?;
-    
-    let length = u32::from_le_bytes(length_bytes) as usize;
-    
+
+    let length_u32 = u32::from_le_bytes(length_bytes);
+    let length = length_u32 as usize;
+    info!("TCP receive: expecting {} bytes of data (u32: {}, bytes: {:?})", length, length_u32, length_bytes);
+
+    // Check for potential overflow from u32 to usize conversion
+    if length_u32 as usize != length {
+        error!("TCP receive: length overflow detected! u32: {} -> usize: {}", length_u32, length);
+        return Err(TdVmcallError::Other);
+    }
+
+    // Sanity check for reasonable data size (up to 1MB)
+    if length > 1024 * 1024 {
+        error!("TCP receive: unreasonable data length: {} bytes (0x{:x})", length, length);
+        return Err(TdVmcallError::Other);
+    }
+
+    // Check for zero length which might indicate protocol issue
+    if length == 0 {
+        warn!("TCP receive: zero length message - this might be a connection close signal");
+        return Ok(Vec::new());
+    }
+
     // Read raw data
     let mut buffer = vec![0u8; length];
     stream
         .read_exact(&mut buffer)
         .map_err(|e| {
-            error!("Failed to read data payload: {}", e);
+            error!("Failed to read data payload ({} bytes): {}", length, e);
             TdVmcallError::Other
         })?;
-    
+
+    info!("TCP receive: successfully received {} bytes", buffer.len());
     Ok(buffer)
 }
 
@@ -215,13 +246,13 @@ fn parse_ghci_buffer(buffer: &[u8]) -> (u64, u32, &[u8]) {
     if buffer.len() < 12 {
         return (0, 0, &[]);
     }
-    
-    let status = u64::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3], 
+
+    let status = u64::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3],
                                      buffer[4], buffer[5], buffer[6], buffer[7]]);
     let length = u32::from_le_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]);
     let max_payload_len = (buffer.len() - 12).min(length as usize);
     let payload = &buffer[12..12 + max_payload_len];
-    
+
     (status, length, payload)
 }
 
@@ -260,16 +291,16 @@ pub fn tdvmcall_migtd_send_sync(
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
-    
+
     // Parse GHCI 1.5 buffer format to extract payload
     let (_status, _length, payload) = parse_ghci_buffer(data_buffer);
-    
+
     // Send payload over TCP
     tcp_send_data(payload)?;
-    
+
     // Update buffer to indicate success (status = 1, no payload response for send)
     format_ghci_buffer(data_buffer, 1, &[]);
-    
+
     // Trigger the registered interrupt callback to emulate VMM signaling
     intr::trigger(interrupt);
     Ok(())
@@ -281,13 +312,13 @@ pub fn tdvmcall_migtd_receive_sync(
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
-    
+
     // Receive payload over TCP
     let received_payload = tcp_receive_data()?;
-    
+
     // Format response into GHCI 1.5 buffer (status = 1 for success)
     format_ghci_buffer(data_buffer, 1, &received_payload);
-    
+
     // Trigger the registered interrupt callback to emulate VMM signaling
     intr::trigger(interrupt);
     Ok(())
@@ -301,10 +332,10 @@ pub fn tdvmcall_migtd_waitforrequest(
 
     // data_buffer uses the new GHCI 1.5 buffer format:
     // Bytes 0-7: status (u64) - filled by VMM/emulation
-    // Bytes 8-11: length (u32) - filled by VMM/emulation  
+    // Bytes 8-11: length (u32) - filled by VMM/emulation
     // Bytes 12+: GhciWaitForRequestResponse payload (56 bytes):
     //   - mig_request_id: u64 (8 bytes)
-    //   - migration_source: u8 (1 byte) 
+    //   - migration_source: u8 (1 byte)
     //   - _pad: [u8; 7] (7 bytes)
     //   - target_td_uuid: [u64; 4] (32 bytes)
     //   - binding_handle: u64 (8 bytes)
@@ -334,7 +365,7 @@ pub fn tdvmcall_migtd_waitforrequest(
 
         // Fill GhciWaitForRequestResponse payload
         let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + PAYLOAD_LEN];
-        
+
         // mig_request_id
         payload[0..8].copy_from_slice(&st.request_id.to_le_bytes());
         // migration_source
@@ -361,7 +392,7 @@ pub fn tdvmcall_migtd_waitforrequest(
     }
 }
 
-/// TCP emulation for tdvmcall_migtd_reportstatus  
+/// TCP emulation for tdvmcall_migtd_reportstatus
 pub fn tdvmcall_migtd_reportstatus(
     mig_request_id: u64,
     pre_migration_status: u8,
@@ -372,16 +403,16 @@ pub fn tdvmcall_migtd_reportstatus(
         "tdvmcall_migtd_reportstatus: request_id={} status={} interrupt=0x{:02x}",
         mig_request_id, pre_migration_status, interrupt
     );
-    
+
     // Parse current buffer data (we don't use the payload in status report)
     let (_status, _length, _payload) = parse_ghci_buffer(data_buffer);
-    
+
     // For now, we'll simulate a successful status report
     // In a real implementation, this could send status over TCP if needed
-    
+
     // Update buffer with success status
     format_ghci_buffer(data_buffer, 1, &[]); // Status 1 = success
-    
+
     // Emulate VMM signaling back to the TD that reportstatus completed
     log::info!("tdvmcall_migtd_reportstatus: triggering interrupt 0x{:02x}", interrupt);
     intr::trigger(interrupt);
@@ -515,7 +546,7 @@ pub fn tdvmcall_get_quote(buffer: &mut [u8]) -> Result<(), original_tdx_tdcall::
 
     // Extract the TDREPORT data (which contains the report data we need)
     let tdreport_data = &buffer[32..32 + tdreport_length];
-    
+
     // For TD report, we typically use the first 48 bytes as report data
     // In a real TDREPORT, the report data is at a specific offset
     // For simplicity, we'll use the first 48 bytes or pad with zeros if shorter
@@ -539,7 +570,7 @@ pub fn tdvmcall_get_quote(buffer: &mut [u8]) -> Result<(), original_tdx_tdcall::
     // Check if there's enough space after TDREPORT for the quote
     let quote_start_offset = 32 + tdreport_length;
     if buffer.len() < quote_start_offset + quote.len() {
-        error!("GetQuote buffer too small for quote: need {} bytes, have {}", 
+        error!("GetQuote buffer too small for quote: need {} bytes, have {}",
                quote_start_offset + quote.len(), buffer.len());
         // Set status to error
         let error_status = 0x8000000000000000u64; // GET_QUOTE_ERROR
@@ -559,7 +590,7 @@ pub fn tdvmcall_get_quote(buffer: &mut [u8]) -> Result<(), original_tdx_tdcall::
     let success_status = 0u64;
     let status_bytes = success_status.to_le_bytes();
     buffer[8..16].copy_from_slice(&status_bytes);
-    
+
     log::info!("AzCVMEmu: tdvmcall_get_quote completed successfully, quote size: {}", quote.len());
     Ok(())
 }
@@ -567,19 +598,19 @@ pub fn tdvmcall_get_quote(buffer: &mut [u8]) -> Result<(), original_tdx_tdcall::
 /// Emulation for TDG.MR.EXTEND: extend a measurement into an RTMR
 /// In AzCVMEmu mode, we simulate this operation by logging it
 pub fn tdcall_extend_rtmr(digest: &original_tdx_tdcall::tdx::TdxDigest, mr_index: u32) -> Result<(), TdCallError> {
-    log::info!("AzCVMEmu: tdcall_extend_rtmr emulated - mr_index: {}, digest: {:02x?}", 
+    log::info!("AzCVMEmu: tdcall_extend_rtmr emulated - mr_index: {}, digest: {:02x?}",
                mr_index, &digest.data[..8]); // Log first 8 bytes of digest
-    
+
     // In a real implementation, this would extend the RTMR with the digest
     // For emulation, we just simulate success
     // The digest would be combined with the current RTMR value using SHA384
-    
+
     // Validate mr_index (RTMRs are typically 0-3)
     if mr_index > 3 {
         log::warn!("AzCVMEmu: Invalid RTMR index {} in tdcall_extend_rtmr", mr_index);
         return Err(TdCallError::TdxExitInvalidParameters);
     }
-    
+
     log::debug!("AzCVMEmu: Successfully emulated RTMR {} extension", mr_index);
     Ok(())
 }

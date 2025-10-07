@@ -31,12 +31,12 @@ impl MockCcel {
             laml: buffer_len as u32,
         }
     }
-    
+
     // Mock FromBytes::read_from for compatibility
     pub fn read_from(_bytes: &[u8]) -> Option<Self> {
         // Initialize the event log if needed and return a proper CCEL
         init_event_log();
-        
+
         unsafe {
             let event_log_ptr = ptr::addr_of!(EVENT_LOG);
             if let Some(log) = (*event_log_ptr).as_ref() {
@@ -163,15 +163,15 @@ impl<T> MockOnce<T> {
     pub const fn new() -> Self {
         Self { value: None }
     }
-    
+
     pub fn is_completed(&self) -> bool {
         true // Always return true for emulation
     }
-    
+
     pub fn get(&self) -> Option<&T> {
         self.value.as_ref()
     }
-    
+
     pub fn call_once<F>(&mut self, f: F) -> &T
     where
         F: FnOnce() -> T,
@@ -184,7 +184,7 @@ impl<T> MockOnce<T> {
 }
 
 // Define the size of the event log buffer as a constant for better maintainability
-pub const EVENT_LOG_BUFFER_SIZE: usize = 32768; // Buffer size 32768 (32KB)
+pub const EVENT_LOG_BUFFER_SIZE: usize = 1048576; // Buffer size 1048576 (1MB) - increased to handle large v2 policies
 
 pub struct EventLogEmulator {
     data: [u8; EVENT_LOG_BUFFER_SIZE], // Fixed size buffer defined by constant
@@ -198,29 +198,29 @@ impl EventLogEmulator {
             data: [0u8; EVENT_LOG_BUFFER_SIZE],
             ccel: MockCcel::new(ptr::null(), 0), // Will be updated below
         };
-        
+
         // Update CCEL to point to our buffer
         emulator.ccel = MockCcel::new(emulator.data.as_ptr(), EVENT_LOG_BUFFER_SIZE);
         emulator
     }
-    
+
     /// Get a reference to the full event log buffer
     pub fn full_buffer(&self) -> &[u8] {
         &self.data[..]
     }
-    
+
     /// Get a mutable reference to the full event log buffer
     pub fn full_buffer_mut(&mut self) -> &mut [u8] {
         &mut self.data[..]
     }
-    
+
     /// Get the mock CCEL for this event log
     pub fn get_ccel(&mut self) -> &MockCcel {
         // Update the CCEL pointer in case the buffer was moved
         self.ccel = MockCcel::new(self.data.as_ptr(), EVENT_LOG_BUFFER_SIZE);
         &self.ccel
     }
-    
+
     /// Get event log slice (mimics the non-AzCVMEmu API)
     pub fn event_log_slice(&mut self) -> &mut [u8] {
         &mut self.data[..]
@@ -238,7 +238,7 @@ pub fn get_ccel() -> Option<&'static MockCcel> {
     unsafe {
         // Initialize if needed
         init_event_log();
-        
+
         let event_log_ptr = ptr::addr_of_mut!(EVENT_LOG);
         if let Some(log) = (*event_log_ptr).as_mut() {
             let mock_ccel_ptr = ptr::addr_of_mut!(MOCK_CCEL_ONCE);
@@ -281,7 +281,7 @@ pub fn init_event_log() {
 pub fn get_event_log() -> Option<&'static [u8]> {
     // Initialize the event log if needed
     init_event_log();
-    
+
     unsafe {
         let event_log_ptr = ptr::addr_of!(EVENT_LOG);
         if let Some(log) = (*event_log_ptr).as_ref() {
@@ -296,7 +296,7 @@ pub fn get_event_log() -> Option<&'static [u8]> {
 pub fn get_event_log_mut() -> Option<&'static mut [u8]> {
     // Initialize the event log if needed
     init_event_log();
-    
+
     unsafe {
         let event_log_ptr = ptr::addr_of_mut!(EVENT_LOG);
         if let Some(log) = (*event_log_ptr).as_mut() {
@@ -313,14 +313,14 @@ fn populate_tcg_pcr_event_log() {
         if let Some(log) = (*event_log_ptr).as_mut() {
             // Create a proper TCG event log starting with TcgPcrEventHeader
             // This is what the policy verification expects to find
-            
+
             use cc_measurement::{TcgPcrEventHeader, TcgEfiSpecIdevent};
             use core::mem::size_of;
             use zerocopy::AsBytes;
-            
+
             // Create the initial TCG_EfiSpecIDEvent using the default implementation
             let spec_id_event = TcgEfiSpecIdevent::default();
-            
+
             // Create TcgPcrEventHeader for the first event
     let pcr_header = TcgPcrEventHeader {
         mr_index: 0,
@@ -328,19 +328,19 @@ fn populate_tcg_pcr_event_log() {
         digest: [0u8; 20], // SHA1 digest (zeros for EV_NO_ACTION)
         event_size: size_of::<TcgEfiSpecIdevent>() as u32,
     };
-    
+
     // Write the headers to the event log
     let mut offset = 0;
-    
+
     // Write TcgPcrEventHeader
     let pcr_header_bytes = pcr_header.as_bytes();
     log.data[offset..offset + pcr_header_bytes.len()].copy_from_slice(pcr_header_bytes);
     offset += pcr_header_bytes.len();
-    
+
     // Write TcgEfiSpecIdevent
     let spec_id_bytes = spec_id_event.as_bytes();
     log.data[offset..offset + spec_id_bytes.len()].copy_from_slice(spec_id_bytes);
-    
+
     // No need to track size - parsing logic will determine the written portion
         }
     }
