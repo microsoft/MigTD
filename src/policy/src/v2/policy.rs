@@ -305,32 +305,59 @@ impl TcbPolicy {
                     tcb_evaluation_number,
                     relative_reference.tcb_evaluation_number,
                 )? {
-                    return Err(PolicyError::TcbEvaluation);
+                    #[cfg(feature = "AzCVMEmu")]
+                    {
+                        log::warn!("TcbPolicy: AzCVMEmu mode: NEEDS_FIX: Bypassing TCB evaluation data number validation");
+                    }
+                    #[cfg(not(feature = "AzCVMEmu"))]
+                    {
+                        return Err(PolicyError::TcbEvaluation);
+                    }
                 }
             }
         }
 
         if let Some(tcb_status_policy) = &self.tcb_status_accepted {
+            let tcb_status = value
+                .tcb_status
+                .as_deref()
+                .ok_or(PolicyError::TcbEvaluation)?;
+            log::debug!("TcbPolicy: Evaluating tcb_status_accepted - value: {}, reference: {:?}, operation: {}",
+                       tcb_status, tcb_status_policy.reference, tcb_status_policy.operation);
             if !tcb_status_policy.evaluate_string(
-                value
-                    .tcb_status
-                    .as_deref()
-                    .ok_or(PolicyError::TcbEvaluation)?,
+                tcb_status,
                 relative_reference.tcb_status.as_deref(),
             )? {
-                return Err(PolicyError::TcbEvaluation);
+                #[cfg(feature = "AzCVMEmu")]
+                {
+                    log::warn!("TcbPolicy: AzCVMEmu mode: NEEDS_FIX: Bypassing TCB status validation");
+                }
+                #[cfg(not(feature = "AzCVMEmu"))]
+                {
+                    return Err(PolicyError::TcbEvaluation);
+                }
             }
         }
 
         if let Some(tcb_date_policy) = &self.tcb_date {
+            let tcb_date = value
+                .tcb_date
+                .as_deref()
+                .ok_or(PolicyError::TcbEvaluation)?;
+            log::debug!("TcbPolicy: Evaluating tcb_date - value: {}, reference: {:?}, operation: {}",
+                       tcb_date, tcb_date_policy.reference, tcb_date_policy.operation);
             if !tcb_date_policy.evaluate_string(
-                &value
-                    .tcb_date
-                    .as_deref()
-                    .ok_or(PolicyError::TcbEvaluation)?,
+                tcb_date,
                 relative_reference.tcb_date.as_deref(),
             )? {
-                return Err(PolicyError::TcbEvaluation);
+                #[cfg(feature = "AzCVMEmu")]
+                {
+                    log::warn!("TcbPolicy: AzCVMEmu mode: NEEDS_FIX: Bypassing TCB date validation");
+                }
+                #[cfg(not(feature = "AzCVMEmu"))]
+                {
+                    return Err(PolicyError::TcbEvaluation);
+                }
             }
         }
 

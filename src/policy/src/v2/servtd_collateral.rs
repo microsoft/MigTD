@@ -208,7 +208,7 @@ impl TdTcbMapping {
     fn compare_measurements(pattern: &Measurements, target: &Measurements) -> bool {
         #[cfg(feature = "AzCVMEmu")]
         {
-            log::warn!("AzCVMEmu mode: Bypassing MigTD measurement comparison for testing. This is NOT secure for production use.");
+            log::warn!("compare_measurements: AzCVMEmu mode: Bypassing MigTD measurement comparison for testing. This is NOT secure for production use.");
             return true; // Always return true to bypass measurement verification
         }
 
