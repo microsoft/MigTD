@@ -206,33 +206,42 @@ impl TdTcbMapping {
 
     #[inline]
     fn compare_measurements(pattern: &Measurements, target: &Measurements) -> bool {
-        if pattern.mrtd != target.mrtd
-            || pattern.rtmr0 != target.rtmr0
-            || pattern.rtmr1 != target.rtmr1
+        #[cfg(feature = "AzCVMEmu")]
         {
-            return false;
+            log::warn!("AzCVMEmu mode: Bypassing MigTD measurement comparison for testing. This is NOT secure for production use.");
+            return true; // Always return true to bypass measurement verification
         }
 
-        // Optional RTMR2 / RTMR3:
-        // If pattern provides a value -> target must also provide and match.
-        // If pattern is None -> treated as wildcard (ignore target value).
-        if let Some(_) = pattern.rtmr2 {
-            match (&pattern.rtmr2, &target.rtmr2) {
-                (Some(p), Some(t)) if p != t => return false,
-                (Some(_), None) => return false,
-                _ => {}
+        #[cfg(not(feature = "AzCVMEmu"))]
+        {
+            if pattern.mrtd != target.mrtd
+                || pattern.rtmr0 != target.rtmr0
+                || pattern.rtmr1 != target.rtmr1
+            {
+                return false;
             }
-        }
 
-        if let Some(_) = pattern.rtmr3 {
-            match (&pattern.rtmr3, &target.rtmr3) {
-                (Some(p), Some(t)) if p != t => return false,
-                (Some(_), None) => return false,
-                _ => {}
+            // Optional RTMR2 / RTMR3:
+            // If pattern provides a value -> target must also provide and match.
+            // If pattern is None -> treated as wildcard (ignore target value).
+            if let Some(_) = pattern.rtmr2 {
+                match (&pattern.rtmr2, &target.rtmr2) {
+                    (Some(p), Some(t)) if p != t => return false,
+                    (Some(_), None) => return false,
+                    _ => {}
+                }
             }
-        }
 
-        true
+            if let Some(_) = pattern.rtmr3 {
+                match (&pattern.rtmr3, &target.rtmr3) {
+                    (Some(p), Some(t)) if p != t => return false,
+                    (Some(_), None) => return false,
+                    _ => {}
+                }
+            }
+
+            true
+        }
     }
 }
 
