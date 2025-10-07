@@ -23,11 +23,6 @@ mod cvmemu;
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// Event IDs that will be used to tag the event log
-const TAGGED_EVENT_ID_POLICY: u32 = 0x1;
-const TAGGED_EVENT_ID_ROOT_CA: u32 = 0x2;
-const TAGGED_EVENT_ID_TEST: u32 = 0x32;
-
 #[cfg(not(feature = "AzCVMEmu"))]
 #[no_mangle]
 pub extern "C" fn main() {
@@ -69,11 +64,11 @@ pub fn runtime_main() {
     handle_pre_mig();
 }
 
-pub fn basic_info() {
+fn basic_info() {
     info!("MigTD Version - {}\n", MIGTD_VERSION);
 }
 
-pub fn do_measurements() {
+fn do_measurements() {
     // Get the event log recorded by firmware
     let event_log = event_log::get_event_log_mut().expect("Failed to get the event log");
 

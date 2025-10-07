@@ -46,9 +46,10 @@ show_usage() {
     echo "  -p, --dest-port PORT         Set destination port (default: 8001)"
     echo "  --policy-file FILE           Set policy file path (default: config/policy.json)"
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
+    echo "  --policy-issuer-chain-file FILE Set policy issuer chain file path (required when using --policy-v2)"
     echo "  --debug                      Build in debug mode (default: release)"
     echo "  --release                    Build in release mode (default)"
-    echo "  --policy-v2                  Enable policy v2 support (requires --policy-file to be specified)"
+    echo "  --policy-v2                  Enable policy v2 support (requires --policy-file and --policy-issuer-chain-file to be specified)"
     echo "  --skip-ra                    Skip remote attestation (uses mock TD reports/quotes for non-TDX environments)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
@@ -70,7 +71,7 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
-    echo "  $0 --policy-v2 --policy-file ./config/policy_v2_test.json --skip-ra --both      # Run both with policy v2 and skip RA mode"
+    echo "  $0 --policy-v2 --policy-file ./config/policy_v2_test.json --policy-issuer-chain-file ./path/to/chain.pem --skip-ra --both      # Run both with policy v2 and skip RA mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
 }
@@ -172,6 +173,7 @@ DEST_IP="$DEFAULT_DEST_IP"
 DEST_PORT="$DEFAULT_DEST_PORT"
 POLICY_FILE="$DEFAULT_POLICY_FILE"
 ROOT_CA_FILE="$DEFAULT_ROOT_CA_FILE"
+POLICY_ISSUER_CHAIN_FILE=""  # No default - mandatory when using --policy-v2
 BUILD_MODE="$DEFAULT_BUILD_MODE"
 CUSTOM_LOG_LEVEL=""
 
@@ -199,6 +201,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --root-ca-file)
             ROOT_CA_FILE="$2"
+            shift 2
+            ;;
+        --policy-issuer-chain-file)
+            POLICY_ISSUER_CHAIN_FILE="$2"
             shift 2
             ;;
         --debug)
@@ -257,7 +263,12 @@ fi
 if [[ "$USE_POLICY_V2" == true ]]; then
     if [[ "$POLICY_FILE" == "$DEFAULT_POLICY_FILE" ]]; then
         echo -e "${RED}Error: When using --policy-v2, you must explicitly specify a policy file with --policy-file${NC}" >&2
-        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_test.json --both${NC}" >&2
+        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_test.json --policy-issuer-chain-file ./path/to/chain.pem --both${NC}" >&2
+        exit 1
+    fi
+    if [[ -z "$POLICY_ISSUER_CHAIN_FILE" ]]; then
+        echo -e "${RED}Error: When using --policy-v2, you must specify a policy issuer chain file with --policy-issuer-chain-file${NC}" >&2
+        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_test.json --policy-issuer-chain-file ./path/to/chain.pem --both${NC}" >&2
         exit 1
     fi
 fi
@@ -278,6 +289,9 @@ fi
 # Check if configuration files exist
 check_file "$POLICY_FILE" "Policy"
 check_file "$ROOT_CA_FILE" "Root CA"
+if [[ "$USE_POLICY_V2" == true ]]; then
+    check_file "$POLICY_ISSUER_CHAIN_FILE" "Policy Issuer Chain"
+fi
 
 # Evaluate TPM access and elevate if necessary
 maybe_force_sudo_due_to_tpm
@@ -360,6 +374,7 @@ fi
 echo "  Request ID: $REQUEST_ID"
 echo "  Policy file: $POLICY_FILE"
 echo "  Root CA file: $ROOT_CA_FILE"
+echo "  Policy Issuer Chain file: $POLICY_ISSUER_CHAIN_FILE"
 echo "  Use sudo: $USE_SUDO"
 
 echo "  Destination: ${DEST_IP}:${DEST_PORT}"
@@ -393,9 +408,9 @@ if [[ "$RUN_BOTH" == true ]]; then
     (
         set -x
         if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
+            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
         else
-            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
+            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
         fi
     ) > dest.out.log 2>&1 &
     DEST_PID=$!
@@ -421,22 +436,22 @@ if [[ "$RUN_BOTH" == true ]]; then
         "--dest-port" "$DEST_PORT"
     )
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
-    echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+    echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
     echo
     # Run source in foreground
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
     else
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
     fi
     echo
     # Run source in foreground; on failure, show last logs and exit non-zero
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
         SRC_EXIT_CODE=$?
     else
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
         SRC_EXIT_CODE=$?
     fi
     echo -e "${BLUE}Source migtd exit code: $SRC_EXIT_CODE${NC}"
@@ -472,16 +487,16 @@ else
     echo -e "${BLUE}Starting MigTD in $ROLE mode...${NC}"
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
     else
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
     fi
     echo
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
         EXIT_CODE=$?
     else
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
         EXIT_CODE=$?
     fi
     echo -e "${BLUE}MigTD exit code: $EXIT_CODE${NC}"
