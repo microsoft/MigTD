@@ -21,7 +21,7 @@ use tdx_tdcall::tdx;
 #[cfg(feature = "AzCVMEmu")]
 use tdx_tdcall_emu::tdx;
 
-const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 128; // Increased from 64KB to 512KB for policy v2 support
+const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 160; // Increased to 640KB for large policy v2 files (current test file is ~547KB)
 const VMCALL_VECTOR: u8 = 0x52;
 
 lazy_static! {
