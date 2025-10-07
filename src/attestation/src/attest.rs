@@ -212,19 +212,24 @@ pub fn verify_quote_with_collaterals(
         .as_bytes()
         .unwrap();
 
-    let qve_collateral: QveCollateral = (&collateral).into();
-    unsafe {
-        let result = verify_quote_integrity_ex(
-            quote.as_ptr() as *const c_void,
-            quote.len() as u32,
-            public_key.as_ptr() as *const c_void,
-            public_key.len() as u32,
-            &qve_collateral as *const QveCollateral,
-            td_report_verify.as_mut_ptr() as *mut c_void,
-            &mut report_verify_size as *mut u32,
-        );
-        if result != AttestLibError::Success {
-            return Err(Error::VerifyQuote);
+    // Temporary pass for AzCVMEmu until this DCAP PR is merged:
+    // https://github.com/intel/SGXDataCenterAttestationPrimitives/pull/461
+    #[cfg(not(feature = "AzCVMEmu"))]
+    {
+        let qve_collateral: QveCollateral = (&collateral).into();
+        unsafe {
+            let result = verify_quote_integrity_ex(
+                quote.as_ptr() as *const c_void,
+                quote.len() as u32,
+                public_key.as_ptr() as *const c_void,
+                public_key.len() as u32,
+                &qve_collateral as *const QveCollateral,
+                td_report_verify.as_mut_ptr() as *mut c_void,
+                &mut report_verify_size as *mut u32,
+            );
+            if result != AttestLibError::Success {
+                return Err(Error::VerifyQuote);
+            }
         }
     }
 
