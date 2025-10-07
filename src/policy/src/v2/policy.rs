@@ -584,11 +584,15 @@ mod test {
 
     #[test]
     fn test_verify_policy() {
-        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let policy_data = include_bytes!("../../../../config/policy_v2_signed.json");
         let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
         let issuer_chain =
-            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
-        policy.verify(issuer_chain, None, None).unwrap();
+            include_bytes!("../../../../config/policy_issuer_chain.pem");
+        let verified_policy = policy.verify(issuer_chain, None, None).unwrap();
+        // verify that the collaterals contain the expected FMSPC key
+        let collaterals = verified_policy.get_collaterals();
+        assert!(collaterals.contains_key("90C06F000000"),
+                "Collaterals should contain FMSPC key '90C06F000000'");
     }
 
     #[test]

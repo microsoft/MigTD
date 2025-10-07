@@ -64,8 +64,8 @@ TEMPLATES:
     When using templates (default), the following files from $TEMPLATE_DIR are used:
     - policy_v2.json (policy data template)
     - servtd_collateral.json (ServTD collateral template)
-    
-    Default collaterals file: src/policy/test/policy_v2/collaterals.json
+
+    Default collaterals file: config/collateral_production_fmspc.json
 
 PREREQUISITES:
     1. Build project: cargo build
@@ -167,10 +167,10 @@ echo "✓ Tools found"
 # Set default files if using templates
 if [ "$USE_TEMPLATES" = true ]; then
     if [ -z "$POLICY_DATA" ]; then
-        POLICY_DATA="$TEMPLATE_DIR/policy_v2.json"
+        POLICY_DATA="$TEMPLATE_DIR/policy_v2_data.json"
         echo "Using policy data template: $POLICY_DATA"
     fi
-    
+
     if [ -z "$SERVTD_COLLATERAL" ]; then
         SERVTD_COLLATERAL="$TEMPLATE_DIR/servtd_collateral.json"
         echo "Using ServTD collateral template: $SERVTD_COLLATERAL"
@@ -179,7 +179,7 @@ fi
 
 # Set default collaterals if not specified
 if [ -z "$COLLATERALS" ]; then
-    COLLATERALS="$PROJECT_ROOT/src/policy/test/policy_v2/collaterals.json"
+    COLLATERALS="$PROJECT_ROOT/config/collateral_production_fmspc.json"
     echo "Using default collaterals: $COLLATERALS"
 fi
 
@@ -199,7 +199,7 @@ if [ -n "$PRIVATE_KEY" ] && [ -n "$CERT_CHAIN" ]; then
     echo "Signing enabled:"
     echo "  Private key: $PRIVATE_KEY"
     echo "  Certificate chain: $CERT_CHAIN"
-    
+
     check_file "$PRIVATE_KEY"
     check_file "$CERT_CHAIN"
     echo "✓ Signing files found"
@@ -215,31 +215,31 @@ trap "rm -rf $TEMP_DIR" EXIT
 echo
 echo "=== Policy Generation Process ==="
 
-if [ "$SIGN_POLICY" = true ]; then
-    echo "Step 1: Signing policy data..."
-    SIGNED_POLICY_DATA="$TEMP_DIR/policy_data_signed.json"
-    
-    "$JSON_SIGNER" --sign --name policyData \
-        --private-key "$PRIVATE_KEY" \
-        --input "$POLICY_DATA" \
-        --output "$SIGNED_POLICY_DATA"
-    
-    echo "✓ Policy data signed successfully"
-    
-    FINAL_POLICY_DATA="$SIGNED_POLICY_DATA"
-else
-    echo "Step 1: No signing requested, using policy data as-is"
-    FINAL_POLICY_DATA="$POLICY_DATA"
-fi
+echo "Step 1: Merging policy data with collaterals..."
+MERGED_POLICY_DATA="$TEMP_DIR/merged_policy_data.json"
 
-echo "Step 2: Generating complete policy..."
 "$POLICY_GENERATOR" v2 \
-    --policy-data "$FINAL_POLICY_DATA" \
+    --policy-data "$POLICY_DATA" \
     --collaterals "$COLLATERALS" \
     --servtd-collateral "$SERVTD_COLLATERAL" \
-    --output "$OUTPUT_FILE"
+    --output "$MERGED_POLICY_DATA"
 
-echo "✓ Policy generated successfully"
+echo "✓ Policy data merged with collaterals successfully"
+
+if [ "$SIGN_POLICY" = true ]; then
+    echo "Step 2: Signing the merged policy data..."
+
+    "$JSON_SIGNER" --sign --name policyData \
+        --private-key "$PRIVATE_KEY" \
+        --input "$MERGED_POLICY_DATA" \
+        --output "$OUTPUT_FILE"
+
+    echo "✓ Policy signed successfully"
+else
+    echo "Step 2: No signing requested, using merged policy as final output"
+    cp "$MERGED_POLICY_DATA" "$OUTPUT_FILE"
+    echo "✓ Policy copied to output file"
+fi
 
 echo
 echo "=== Results ==="
@@ -253,19 +253,19 @@ if command -v jq >/dev/null 2>&1; then
     echo "Validating JSON structure..."
     if jq empty "$OUTPUT_FILE" 2>/dev/null; then
         echo "✓ Valid JSON structure"
-        
+
         # Show policy structure
         echo
         echo "Policy structure:"
         jq -r 'keys[]' "$OUTPUT_FILE" 2>/dev/null | sed 's/^/  - /'
-        
+
         # Check if policy is signed
         if jq -e '.signature' "$OUTPUT_FILE" >/dev/null 2>&1; then
             echo "✓ Policy contains signature"
         else
             echo "ℹ Policy is unsigned"
         fi
-        
+
         # Check ServTD collateral format
         if jq -e '.servtdCollateral.servtdIdentity.tdIdentity' "$OUTPUT_FILE" >/dev/null 2>&1; then
             echo "✓ ServTD collateral uses correct 'tdIdentity' format"
