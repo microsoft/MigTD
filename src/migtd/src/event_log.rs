@@ -51,9 +51,35 @@ impl TaggedEvent {
         let mut event = Vec::new();
 
         event.extend_from_slice(&tag_id.to_le_bytes());
-        event.extend_from_slice(&(data.len() as u32).to_le_bytes());
 
-        event.extend_from_slice(data);
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            // In AzCVMEmu mode, store only a hash of the data to keep event log small
+            log::info!("AzCVMEmu mode: Storing hash-only tagged event for tag_id={}, original_size={}", tag_id, data.len());
+
+            // Calculate hash of the original data
+            let hash_result = crypto::hash::digest_sha384(data);
+            match hash_result {
+                Ok(hash) => {
+                    let hash_bytes = hash.as_slice();
+                    event.extend_from_slice(&(hash_bytes.len() as u32).to_le_bytes());
+                    event.extend_from_slice(hash_bytes);
+                }
+                Err(_) => {
+                    // Fallback: store minimal placeholder if hash fails
+                    let placeholder = b"hash_failed";
+                    event.extend_from_slice(&(placeholder.len() as u32).to_le_bytes());
+                    event.extend_from_slice(placeholder);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "AzCVMEmu"))]
+        {
+            // In production mode, store the full data as before
+            event.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            event.extend_from_slice(data);
+        }
 
         Self { event }
     }
