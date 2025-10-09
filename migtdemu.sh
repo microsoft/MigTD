@@ -71,7 +71,7 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
-    echo "  $0 --policy-v2 --policy-file ./config/policy_v2_test.json --policy-issuer-chain-file ./path/to/chain.pem --skip-ra --both      # Run both with policy v2 and skip RA mode"
+    echo "  $0 - ./migtdemu.sh --policy-v2 --policy-file ./config/policy_v2_signed.json --policy-issuer-chain-file ./config/policy_issuer_chain.pem --debug --both     # Run both with policy v2 in debug mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
 }
@@ -80,7 +80,7 @@ show_usage() {
 check_file() {
     local file="$1"
     local description="$2"
-    
+
     if [[ ! -f "$file" ]]; then
         echo -e "${RED}Error: $description file not found: $file${NC}" >&2
         echo -e "${YELLOW}Please ensure the file exists or specify a different path.${NC}" >&2
@@ -94,7 +94,7 @@ maybe_force_sudo_due_to_tpm() {
     if [[ "$SKIP_RA" == true ]]; then
         return 0
     fi
-    
+
     # Only relevant if user requested no sudo explicitly
     if [[ "$USE_SUDO" == false ]]; then
         local need_sudo=false
@@ -133,7 +133,7 @@ build_migtd() {
     local build_mode="$1"
     local skip_ra="$2"
     local use_policy_v2="$3"
-    
+
     local features="AzCVMEmu"
     if [[ "$use_policy_v2" == true ]]; then
         features="$features,policy_v2"
@@ -151,7 +151,7 @@ build_migtd() {
     else
         echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
     fi
-    
+
     if [[ "$build_mode" == "debug" ]]; then
         if ! cargo build --features "$features" --no-default-features; then
             echo -e "${RED}Error: Failed to build MigTD in debug mode${NC}" >&2
@@ -263,12 +263,12 @@ fi
 if [[ "$USE_POLICY_V2" == true ]]; then
     if [[ "$POLICY_FILE" == "$DEFAULT_POLICY_FILE" ]]; then
         echo -e "${RED}Error: When using --policy-v2, you must explicitly specify a policy file with --policy-file${NC}" >&2
-        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_test.json --policy-issuer-chain-file ./path/to/chain.pem --both${NC}" >&2
+        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_signed.json --policy-issuer-chain-file ./config/policy_issuer_chain.pem --debug --both${NC}" >&2
         exit 1
     fi
     if [[ -z "$POLICY_ISSUER_CHAIN_FILE" ]]; then
         echo -e "${RED}Error: When using --policy-v2, you must specify a policy issuer chain file with --policy-issuer-chain-file${NC}" >&2
-        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_test.json --policy-issuer-chain-file ./path/to/chain.pem --both${NC}" >&2
+        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/policy_v2_signed.json --policy-issuer-chain-file ./config/policy_issuer_chain.pem --debug --both${NC}" >&2
         exit 1
     fi
 fi
@@ -455,7 +455,7 @@ if [[ "$RUN_BOTH" == true ]]; then
         SRC_EXIT_CODE=$?
     fi
     echo -e "${BLUE}Source migtd exit code: $SRC_EXIT_CODE${NC}"
-    
+
     # Check destination exit code before stopping it
     if kill -0 "$DEST_PID" 2>/dev/null; then
         echo -e "${BLUE}Destination is still running, stopping it...${NC}"
@@ -469,7 +469,7 @@ if [[ "$RUN_BOTH" == true ]]; then
         DEST_EXIT_CODE=$?
         echo -e "${BLUE}Destination migtd exit code: $DEST_EXIT_CODE${NC}"
     fi
-    
+
     if [[ "$SRC_EXIT_CODE" -ne 0 ]]; then
         echo -e "${RED}Source run failed. Last 100 lines of destination log:${NC}"
         tail -n 100 dest.out.log || true
