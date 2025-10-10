@@ -1,6 +1,7 @@
 [submodule "deps/linux-sgx"]
 	path = deps/linux-sgx
-	url = https://github.com/intel/linux-sgx.git
+	url = https://github.com/bodzhang/linux-sgx.git
+	branch = migtd-dcap-fixes
 [submodule "deps/td-shim"]
 	path = deps/td-shim
 	url = https://github.com/confidential-containers/td-shim
