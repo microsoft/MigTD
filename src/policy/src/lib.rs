@@ -448,6 +448,10 @@ pub(crate) fn replay_event_log_with_report_values(
         //Return OK in this development environment.
         #[cfg(feature = "AzCVMEmu")]
         {
+            log::warn!(
+                "AzCVMEmu: Bypassing RTMR event log verification - \
+                RTMR values in quote do not match replayed event log (emulated RTMR extension is no-op)."
+            );
             Ok(())
         }
         #[cfg(not(feature = "AzCVMEmu"))]

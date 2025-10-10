@@ -3,9 +3,12 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 use alloc::{string::String, vec::Vec};
-use core::convert::TryFrom;
+use core::convert::{TryFrom, TryInto};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, value::RawValue};
+
+#[cfg(feature = "AzCVMEmu")]
+use log;
 
 use crate::{
     parse_events,
@@ -94,6 +97,7 @@ impl VerifiedPolicy<'_> {
     }
 }
 
+#[cfg(not(feature = "AzCVMEmu"))]
 pub fn check_policy_integrity(policy: &[u8], event_log: &[u8]) -> Result<(), PolicyError> {
     let events = parse_events(event_log).ok_or(PolicyError::InvalidEventLog)?;
 
@@ -102,6 +106,68 @@ pub fn check_policy_integrity(policy: &[u8], event_log: &[u8]) -> Result<(), Pol
     }
 
     Ok(())
+}
+
+// AzCVMEmu mode: event log contains only SHA-384 hash of policy (48 bytes)
+// Verify that the hash of the full policy (from pre-session exchange) matches
+// the hash stored in the event log
+#[cfg(feature = "AzCVMEmu")]
+pub fn check_policy_integrity(
+    policy: &[u8],
+    event_log: &[u8],
+) -> Result<bool, PolicyError> {
+    use cc_measurement::log::CcEventLogReader;
+
+    // Calculate hash of the full policy from pre-session exchange
+    let policy_hash =
+        crypto::hash::digest_sha384(policy).map_err(|_| PolicyError::HashCalculation)?;
+
+    // Parse the event log to find the stored policy hash in raw event data
+    let reader = CcEventLogReader::new(event_log).ok_or(PolicyError::InvalidEventLog)?;
+
+    for (event_header, event_data) in reader.cc_events {
+        if event_header.event_type == crate::EV_EVENT_TAG && event_data.len() >= 8 {
+            let tag_id = u32::from_le_bytes(
+                event_data[..4]
+                    .try_into()
+                    .map_err(|_| PolicyError::InvalidEventLog)?,
+            );
+
+            if tag_id == crate::TAGGED_EVENT_ID_POLICY {
+                // Get the event digest directly from the event header
+                let event_digest = &event_header
+                    .digest
+                    .digests
+                    .first()
+                    .ok_or(PolicyError::InvalidEventLog)?
+                    .digest
+                    .sha384;
+
+                let data_length = u32::from_le_bytes(
+                    event_data[4..8]
+                        .try_into()
+                        .map_err(|_| PolicyError::InvalidEventLog)?,
+                ) as usize;
+
+                if event_data.len() >= 8 + data_length {
+                    let stored_hash = &event_data[8..8 + data_length];
+
+                    // Verify the policy hash matches the stored hash
+                    if policy_hash.as_slice() != stored_hash {
+                        return Ok(false);
+                    }
+
+                    // Verify the event digest is the hash of the stored hash
+                    let hash_of_hash = crypto::hash::digest_sha384(stored_hash)
+                        .map_err(|_| PolicyError::HashCalculation)?;
+                    return Ok(hash_of_hash.as_slice() == event_digest);
+                }
+            }
+        }
+    }
+
+    // If we didn't find the policy event, return error
+    Err(PolicyError::InvalidEventLog)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -322,8 +388,6 @@ impl TcbPolicy {
                 .tcb_status
                 .as_deref()
                 .ok_or(PolicyError::TcbEvaluation)?;
-            log::debug!("TcbPolicy: Evaluating tcb_status_accepted - value: {}, reference: {:?}, operation: {}",
-                       tcb_status, tcb_status_policy.reference, tcb_status_policy.operation);
             if !tcb_status_policy.evaluate_string(
                 tcb_status,
                 relative_reference.tcb_status.as_deref(),

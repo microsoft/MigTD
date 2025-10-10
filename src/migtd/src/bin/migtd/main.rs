@@ -10,6 +10,8 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
+#[cfg(feature = "AzCVMEmu")]
+use crypto;
 use log::info;
 use migtd::event_log::*;
 use migtd::migration::data::MigrationInformation;
@@ -102,9 +104,43 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
     // Read migration policy from CFV
     let policy = config::get_policy().expect("Fail to get policy from CFV\n");
 
-    // Measure and extend the migration policy to RTMR
-    event_log::write_tagged_event_log(event_log, MR_INDEX_POLICY, TAGGED_EVENT_ID_POLICY, policy)
-        .expect("Failed to log migration policy");
+    #[cfg(feature = "AzCVMEmu")]
+    {
+        // In AzCVMEmu mode, store only a hash of the policy to keep event log small
+        log::info!("AzCVMEmu mode: Storing hash-only policy event, original_size={}", policy.len());
+        
+        let hash_result = crypto::hash::digest_sha384(policy);
+        match hash_result {
+            Ok(hash) => {
+                let hash_bytes = hash.as_slice();
+                // Measure and extend the policy hash to RTMR
+                event_log::write_tagged_event_log(
+                    event_log,
+                    MR_INDEX_POLICY,
+                    TAGGED_EVENT_ID_POLICY,
+                    hash_bytes
+                ).expect("Failed to log migration policy");
+            }
+            Err(_) => {
+                // Fallback: store minimal placeholder if hash fails
+                let placeholder = b"policy_hash_failed";
+                event_log::write_tagged_event_log(
+                    event_log,
+                    MR_INDEX_POLICY,
+                    TAGGED_EVENT_ID_POLICY,
+                    placeholder
+                ).expect("Failed to log migration policy");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "AzCVMEmu"))]
+    {
+        // In production mode, store the full policy as before
+        // Measure and extend the migration policy to RTMR
+        event_log::write_tagged_event_log(event_log, MR_INDEX_POLICY, TAGGED_EVENT_ID_POLICY, policy)
+            .expect("Failed to log migration policy");
+    }
 }
 
 #[cfg(feature = "policy_v2")]
