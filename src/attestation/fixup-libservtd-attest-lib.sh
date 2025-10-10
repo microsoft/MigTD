@@ -59,7 +59,16 @@ do
     fi
     ar d ${lib} $(ar t ${tlibc_lib} | grep -v spinlock.o | grep -v memset | grep -v memcpy )
     ar d ${lib} $(ar t ${sgxssl_lib})
-    echo "Created ${lib}"
+
+    # Extract servtd_qve_utils.o to strip atexit symbol
+    ar x ${lib} servtd_qve_utils.o
+    if [ -f servtd_qve_utils.o ]; then
+        objcopy --strip-symbol=atexit servtd_qve_utils.o
+        ar r ${lib} servtd_qve_utils.o
+        rm -f servtd_qve_utils.o
+    fi
+
+    echo "Created ${lib}"g
 done
 
 ##==============================================================================

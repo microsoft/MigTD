@@ -71,7 +71,7 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
-    echo "  $0 - ./migtdemu.sh --policy-v2 --policy-file ./config/policy_v2_signed.json --policy-issuer-chain-file ./config/policy_issuer_chain.pem --debug --both     # Run both with policy v2 in debug mode"
+    echo "  $0 --policy-v2 --policy-file ./config/policy_v2_signed.json --policy-issuer-chain-file ./config/policy_issuer_chain.pem --debug --both     # Run both with policy v2 in debug mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
 }
