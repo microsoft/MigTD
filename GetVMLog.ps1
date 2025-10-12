@@ -110,7 +110,7 @@ try {
             Write-Warning "The VM has closed the pipe."
             break
         }
-        Write-Host "Received: $line"
+        Write-Host "$line"
     }
 }
 catch {
