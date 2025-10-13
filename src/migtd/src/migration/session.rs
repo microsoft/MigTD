@@ -50,8 +50,8 @@ const GSM_FIELD_MIN_IMPORT_VERSION: u64 = 0x2000000100000003;
 const GSM_FIELD_MAX_IMPORT_VERSION: u64 = 0x2000000100000004;
 
 macro_rules! migration_log {
-    ($level:ident, $mig_request_id:expr, $msg:expr) => {
-        log::$level!("{} (migration_request_id: {})\n", $msg, $mig_request_id);
+    ($level:ident, $mig_request_id:expr, $fmt:expr $(, $args:expr)* ) => {
+        log::$level!(concat!($fmt, " (migration_request_id: {})\n"), $($args,)* $mig_request_id);
     };
 }
 
@@ -566,8 +566,12 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             let mig_ver =
                 cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
             set_mig_version(info, mig_ver)?;
-            let log_str = format!("Migration version negotiated successfully: {}", mig_ver);
-            migration_log!(info, info.mig_info.mig_request_id, log_str);
+            migration_log!(
+                info,
+                info.mig_info.mig_request_id,
+                "Migration version negotiated successfully: {}",
+                mig_ver
+            );
 
             write_msk(&info.mig_info, &remote_information.key)?;
 
@@ -692,8 +696,12 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             let mig_ver =
                 cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
             set_mig_version(info, mig_ver)?;
-            let log_str = format!("Migration version negotiated successfully: {}", mig_ver);
-            migration_log!(info, info.mig_info.mig_request_id, log_str);
+            migration_log!(
+                info,
+                info.mig_info.mig_request_id,
+                "Migration version negotiated successfully: {}",
+                mig_ver
+            );
 
             write_msk(&info.mig_info, &remote_information.key)?;
 
@@ -906,11 +914,13 @@ fn exchange_info(info: &MigrationInformation) -> Result<ExchangeInformation> {
     exchange_info.min_ver = min_version as u16;
     exchange_info.max_ver = max_version as u16;
 
-    let log_str = format!(
+    migration_log!(
+        info,
+        info.mig_info.mig_request_id,
         "Exchange information prepared successfully - version range: {}-{}",
-        min_version, max_version
+        min_version,
+        max_version
     );
-    migration_log!(info, info.mig_info.mig_request_id, log_str);
 
     Ok(exchange_info)
 }
