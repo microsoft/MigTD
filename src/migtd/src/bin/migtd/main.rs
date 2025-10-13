@@ -53,6 +53,7 @@ pub extern "C" fn main() {
     {
         td_benchmark::StackProfiling::init(0x5a5a_5a5a_5a5a_5a5a, 0xd000);
     }
+
     runtime_main()
 }
 
@@ -71,8 +72,22 @@ pub fn runtime_main() {
     // Measure the input data
     do_measurements();
 
-    // calculate the hash of the TD info and log it
-    print_td_info_hash();
+    #[cfg(feature = "test_get_quote")]
+    {
+        let td_report =
+            tdx_tdcall::tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE])
+                .expect("Failed to get TD report");
+        info!("td_report: {:?}\n", td_report);
+
+        let td_quote = attestation::get_quote(td_report.as_bytes()).expect("Failed to get quote");
+        info!("td_quote: {:?}\n", td_quote);
+    }
+
+    #[cfg(not(feature = "test_get_quote"))]
+    {
+        // calculate the hash of the TD info and log it
+        print_td_info_hash();
+    }
 
     migration::event::register_callback();
 
@@ -110,10 +125,11 @@ pub fn do_measurements() {
 }
 
 fn print_td_info_hash() {
-    let tdx_report = tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE]);
+    let tdx_report = tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE])
+        .expect("Failed to get TD report");
     info!("tdx_report: {:?}\n", tdx_report);
 
-    let td_info = tdx_report.unwrap().td_info;
+    let td_info = tdx_report.td_info;
     info!("td_info: {:?}\n", td_info);
 
     let mut hasher = Sha384::new();

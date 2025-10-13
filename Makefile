@@ -10,6 +10,8 @@ IGVM_FEATURES_REJECT_ALL ?= $(IGVM_FEATURES_BASE),test_reject_all
 # test_disable_ra_and_accept_all feature disables remote attestation and skips policy verification, bypassing RATLS security
 # test feature skips the compilation of attestation library when the remote attestation is not enabled or needed
 IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL ?= $(IGVM_FEATURES_BASE),test_disable_ra_and_accept_all
+# test get quote and exit.
+IGVM_FEATURES_GET_QUOTE ?= $(IGVM_FEATURES_BASE),test_get_quote
 
 .PHONY: help build-AzCVMEmu test-migtd-emu build-test-migtd-emu
 .PHONY: build-igvm-accept build-igvm-accept-all build-igvm-reject build-igvm-reject-all
@@ -27,6 +29,7 @@ help:
 	@echo "  build-igvm-accept-all           - Build IGVM with accept all policy"
 	@echo "  build-igvm-reject-all           - Build IGVM with reject all policy"
 	@echo "  build-igvm-accept-all-tls-all   - Build IGVM with disabled RA and accept all policy with TLS"
+	@echo "  build-igvm-get-quote            - Build IGVM that only calls get quote and returns."
 
 build-AzCVMEmu:
 	cargo build --no-default-features --features $(AZCVMEMU_FEATURES)
@@ -79,3 +82,8 @@ build-igvm:
 	cargo image --no-default-features --features $(IGVM_FEATURES_BASE) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
 build-igvm-all: pre-build build-igvm generate-hash
+
+build-igvm-get-quote:
+	cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
+
+build-igvm-get-quote-all: pre-build build-igvm-get-quote generate-hash-accept-all-tls

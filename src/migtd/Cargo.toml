@@ -86,3 +86,4 @@ AzCVMEmu = [
 ]
 test_accept_all = [] # Test flag: Skip policy verification
 test_reject_all = [] # Test flag: Force migration status to always report unsupported
+test_get_quote = [] # Test flag: Get the quote and exit.

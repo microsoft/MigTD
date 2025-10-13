@@ -31,8 +31,12 @@ pub fn attest_init_heap() -> Option<usize> {
 
 #[cfg(not(feature = "AzCVMEmu"))]
 pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
+    log::info!("Production get_quote: Starting with TD report size: {}", td_report.len());
+    
     let mut quote = vec![0u8; TD_QUOTE_SIZE];
     let mut quote_size = TD_QUOTE_SIZE as u32;
+    
+    log::info!("Production get_quote: Calling external attestation library...");
     unsafe {
         let result = get_quote_inner(
             td_report.as_ptr() as *const c_void,
@@ -40,11 +44,17 @@ pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
             quote.as_mut_ptr() as *mut c_void,
             &mut quote_size as *mut u32,
         );
+        
+        log::info!("Production get_quote: Library returned: {:?}, quote_size: {}", result, quote_size);
+        
         if result != AttestLibError::Success {
+            log::error!("Production get_quote: Failed with error: {:?}", result);
             return Err(Error::GetQuote);
         }
     }
+    
     quote.truncate(quote_size as usize);
+    log::info!("Production get_quote: Success, final quote size: {}", quote.len());
     Ok(quote)
 }
 
