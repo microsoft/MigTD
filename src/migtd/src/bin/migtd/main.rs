@@ -181,8 +181,7 @@ fn handle_pre_mig() {
             .await;
 
             if let Ok(request) = wait_for_request().await {
-                info!("New migration request received \n");
-                debug!("wait_for_request returned : {:?} \n", request);
+                info!("wait_for_request returned : {:?} \n", request);
                 *PENDING_REQUEST.lock() = Some(request);
             }
         }
