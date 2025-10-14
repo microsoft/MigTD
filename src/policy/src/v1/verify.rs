@@ -312,7 +312,6 @@ fn verify_event_log(
     }
 }
 
-
 fn verify_events(
     is_src: bool,
     policy: &BTreeMap<String, Property>,

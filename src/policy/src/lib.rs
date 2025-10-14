@@ -436,7 +436,7 @@ pub(crate) fn replay_event_log_with_report_values(
             return Err(PolicyError::InvalidEventLog);
         }
     }
-    
+
     if report.get_migtd_info_property(&MigTdInfoProperty::Rtmr0)? == &rtmrs[0][0..48]
         && report.get_migtd_info_property(&MigTdInfoProperty::Rtmr1)? == &rtmrs[1][0..48]
         && report.get_migtd_info_property(&MigTdInfoProperty::Rtmr2)? == &rtmrs[2][0..48]

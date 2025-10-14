@@ -5,10 +5,7 @@
 #[cfg(feature = "attest-lib-ext")]
 use crate::binding::verify_quote_integrity_ex;
 use crate::{
-    binding::{
-        init_heap, verify_quote_integrity, AttestLibError,
-        QveCollateral,
-    },
+    binding::{init_heap, verify_quote_integrity, AttestLibError, QveCollateral},
     root_ca::ROOT_CA,
     Error, TD_VERIFIED_REPORT_SIZE,
 };
