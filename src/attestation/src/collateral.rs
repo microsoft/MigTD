@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-// This module is only compiled for AzCVMEmu mode
-#![cfg(feature = "AzCVMEmu")]
+// This module is only compiled for AzCVMEmu mode and not for policy_v2
+// For v2 policy, collateral is provided by the loaded policy.
+#![cfg(all(feature = "AzCVMEmu", not(feature = "policy_v2")))]
 
 use std::mem::size_of;
 use std::ptr;
