@@ -14,7 +14,10 @@ members = [
     "src/async/async_runtime",
     "tests/test-td-payload",
     "tools/migtd-hash",
+    "tools/migtd-collateral-generator",
     "tools/migtd-policy-generator",
+    "tools/servtd-collateral-generator",
+    "tools/json-signer",
     "xtask",
     ]
 

@@ -6,9 +6,16 @@ use alloc::vec::Vec;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, EcdsaKeyPair, KeyPair, UnparsedPublicKey};
+use rustls_pemfile::Item;
 use zeroize::Zeroize;
 
 use crate::{Error, Result};
+
+// Re-export ring's ECDSA verification algorithms for convenient access
+pub use ring::signature::{
+    ECDSA_P256_SHA256_ASN1, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA384_ASN1,
+    ECDSA_P384_SHA256_ASN1, ECDSA_P384_SHA384_ASN1, ECDSA_P384_SHA384_FIXED,
+};
 
 pub struct EcdsaPk {
     pk: Document,
@@ -69,6 +76,47 @@ impl Drop for EcdsaPk {
 pub fn ecdsa_verify(public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<()> {
     let pk = UnparsedPublicKey::new(&signature::ECDSA_P384_SHA384_ASN1, public_key);
     pk.verify(data, signature).map_err(|_e| Error::EcdsaVerify)
+}
+
+pub fn ecdsa_verify_with_algorithm(
+    public_key: &[u8],
+    data: &[u8],
+    signature: &[u8],
+    algorithm: &'static dyn signature::VerificationAlgorithm,
+) -> Result<()> {
+    let pk = UnparsedPublicKey::new(algorithm, public_key);
+    pk.verify(data, signature).map_err(|_e| Error::EcdsaVerify)
+}
+
+pub fn ecdsa_verify_with_raw_public_key(
+    public_key: &[u8],
+    data: &[u8],
+    signature: &[u8],
+) -> Result<()> {
+    let pk = UnparsedPublicKey::new(&signature::ECDSA_P384_SHA384_FIXED, public_key);
+    pk.verify(data, signature).map_err(|_e| Error::EcdsaVerify)
+}
+
+pub fn ecdsa_sign(pkcs8: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    let rand = SystemRandom::new();
+    let ecdsa_key =
+        EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P384_SHA384_ASN1_SIGNING, pkcs8, &rand).unwrap();
+
+    ecdsa_key
+        .sign(&rand, data)
+        .as_ref()
+        .map(|s| s.as_ref().to_vec())
+        .map_err(|_| Error::EcdsaSign)
+}
+
+pub fn pem_to_der_from_slice(pem_data: &[u8]) -> Result<Vec<u8>> {
+    match rustls_pemfile::read_one_from_slice(pem_data).map_err(|_| Error::DecodePemCert)? {
+        Some((Item::X509Certificate(cert), _remaining)) => Ok(cert.to_vec()),
+        Some((Item::Pkcs8Key(key), _)) => Ok(key.secret_pkcs8_der().to_vec()),
+        Some((Item::Pkcs1Key(key), _)) => Ok(key.secret_pkcs1_der().to_vec()),
+        Some((Item::Sec1Key(key), _)) => Ok(key.secret_sec1_der().to_vec()),
+        _ => Err(Error::DecodePemCert),
+    }
 }
 
 // Here is a workaround to cleanup the structures that contain sensitive
