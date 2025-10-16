@@ -226,17 +226,17 @@ fn handle_pre_mig() {
                     let mut data: Vec<u8> = Vec::new();
                     match request {
                         WaitForRequestResponse::StartMigration(wfr_info) => {
-                            let status = exchange_msk(&wfr_info)
+                            let status = exchange_msk(&wfr_info.mig_info)
                                 .await
                                 .map(|_| MigrationResult::Success)
                                 .unwrap_or_else(|e| e);
                             let _ = report_status(
                                 status as u8,
-                                wfr_info.mig_info.mig_request_id,
+                                wfr_info.mig_info.mig_info.mig_request_id,
                                 &data,
                             )
                             .await;
-                            REQUESTS.lock().remove(&wfr_info.mig_info.mig_request_id);
+                            REQUESTS.lock().remove(&wfr_info.mig_info.mig_info.mig_request_id);
                         }
                         WaitForRequestResponse::GetTdReport(wfr_info) => {
                             let status = get_tdreport(&wfr_info.reportdata, &mut data)

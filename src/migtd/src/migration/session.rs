@@ -469,28 +469,28 @@ pub async fn get_tdreport(
 #[cfg(feature = "vmcall-raw")]
 pub async fn report_status(status: u8, request_id: u64, data: &Vec<u8>) -> Result<()> {
     let data_status: u64 = 0;
-    let mut reportstatus: u8 = 0;
     let mut data_length: u32 = 0;
     let mut data_buffer = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
 
-    if let Some(_value) = u8_to_migration_result(status) {
+    let reportstatus: u8 = if let Some(_value) = u8_to_migration_result(status) {
         let rs = ReportStatusResponse::from_bits(0)
             .with_pre_migration_status(1)
             .with_error_code(status)
             .with_reserved(0);
-        reportstatus = (rs.into_bits() & 0xFF) as u8;
+        (rs.into_bits() & 0xFF) as u8
     } else {
         return Err(MigrationResult::InvalidParameter);
-    }
+    };
 
-    if data.len() > 0 && data.len() < (PAGE_SIZE - 12) {
+    let has_data = !data.is_empty() && data.len() < (PAGE_SIZE - 12);
+    if has_data {
         data_length += data.len() as u32;
     }
 
     let data_buffer = data_buffer.as_mut_bytes();
     data_buffer[0..8].copy_from_slice(&u64::to_le_bytes(data_status));
     data_buffer[8..12].copy_from_slice(&u32::to_le_bytes(data_length));
-    if data.len() > 0 && data.len() < (PAGE_SIZE - 12) {
+    if has_data {
         data_buffer[12..data.len() + 12].copy_from_slice(&data[0..data.len()]);
     }
 
