@@ -13,6 +13,7 @@ attestation = { path = "../attestation", default-features = false, features = ["
 
 [dependencies]
 bitfield = "0.13.2"
+bitfield-struct = "0.11"
 anyhow = { version = "1.0.68", default-features = false }
 async_io = { path = "../async/async_io" }
 async_runtime = { path = "../async/async_runtime" }

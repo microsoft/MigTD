@@ -6,6 +6,8 @@
 use crate::driver::ticks::with_timeout;
 #[cfg(feature = "vmcall-raw")]
 use crate::migration::event::VMCALL_MIG_REPORTSTATUS_FLAGS;
+#[cfg(feature = "vmcall-raw")]
+use alloc::vec::Vec;
 use alloc::collections::BTreeSet;
 #[cfg(feature = "policy_v2")]
 use async_io::{AsyncRead, AsyncWrite};
@@ -34,7 +36,7 @@ use tdx_tdcall_emu::{
     tdx::{self, tdcall_servtd_wr},
     TdcallArgs,
 };
-use zerocopy::AsBytes;
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 type Result<T> = core::result::Result<T, MigrationResult>;
 
@@ -52,6 +54,8 @@ const GSM_FIELD_MIN_IMPORT_VERSION: u64 = 0x2000000100000003;
 const GSM_FIELD_MAX_IMPORT_VERSION: u64 = 0x2000000100000004;
 #[cfg(feature = "vmcall-raw")]
 const TDX_VMCALL_VMM_SUCCESS: u8 = 1;
+#[cfg(feature = "vmcall-raw")]
+const PAGE_SIZE: usize = 4096;
 
 #[cfg(feature = "vmcall-raw")]
 #[repr(C)]
@@ -83,6 +87,28 @@ fn parse_ghci_waitforrequest_response(buf: &[u8]) -> GhciWaitForRequestResponse 
         binding_handle: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
     }
 }
+
+#[cfg(feature = "vmcall-raw")]
+#[repr(C, align(1024))]
+#[derive(AsBytes, FromBytes, FromZeroes)]
+struct TdxReport {
+    data: [u8; 1024],
+}
+
+#[cfg(feature = "vmcall-raw")]
+impl Default for TdxReport {
+    fn default() -> Self {
+        Self { data: [0u8; 1024] }
+    }
+}
+
+#[cfg(feature = "vmcall-raw")]
+#[repr(C, align(1024))]
+struct TdxReportBuf(TdxReport);
+
+#[cfg(feature = "vmcall-raw")]
+#[repr(C, align(64))]
+struct AdditionalDataBuf([u8; TD_REPORT_ADDITIONAL_DATA_SIZE]);
 
 lazy_static! {
     pub static ref REQUESTS: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
@@ -194,8 +220,8 @@ fn process_buffer(buffer: &mut [u8]) -> (u64, u32) {
     (data_status, data_length)
 }
 
-pub async fn wait_for_request() -> Result<MigrationInformation> {
-    #[cfg(feature = "vmcall-raw")]
+#[cfg(feature = "vmcall-raw")]
+pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
     {
         let data_status: u64 = 0;
         let data_length: u32 = 0;
@@ -216,48 +242,105 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
                 return Poll::Pending;
             }
 
-            let (data_status, _data_length) = process_buffer(data_buffer);
-
-            let slice = &data_buffer[12..12 + 56];
-            let wfr = parse_ghci_waitforrequest_response(slice);
+            let (data_status, data_length) = process_buffer(data_buffer);
 
             let data_status_bytes = data_status.to_le_bytes();
             if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
                 return Poll::Pending;
             }
 
-            let request_id = wfr.mig_request_id;
-            VMCALL_MIG_REPORTSTATUS_FLAGS
-                .lock()
-                .insert(request_id, AtomicBool::new(false));
+            let private_mem = &data_buffer[12..];
 
-            let mut mig_info = MigtdMigrationInformation {
-                mig_request_id: request_id,
-                migration_source: wfr.migration_source,
-                _pad: [0, 0, 0, 0, 0, 0, 0],
-                target_td_uuid: [0, 0, 0, 0],
-                binding_handle: wfr.binding_handle,
-                mig_policy_id: 0,
-                communication_id: 0,
-            };
-
-            for i in 0..4 {
-                mig_info.target_td_uuid[i] = wfr.target_td_uuid[i];
+            let rsp = VmcallServiceResponse::try_read(private_mem)
+                .ok_or(MigrationResult::InvalidParameter)?;
+            if rsp.read_guid() != VMCALL_SERVICE_MIGTD_GUID.as_bytes() {
+                return Poll::Ready(Err(MigrationResult::InvalidParameter));
             }
+            let wfr = rsp
+                .read_data::<ServiceMigWaitForReqResponse>(0)
+                .ok_or(MigrationResult::InvalidParameter)?;
+            if wfr.command != MIG_COMMAND_WAIT {
+                return Poll::Ready(Err(MigrationResult::InvalidParameter));
+            }
+            if wfr.operation == 1 {
+                let request_type = u32::from_le_bytes(private_mem[28..32].try_into().unwrap());
 
-            let mig_info = MigrationInformation { mig_info };
+                if request_type == 1 {
+                    // Start migration
+                    let mig_info =
+                        read_mig_info(&private_mem[24 + size_of::<ServiceMigWaitForReqResponse>()..])
+                            .ok_or(MigrationResult::InvalidParameter)?;
+                    let request_id = mig_info.mig_info.mig_request_id;
+                    VMCALL_MIG_REPORTSTATUS_FLAGS
+                        .lock()
+                        .insert(request_id, AtomicBool::new(false));
 
-            if REQUESTS.lock().contains(&request_id) {
+                    if REQUESTS.lock().contains(&request_id) {
+                        Poll::Pending
+                    } else {
+                        REQUESTS.lock().insert(request_id);
+                        Poll::Ready(Ok(WaitForRequestResponse::StartMigration(
+                            WaitForReqStartMigrationInfo { mig_info },
+                        )))
+                    }
+                } else if request_type == 2 {
+                    // GetTdReport
+                    let request_id =
+                        u64::from_le_bytes(private_mem[32..40].try_into().unwrap());
+                    VMCALL_MIG_REPORTSTATUS_FLAGS
+                        .lock()
+                        .insert(request_id, AtomicBool::new(false));
+
+                    let reportdata: [u8; TD_REPORT_ADDITIONAL_DATA_SIZE] =
+                        private_mem[40..40 + TD_REPORT_ADDITIONAL_DATA_SIZE]
+                            .try_into()
+                            .unwrap();
+
+                    if REQUESTS.lock().contains(&request_id) {
+                        Poll::Pending
+                    } else {
+                        REQUESTS.lock().insert(request_id);
+                        Poll::Ready(Ok(WaitForRequestResponse::GetTdReport(
+                            WaitForReqGetTdReportInfo {
+                                mig_request_id: request_id,
+                                reportdata,
+                            },
+                        )))
+                    }
+                } else if request_type == 3 {
+                    // EnableLogArea
+                    let request_id =
+                        u64::from_le_bytes(private_mem[32..40].try_into().unwrap());
+                    VMCALL_MIG_REPORTSTATUS_FLAGS
+                        .lock()
+                        .insert(request_id, AtomicBool::new(false));
+
+                    if REQUESTS.lock().contains(&request_id) {
+                        Poll::Pending
+                    } else {
+                        REQUESTS.lock().insert(request_id);
+                        Poll::Ready(Ok(WaitForRequestResponse::EnableLogArea(
+                            WaitForReqEnableLogAreaInfo {
+                                mig_request_id: request_id,
+                            },
+                        )))
+                    }
+                } else {
+                    Poll::Ready(Err(MigrationResult::InvalidParameter))
+                }
+            } else if wfr.operation == 0 {
                 Poll::Pending
             } else {
-                REQUESTS.lock().insert(request_id);
-                Poll::Ready(Ok(mig_info))
+                Poll::Ready(Err(MigrationResult::InvalidParameter))
             }
         })
         .await
     }
 
-    #[cfg(not(feature = "vmcall-raw"))]
+}
+
+#[cfg(not(feature = "vmcall-raw"))]
+pub async fn wait_for_request() -> Result<MigrationInformation> {
     {
         // Allocate shared page for command and response buffer
         let mut cmd_mem = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
@@ -355,20 +438,65 @@ pub fn shutdown() -> Result<()> {
 }
 
 #[cfg(feature = "vmcall-raw")]
-pub async fn report_status(status: u8, request_id: u64) -> Result<()> {
-    let data_status: u64 = 0;
-    let data_length: u32 = 0;
+pub async fn get_tdreport(
+    additional_data: &[u8; TD_REPORT_ADDITIONAL_DATA_SIZE],
+    data: &mut Vec<u8>,
+) -> Result<()> {
+    const TDVMCALL_TDREPORT: u64 = 0x00004;
+    let mut report_buf = TdxReportBuf(TdxReport::default());
+    let additional_data_buf = AdditionalDataBuf(*additional_data);
+    let tdreportsize = size_of::<TdxReport>();
 
+    let mut args = TdcallArgs {
+        rax: TDVMCALL_TDREPORT,
+        rcx: &mut report_buf as *mut _ as u64,
+        rdx: &additional_data_buf as *const _ as u64,
+        ..Default::default()
+    };
+
+    let ret = td_call(&mut args);
+    if ret != TDCALL_STATUS_SUCCESS {
+        return Err(MigrationResult::TdxModuleError);
+    }
+
+    data.extend_from_slice(report_buf.0.as_bytes());
+    if data.len() != tdreportsize {
+        return Err(MigrationResult::InvalidParameter);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub async fn report_status(status: u8, request_id: u64, data: &Vec<u8>) -> Result<()> {
+    let data_status: u64 = 0;
+    let mut reportstatus: u8 = 0;
+    let mut data_length: u32 = 0;
     let mut data_buffer = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
 
-    let data_buffer = data_buffer.as_mut_bytes();
+    if let Some(_value) = u8_to_migration_result(status) {
+        let rs = ReportStatusResponse::from_bits(0)
+            .with_pre_migration_status(1)
+            .with_error_code(status)
+            .with_reserved(0);
+        reportstatus = (rs.into_bits() & 0xFF) as u8;
+    } else {
+        return Err(MigrationResult::InvalidParameter);
+    }
 
+    if data.len() > 0 && data.len() < (PAGE_SIZE - 12) {
+        data_length += data.len() as u32;
+    }
+
+    let data_buffer = data_buffer.as_mut_bytes();
     data_buffer[0..8].copy_from_slice(&u64::to_le_bytes(data_status));
     data_buffer[8..12].copy_from_slice(&u32::to_le_bytes(data_length));
+    if data.len() > 0 && data.len() < (PAGE_SIZE - 12) {
+        data_buffer[12..data.len() + 12].copy_from_slice(&data[0..data.len()]);
+    }
 
     tdx::tdvmcall_migtd_reportstatus(
         request_id,
-        status,
+        reportstatus,
         data_buffer,
         event::VMCALL_SERVICE_VECTOR,
     )?;

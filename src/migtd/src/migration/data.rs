@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
+use super::*;
+#[cfg(feature = "vmcall-raw")]
+use bitfield_struct::bitfield;
 use core::convert::TryInto;
 use core::{mem::size_of, slice::from_raw_parts, slice::from_raw_parts_mut};
 use r_efi::efi::Guid;
@@ -11,8 +14,6 @@ use td_shim_interface::td_uefi_pi::{
     pi::hob::{GuidExtension, Header, HOB_TYPE_END_OF_HOB_LIST, HOB_TYPE_GUID_EXTENSION},
 };
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
-
-use super::*;
 
 pub const QUERY_COMMAND: u8 = 0;
 pub const MIG_COMMAND_SHUT_DOWN: u8 = 0;
@@ -176,13 +177,10 @@ pub struct ServiceMigWaitForReqResponse {
 #[derive(FromZeroes, FromBytes, AsBytes)]
 #[cfg(feature = "vmcall-raw")]
 pub struct ServiceMigWaitForReqResponse {
-    pub data_status: u32,
-    pub request_type: u32,
-    pub mig_request_id: u64,
-    pub migration_source: u8,
-    pub reserved: [u8; 7],
-    pub target_td_uuid: [u64; 4],
-    pub binding_handle: u64,
+    pub version: u8,
+    pub command: u8,
+    pub operation: u8,
+    pub reserved: u8,
 }
 
 #[repr(packed)]
@@ -199,6 +197,43 @@ pub struct ServiceMigReportStatusResponse {
     pub version: u8,
     pub command: u8,
     pub reserved: [u8; 2],
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub const TD_REPORT_ADDITIONAL_DATA_SIZE: usize = 64;
+
+#[cfg(feature = "vmcall-raw")]
+#[bitfield(u16)]
+pub struct ReportStatusResponse {
+    #[bits(4)]
+    pub pre_migration_status: u8,
+    #[bits(4)]
+    pub error_code: u8,
+    #[bits(8)]
+    pub reserved: u8,
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub struct WaitForReqStartMigrationInfo {
+    pub mig_info: MigrationInformation,
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub struct WaitForReqGetTdReportInfo {
+    pub mig_request_id: u64,
+    pub reportdata: [u8; TD_REPORT_ADDITIONAL_DATA_SIZE],
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub struct WaitForReqEnableLogAreaInfo {
+    pub mig_request_id: u64,
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub enum WaitForRequestResponse {
+    StartMigration(WaitForReqStartMigrationInfo),
+    GetTdReport(WaitForReqGetTdReportInfo),
+    EnableLogArea(WaitForReqEnableLogAreaInfo),
 }
 
 pub struct MigrationSessionKey {
@@ -345,6 +380,14 @@ fn create_migration_information(
         mig_socket_info,
         mig_policy,
     })
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub fn read_mig_info(hob: &[u8]) -> Option<MigrationInformation> {
+    use scroll::Pread;
+    let mig_info: MigtdMigrationInformation = hob.pread(0).ok()?;
+
+    Some(MigrationInformation { mig_info })
 }
 
 #[cfg(test)]

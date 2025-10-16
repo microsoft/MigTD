@@ -144,6 +144,24 @@ pub enum MigrationResult {
     MutualAttestationError = 7,
     PolicyUnsatisfiedError = 8,
     InvalidPolicyError = 9,
+    UnsupportedOperationError = 10,
+}
+
+pub fn u8_to_migration_result(value: u8) -> Option<MigrationResult> {
+    match value {
+        0 => Some(MigrationResult::Success),
+        1 => Some(MigrationResult::InvalidParameter),
+        2 => Some(MigrationResult::Unsupported),
+        3 => Some(MigrationResult::OutOfResource),
+        4 => Some(MigrationResult::TdxModuleError),
+        5 => Some(MigrationResult::NetworkError),
+        6 => Some(MigrationResult::SecureSessionError),
+        7 => Some(MigrationResult::MutualAttestationError),
+        8 => Some(MigrationResult::PolicyUnsatisfiedError),
+        9 => Some(MigrationResult::InvalidPolicyError),
+        10 => Some(MigrationResult::UnsupportedOperationError),
+        _ => None,
+    }
 }
 
 #[cfg(any(feature = "virtio-vsock", feature = "vmcall-vsock"))]
