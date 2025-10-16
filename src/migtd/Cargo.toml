@@ -13,6 +13,7 @@ attestation = { path = "../attestation", default-features = false, features = ["
 
 [dependencies]
 bitfield = "0.13.2"
+bitfield-struct = "0.11.0"
 anyhow = { version = "1.0.68", default-features = false }
 async_io = { path = "../async/async_io" }
 async_runtime = { path = "../async/async_runtime" }
@@ -25,7 +26,6 @@ lazy_static = { version = "1.0", features = ["spin_no_std"] }
 log = { version = "0.4.13" }
 pci = { path="../devices/pci" }
 policy = {path = "../policy"}
-rust_std_stub = { path = "../std-support/rust-std-stub" }
 r-efi = "3.2.0"
 scroll = { version = "0.10", default-features = false, features = ["derive"]}
 spin = "0.9.2"
@@ -39,7 +39,7 @@ td-shim-interface = { path = "../../deps/td-shim/td-shim-interface"}
 virtio = { path="../devices/virtio" }
 vsock = { path="../devices/vsock", default-features = false, optional = true }
 virtio_serial = { path="../devices/virtio_serial", optional = true }
-vmcall_raw = { path="../devices/vmcall_raw", optional = true }
+vmcall_raw = { path = "../devices/vmcall_raw", optional = true }
 x86 = "0.47.0"
 x86_64 = { version = "0.14", default-features = false, features = ["instructions"] }
 zerocopy = { version = "0.7", features = ["derive"] }
