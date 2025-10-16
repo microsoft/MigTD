@@ -39,6 +39,7 @@ td-shim-interface = { path = "../../deps/td-shim/td-shim-interface"}
 virtio = { path="../devices/virtio" }
 vsock = { path="../devices/vsock", default-features = false, optional = true }
 virtio_serial = { path="../devices/virtio_serial", optional = true }
+rust_std_stub = { path = "../std-support/rust-std-stub" }
 vmcall_raw = { path = "../devices/vmcall_raw", optional = true }
 x86 = "0.47.0"
 x86_64 = { version = "0.14", default-features = false, features = ["instructions"] }
