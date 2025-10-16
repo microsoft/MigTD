@@ -36,7 +36,10 @@ use tdx_tdcall_emu::{
     tdx::{self, tdcall_servtd_wr},
     TdcallArgs,
 };
+#[cfg(feature = "vmcall-raw")]
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
+#[cfg(not(feature = "vmcall-raw"))]
+use zerocopy::AsBytes;
 
 type Result<T> = core::result::Result<T, MigrationResult>;
 
@@ -242,7 +245,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
                 return Poll::Pending;
             }
 
-            let (data_status, data_length) = process_buffer(data_buffer);
+            let (data_status, _data_length) = process_buffer(data_buffer);
 
             let data_status_bytes = data_status.to_le_bytes();
             if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
