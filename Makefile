@@ -1,6 +1,6 @@
 AZCVMEMU_FEATURES ?= AzCVMEmu
 IGVM_FILE ?= target/release/migtd.igvm
-LOG_LEVEL ?= info
+LOG_LEVEL ?= trace
 # Common features for IGVM images
 IGVM_FEATURES_BASE ?= vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic
 # test_accept_all feature skips policy verification, bypasses RATLS security

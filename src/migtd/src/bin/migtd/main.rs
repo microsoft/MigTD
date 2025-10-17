@@ -74,12 +74,22 @@ pub fn runtime_main() {
 
     #[cfg(feature = "test_get_quote")]
     {
-        let td_report =
-            tdx_tdcall::tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE])
-                .expect("Failed to get TD report");
-        info!("td_report: {:?}\n", td_report);
+        let td_report = match tdx_tdcall::tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE]) {
+            Ok(report) => report,
+            Err(e) => {
+                debug!("Failed to get TD report: {:?}", e);
+                return;
+            }
+        };
+        info!("td_report: {:?}\n", td_report.as_bytes());
 
-        let td_quote = attestation::get_quote(td_report.as_bytes()).expect("Failed to get quote");
+        let td_quote = match attestation::get_quote(td_report.as_bytes()){
+            Ok(quote) => quote,
+            Err(e) => {
+                debug!("Failed to get quote: {:?}", e);
+                return;
+            }
+        };
         info!("td_quote: {:?}\n", td_quote);
     }
 
