@@ -17,6 +17,7 @@ DEFAULT_REQUEST_ID="1"
 DEFAULT_DEST_IP="127.0.0.1"
 DEFAULT_DEST_PORT="8001"
 DEFAULT_BUILD_MODE="release"
+DEFAULT_REQUEST_TYPE="migration"
 USE_SUDO=true
 RUN_BOTH=false
 SKIP_RA=false
@@ -43,6 +44,7 @@ show_usage() {
     echo "  -i, --request-id ID          Set migration request ID (default: 1)"
     echo "  -d, --dest-ip IP             Set destination IP address (default: 127.0.0.1)"
     echo "  -p, --dest-port PORT         Set destination port (default: 8001)"
+    echo "  -y, --request-type TYPE      Set request type: 'migration' or 'getreport' (default: migration)"
     echo "  --policy-file FILE           Set policy file path (default: config/policy.json)"
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
     echo "  --debug                      Build in debug mode (default: release)"
@@ -62,6 +64,7 @@ show_usage() {
     echo "    This is useful for development and testing on any Linux system."
     echo
     echo "Examples:"
+    echo "  # Migration testing (traditional workflow)"
     echo "  $0                                    # Build release and run as source with defaults"
     echo "  $0 --role destination                # Build release and run as destination"
     echo "  $0 --debug --role source             # Build debug and run as source"
@@ -70,6 +73,10 @@ show_usage() {
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
+    echo
+    echo "  # GetReportData testing (single-shot TD report generation)"
+    echo "  $0 --request-type getreport --request-id 100                    # Get TD report with default reportdata"
+    echo "  $0 -y getreport -i 200                                          # Short options for getreport"
 }
 
 # Function to check if file exists
@@ -156,6 +163,7 @@ ROLE="$DEFAULT_ROLE"
 REQUEST_ID="$DEFAULT_REQUEST_ID"
 DEST_IP="$DEFAULT_DEST_IP"
 DEST_PORT="$DEFAULT_DEST_PORT"
+REQUEST_TYPE="$DEFAULT_REQUEST_TYPE"
 POLICY_FILE="$DEFAULT_POLICY_FILE"
 ROOT_CA_FILE="$DEFAULT_ROOT_CA_FILE"
 BUILD_MODE="$DEFAULT_BUILD_MODE"
@@ -177,6 +185,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -p|--dest-port)
             DEST_PORT="$2"
+            shift 2
+            ;;
+        -y|--request-type)
+            REQUEST_TYPE="$2"
             shift 2
             ;;
         --policy-file)
@@ -227,12 +239,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate role (skip when running both)
-if [[ "$RUN_BOTH" != true ]]; then
+# Validate request type
+if [[ "$REQUEST_TYPE" != "migration" && "$REQUEST_TYPE" != "getreport" ]]; then
+    echo -e "${RED}Error: Request type must be 'migration' or 'getreport', got: $REQUEST_TYPE${NC}" >&2
+    exit 1
+fi
+
+# Validate role (skip when running both or when doing getreport)
+if [[ "$RUN_BOTH" != true && "$REQUEST_TYPE" == "migration" ]]; then
     if [[ "$ROLE" != "source" && "$ROLE" != "destination" ]]; then
         echo -e "${RED}Error: Role must be 'source' or 'destination', got: $ROLE${NC}" >&2
         exit 1
     fi
+fi
+
+# For getreport requests, --both makes no sense
+if [[ "$REQUEST_TYPE" == "getreport" && "$RUN_BOTH" == true ]]; then
+    echo -e "${RED}Error: --both option is not compatible with --request-type getreport${NC}" >&2
+    exit 1
 fi
 
 # Change to MigTD directory
@@ -315,22 +339,24 @@ echo -e "${BLUE}Setting up environment variables...${NC}"
 # Display configuration
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Build mode: $BUILD_MODE"
+echo "  Request type: $REQUEST_TYPE"
 if [[ "$SKIP_RA" == true ]]; then
     echo "  Skip RA mode: enabled (mock attestation, no TDX/Azure CVM/TPM required)"
 else
     echo "  Skip RA mode: disabled (requires TDX/Azure CVM/TPM for attestation)"
 fi
-if [[ "$RUN_BOTH" == true ]]; then
-    echo "  Mode: both (destination then source)"
-else
-    echo "  Role: $ROLE"
+if [[ "$REQUEST_TYPE" == "migration" ]]; then
+    if [[ "$RUN_BOTH" == true ]]; then
+        echo "  Mode: both (destination then source)"
+    else
+        echo "  Role: $ROLE"
+    fi
+    echo "  Destination: ${DEST_IP}:${DEST_PORT}"
 fi
 echo "  Request ID: $REQUEST_ID"
 echo "  Policy file: $POLICY_FILE"
 echo "  Root CA file: $ROOT_CA_FILE"
 echo "  Use sudo: $USE_SUDO"
-
-echo "  Destination: ${DEST_IP}:${DEST_PORT}"
 
 echo
 
@@ -354,7 +380,30 @@ if [[ "$SKIP_RA" != true && -e /dev/tpmrm0 ]]; then
     TSS2_TCTI_AUTO="device:/dev/tpmrm0"
 fi
 
-if [[ "$RUN_BOTH" == true ]]; then
+if [[ "$REQUEST_TYPE" == "getreport" ]]; then
+    # GetReportData mode - single shot TD report generation
+    MIGTD_ARGS=(
+        "--request-type" "getreport"
+        "--request-id" "$REQUEST_ID"
+    )
+    echo -e "${BLUE}Starting MigTD in GetReportData mode...${NC}"
+    if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
+    if [[ -n "$TSS2_TCTI_AUTO" ]]; then
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+    else
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+    fi
+    echo
+    if [[ -n "$TSS2_TCTI_AUTO" ]]; then
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        EXIT_CODE=$?
+    else
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        EXIT_CODE=$?
+    fi
+    echo -e "${BLUE}MigTD exit code: $EXIT_CODE${NC}"
+    exit $EXIT_CODE
+elif [[ "$RUN_BOTH" == true ]]; then
     echo -e "${BLUE}Starting destination in background...${NC}"
     DEST_ARGS=("--role" "destination" "--request-id" "$REQUEST_ID")
     # Start destination and redirect output
@@ -429,7 +478,7 @@ if [[ "$RUN_BOTH" == true ]]; then
         exit $SRC_EXIT_CODE
     fi
 else
-    # Single role run
+    # Single role run (migration mode)
     MIGTD_ARGS=(
         "--role" "$ROLE"
         "--request-id" "$REQUEST_ID"

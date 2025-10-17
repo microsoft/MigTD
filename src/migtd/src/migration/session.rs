@@ -28,14 +28,14 @@ use tdx_tdcall::{
     tdx::{self, tdcall_servtd_wr},
     TdcallArgs,
 };
+#[cfg(feature = "vmcall-raw")]
+use tdx_tdcall::{tdreport::TdxReport, tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE};
 #[cfg(feature = "AzCVMEmu")]
 use tdx_tdcall_emu::{
     td_call,
     tdx::{self, tdcall_servtd_wr},
     TdcallArgs,
 };
-#[cfg(feature = "vmcall-raw")]
-use tdx_tdcall::{tdreport::TdxReport, tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE};
 use zerocopy::AsBytes;
 
 type Result<T> = core::result::Result<T, MigrationResult>;

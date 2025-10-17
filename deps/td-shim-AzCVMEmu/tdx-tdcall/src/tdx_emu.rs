@@ -46,17 +46,69 @@ lazy_static! {
 }
 
 /// Emulated migration request info used by tdvmcall_migtd_waitforrequest
-#[derive(Clone, Debug, Default)]
-pub struct EmuMigRequest {
-    pub request_id: u64,
-    pub migration_source: u8,
-    pub target_td_uuid: [u64; 4],
-    pub binding_handle: u64,
+#[derive(Clone, Debug)]
+pub enum EmuMigRequest {
+    StartMigration {
+        request_id: u64,
+        migration_source: u8,
+        target_td_uuid: [u64; 4],
+        binding_handle: u64,
+    },
+    GetReportData {
+        request_id: u64,
+        reportdata: [u8; 64],
+    },
+    EnableLogArea {
+        request_id: u64,
+        log_max_level: u8,
+    },
+}
+
+impl Default for EmuMigRequest {
+    fn default() -> Self {
+        EmuMigRequest::StartMigration {
+            request_id: 0,
+            migration_source: 0,
+            target_td_uuid: [0; 4],
+            binding_handle: 0,
+        }
+    }
 }
 
 /// Seed the emulation layer with a pending migration request returned by waitforrequest
 pub fn set_emulated_mig_request(req: EmuMigRequest) {
     *MIG_REQUEST.lock() = Some(req);
+}
+
+/// Helper: Set a StartMigration request
+pub fn set_emulated_start_migration(
+    request_id: u64,
+    migration_source: u8,
+    target_td_uuid: [u64; 4],
+    binding_handle: u64,
+) {
+    set_emulated_mig_request(EmuMigRequest::StartMigration {
+        request_id,
+        migration_source,
+        target_td_uuid,
+        binding_handle,
+    });
+}
+
+/// Helper: Set a GetReportData request
+pub fn set_emulated_get_report_data(request_id: u64, reportdata: [u8; 64]) {
+    set_emulated_mig_request(EmuMigRequest::GetReportData {
+        request_id,
+        reportdata,
+    });
+}
+
+/// Helper: Set an EnableLogArea request
+pub fn set_emulated_enable_log_area(request_id: u64, log_max_level: u8) {
+    set_emulated_mig_request(EmuMigRequest::EnableLogArea {
+        request_id,
+        log_max_level,
+    });
 }
 
 /// Set TCP address and mode for emulation
@@ -299,58 +351,144 @@ pub fn tdvmcall_migtd_waitforrequest(
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
 
-    // data_buffer uses the new GHCI 1.5 buffer format:
+    // data_buffer uses the GHCI 1.5 buffer format:
     // Bytes 0-7: status (u64) - filled by VMM/emulation
+    //   byte[0] = 1 (TDX_VMCALL_VMM_SUCCESS)
+    //   byte[1] = operation type (1=StartMigration, 3=GetReportData, 4=EnableLogArea)
     // Bytes 8-11: length (u32) - filled by VMM/emulation  
-    // Bytes 12+: GhciWaitForRequestResponse payload (56 bytes):
-    //   - mig_request_id: u64 (8 bytes)
-    //   - migration_source: u8 (1 byte) 
-    //   - _pad: [u8; 7] (7 bytes)
-    //   - target_td_uuid: [u64; 4] (32 bytes)
-    //   - binding_handle: u64 (8 bytes)
+    // Bytes 12+: Request-specific payload
+    
     const HEADER_LEN: usize = 12; // GHCI 1.5 header: 8-byte status + 4-byte length
-    const PAYLOAD_LEN: usize = 56; // GhciWaitForRequestResponse size
-    if data_buffer.len() < HEADER_LEN + PAYLOAD_LEN {
-        error!(
-            "waitforrequest buffer too small: have={} need={}",
-            data_buffer.len(),
-            HEADER_LEN + PAYLOAD_LEN
-        );
-        return Err(TdVmcallError::Other);
-    }
-
+    const START_MIGRATION_PAYLOAD_LEN: usize = 56; // MigtdMigrationInformation size
+    const REPORT_DATA_PAYLOAD_LEN: usize = 72; // ReportInfo size (8 + 64)
+    const ENABLE_LOG_AREA_PAYLOAD_LEN: usize = 16; // EnableLogAreaInfo size (8 + 1 + 7 reserved)
+    
     // Take the emulated request info; if none, do not signal and let caller poll again
     let maybe_req = {
         let mut g = MIG_REQUEST.lock();
         g.take()
     };
 
-    if let Some(st) = maybe_req {
-        // Fill GHCI header
-        let status = 1u64; // Success
-        let length = PAYLOAD_LEN as u32;
-        data_buffer[0..8].copy_from_slice(&status.to_le_bytes());
-        data_buffer[8..12].copy_from_slice(&length.to_le_bytes());
+    if let Some(req) = maybe_req {
+        match req {
+            EmuMigRequest::StartMigration {
+                request_id,
+                migration_source,
+                target_td_uuid,
+                binding_handle,
+            } => {
+                // DataStatusOperation::StartMigration = 1
+                let status = 0x0000_0000_0000_0101u64; // byte[0]=1 (success), byte[1]=1 (StartMigration)
+                let length = START_MIGRATION_PAYLOAD_LEN as u32;
+                
+                if data_buffer.len() < HEADER_LEN + START_MIGRATION_PAYLOAD_LEN {
+                    error!(
+                        "waitforrequest buffer too small for StartMigration: have={} need={}",
+                        data_buffer.len(),
+                        HEADER_LEN + START_MIGRATION_PAYLOAD_LEN
+                    );
+                    return Err(TdVmcallError::Other);
+                }
+                
+                data_buffer[0..8].copy_from_slice(&status.to_le_bytes());
+                data_buffer[8..12].copy_from_slice(&length.to_le_bytes());
 
-        // Fill GhciWaitForRequestResponse payload
-        let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + PAYLOAD_LEN];
-        
-        // mig_request_id
-        payload[0..8].copy_from_slice(&st.request_id.to_le_bytes());
-        // migration_source
-        payload[8] = st.migration_source;
-        // _pad [7 bytes]
-        for b in &mut payload[9..16] {
-            *b = 0;
+                // Fill MigtdMigrationInformation payload
+                let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + START_MIGRATION_PAYLOAD_LEN];
+                
+                // mig_request_id
+                payload[0..8].copy_from_slice(&request_id.to_le_bytes());
+                // migration_source
+                payload[8] = migration_source;
+                // _pad [7 bytes]
+                for b in &mut payload[9..16] {
+                    *b = 0;
+                }
+                // target_td_uuid [u64; 4] - 32 bytes
+                let mut off = 16usize;
+                for v in target_td_uuid.iter() {
+                    payload[off..off + 8].copy_from_slice(&v.to_le_bytes());
+                    off += 8;
+                }
+                // binding_handle
+                payload[48..56].copy_from_slice(&binding_handle.to_le_bytes());
+
+                log::info!(
+                    "tdvmcall_migtd_waitforrequest: StartMigration request_id={} source={}",
+                    request_id, migration_source
+                );
+            }
+            EmuMigRequest::GetReportData {
+                request_id,
+                reportdata,
+            } => {
+                // DataStatusOperation::GetReportData = 3
+                let status = 0x0000_0000_0000_0301u64; // byte[0]=1 (success), byte[1]=3 (GetReportData)
+                let length = REPORT_DATA_PAYLOAD_LEN as u32;
+                
+                if data_buffer.len() < HEADER_LEN + REPORT_DATA_PAYLOAD_LEN {
+                    error!(
+                        "waitforrequest buffer too small for GetReportData: have={} need={}",
+                        data_buffer.len(),
+                        HEADER_LEN + REPORT_DATA_PAYLOAD_LEN
+                    );
+                    return Err(TdVmcallError::Other);
+                }
+                
+                data_buffer[0..8].copy_from_slice(&status.to_le_bytes());
+                data_buffer[8..12].copy_from_slice(&length.to_le_bytes());
+
+                // Fill ReportInfo payload
+                let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + REPORT_DATA_PAYLOAD_LEN];
+                
+                // mig_request_id
+                payload[0..8].copy_from_slice(&request_id.to_le_bytes());
+                // reportdata [u8; 64]
+                payload[8..72].copy_from_slice(&reportdata);
+
+                log::info!(
+                    "tdvmcall_migtd_waitforrequest: GetReportData request_id={} reportdata[0..8]={:02x?}",
+                    request_id, &reportdata[0..8]
+                );
+            }
+            EmuMigRequest::EnableLogArea {
+                request_id,
+                log_max_level,
+            } => {
+                // DataStatusOperation::EnableLogArea = 4
+                let status = 0x0000_0000_0000_0401u64; // byte[0]=1 (success), byte[1]=4 (EnableLogArea)
+                let length = ENABLE_LOG_AREA_PAYLOAD_LEN as u32;
+                
+                if data_buffer.len() < HEADER_LEN + ENABLE_LOG_AREA_PAYLOAD_LEN {
+                    error!(
+                        "waitforrequest buffer too small for EnableLogArea: have={} need={}",
+                        data_buffer.len(),
+                        HEADER_LEN + ENABLE_LOG_AREA_PAYLOAD_LEN
+                    );
+                    return Err(TdVmcallError::Other);
+                }
+                
+                data_buffer[0..8].copy_from_slice(&status.to_le_bytes());
+                data_buffer[8..12].copy_from_slice(&length.to_le_bytes());
+
+                // Fill EnableLogAreaInfo payload
+                let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + ENABLE_LOG_AREA_PAYLOAD_LEN];
+                
+                // mig_request_id
+                payload[0..8].copy_from_slice(&request_id.to_le_bytes());
+                // log_max_level
+                payload[8] = log_max_level;
+                // reserved [7 bytes]
+                for b in &mut payload[9..16] {
+                    *b = 0;
+                }
+
+                log::info!(
+                    "tdvmcall_migtd_waitforrequest: EnableLogArea request_id={} log_max_level={}",
+                    request_id, log_max_level
+                );
+            }
         }
-        // target_td_uuid [u64; 4] - 32 bytes
-        let mut off = 16usize;
-        for v in st.target_td_uuid.iter() {
-            payload[off..off + 8].copy_from_slice(&v.to_le_bytes());
-            off += 8;
-        }
-        // binding_handle
-        payload[48..56].copy_from_slice(&st.binding_handle.to_le_bytes());
 
         // Signal completion via interrupt
         intr::trigger(interrupt);
@@ -364,23 +502,56 @@ pub fn tdvmcall_migtd_waitforrequest(
 /// TCP emulation for tdvmcall_migtd_reportstatus  
 pub fn tdvmcall_migtd_reportstatus(
     mig_request_id: u64,
-    pre_migration_status: u8,
+    reportstatus: u64,
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
+    // Extract pre_migration_status from the reportstatus bitfield (lower byte)
+    let pre_migration_status = (reportstatus & 0xFF) as u8;
+    
     log::info!(
         "tdvmcall_migtd_reportstatus: request_id={} status={} interrupt=0x{:02x}",
         mig_request_id, pre_migration_status, interrupt
     );
     
-    // Parse current buffer data (we don't use the payload in status report)
-    let (_status, _length, _payload) = parse_ghci_buffer(data_buffer);
+    // Parse current buffer data to see what's being reported
+    let (_status, length, payload_slice) = parse_ghci_buffer(data_buffer);
+    
+    log::info!(
+        "tdvmcall_migtd_reportstatus: data_buffer length={}, payload length={}",
+        data_buffer.len(), length
+    );
+    
+    // Clone the payload to avoid borrow issues
+    let payload_copy = payload_slice.to_vec();
+    
+    if length > 0 && payload_copy.len() > 0 {
+        // Log information about the payload being returned
+        let display_len = core::cmp::min(payload_copy.len(), 64);
+        log::info!(
+            "tdvmcall_migtd_reportstatus: returning {} bytes of data (first {} bytes): {:02x?}",
+            payload_copy.len(), display_len, &payload_copy[0..display_len]
+        );
+        
+        // If it looks like a TD report (1024 bytes), show some key fields
+        if payload_copy.len() >= 1024 {
+            log::info!("tdvmcall_migtd_reportstatus: TD report detected (1024 bytes)");
+            // Report type is at offset 0
+            log::info!("  Report type: 0x{:02x}", payload_copy[0]);
+            // Report data is at offset 112 (after MAC)
+            if payload_copy.len() >= 176 {
+                log::info!("  Report data (first 32 bytes): {:02x?}", &payload_copy[112..144]);
+            }
+        }
+    } else {
+        log::info!("tdvmcall_migtd_reportstatus: no payload data (empty response)");
+    }
     
     // For now, we'll simulate a successful status report
     // In a real implementation, this could send status over TCP if needed
     
-    // Update buffer with success status
-    format_ghci_buffer(data_buffer, 1, &[]); // Status 1 = success
+    // Update buffer with success status (preserve the existing payload)
+    format_ghci_buffer(data_buffer, 1, &payload_copy); // Status 1 = success
     
     // Emulate VMM signaling back to the TD that reportstatus completed
     log::info!("tdvmcall_migtd_reportstatus: triggering interrupt 0x{:02x}", interrupt);
