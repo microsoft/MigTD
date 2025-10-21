@@ -10,7 +10,7 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
-use log::{debug, info};
+use log::{error, info};
 use migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT;
 use migtd::migration::data::MigrationInformation;
 use migtd::migration::session::*;
@@ -74,19 +74,51 @@ pub fn runtime_main() {
 
     #[cfg(feature = "test_get_quote")]
     {
-        let td_report = match tdx_tdcall::tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE]) {
+        let td_report = match tdx_tdcall::tdreport::tdcall_report(
+            &[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE],
+        ) {
             Ok(report) => report,
             Err(e) => {
-                debug!("Failed to get TD report: {:?}", e);
+                error!("Failed to get TD report: {:?}\n", e);
                 return;
             }
         };
-        info!("td_report: {:?}\n", td_report.as_bytes());
+        info!("td_report: {:?}\n", td_report);
 
-        let td_quote = match attestation::get_quote(td_report.as_bytes()){
+        let td_quote = match attestation::get_quote(td_report.as_bytes()) {
             Ok(quote) => quote,
             Err(e) => {
-                debug!("Failed to get quote: {:?}", e);
+                error!("Failed to get quote - Error: {:?}\n", e);
+                error!("TD report size: {} bytes\n", td_report.as_bytes().len());
+                error!(
+                    "First 32 bytes of TD report: {:02x?}",
+                    &td_report.as_bytes()[..32.min(td_report.as_bytes().len())]
+                );
+
+                // Log the specific error type
+                match e {
+                    attestation::Error::GetQuote => error!(
+                        "Error type: GetQuote - Failed to obtain quote from attestation service\n"
+                    ),
+                    attestation::Error::InitHeap => {
+                        error!("Error type: InitHeap - Heap initialization failed\n")
+                    }
+                    attestation::Error::OutOfMemory => {
+                        error!("Error type: OutOfMemory - Insufficient memory\n")
+                    }
+                    attestation::Error::InvalidOutput => {
+                        error!("Error type: InvalidOutput - Invalid output buffer")
+                    }
+                    attestation::Error::InvalidQuote => {
+                        error!("Error type: InvalidQuote - Quote validation failed\n")
+                    }
+                    attestation::Error::VerifyQuote => {
+                        error!("Error type: VerifyQuote - Quote verification failed\n")
+                    }
+                    attestation::Error::InvalidRootCa => {
+                        error!("Error type: InvalidRootCa - Root CA certificate invalid\n")
+                    }
+                }
                 return;
             }
         };

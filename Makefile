@@ -17,6 +17,7 @@ IGVM_FEATURES_GET_QUOTE ?= $(IGVM_FEATURES_BASE),test_get_quote
 .PHONY: build-igvm-accept build-igvm-accept-all build-igvm-reject build-igvm-reject-all
 .PHONY: generate-hash-accept-all-tls build-igvm-accept-all-tls build-igvm-accept-all-tls-all
 .PHONY: pre-build build-igvm generate-hash build-igvm-all
+.PHONY: build-igvm-get-quote
 
 .DEFAULT_GOAL := build-igvm-all
 

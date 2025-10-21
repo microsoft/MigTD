@@ -77,7 +77,10 @@ fn set_vmm_notification() -> bool {
 
 fn wait_for_quote_completion(notify_registered: bool, buffer: &[u8]) -> Result<(), AttestLibError> {
     // If the VMM notification is successfully registered, wait for VMM injecting the interrupt.
-    log::info!("wait_for_quote_completion: notify_registered = {}\n", notify_registered);
+    log::info!(
+        "wait_for_quote_completion: notify_registered = {}\n",
+        notify_registered
+    );
     if notify_registered {
         wait_for_vmm_notification();
         log::info!("wait_for_vmm_notification: completed\n");
