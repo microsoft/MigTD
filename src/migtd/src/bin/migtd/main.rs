@@ -72,19 +72,20 @@ pub fn runtime_main() {
     // Measure the input data
     do_measurements();
 
-    #[cfg(feature = "test_get_quote")]
-    {
-        let td_report = match tdx_tdcall::tdreport::tdcall_report(
-            &[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE],
-        ) {
+    let td_report =
+        match tdx_tdcall::tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE])
+        {
             Ok(report) => report,
             Err(e) => {
                 error!("Failed to get TD report: {:?}\n", e);
                 return;
             }
         };
-        info!("td_report: {:?}\n", td_report);
+    info!("td_report: {:?}\n", td_report);
+    print_td_info_hash(&td_report.td_info);
 
+    #[cfg(feature = "test_get_quote")]
+    {
         let td_quote = match attestation::get_quote(td_report.as_bytes()) {
             Ok(quote) => quote,
             Err(e) => {
@@ -125,12 +126,6 @@ pub fn runtime_main() {
         info!("td_quote: {:?}\n", td_quote);
     }
 
-    #[cfg(not(feature = "test_get_quote"))]
-    {
-        // calculate the hash of the TD info and log it
-        print_td_info_hash();
-    }
-
     migration::event::register_callback();
 
     // Query the capability of VMM
@@ -166,12 +161,7 @@ pub fn do_measurements() {
     get_ca_and_measure(event_log);
 }
 
-fn print_td_info_hash() {
-    let tdx_report = tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE])
-        .expect("Failed to get TD report");
-    info!("tdx_report: {:?}\n", tdx_report);
-
-    let td_info = tdx_report.td_info;
+fn print_td_info_hash(td_info: &tdreport::TdInfo) {
     info!("td_info: {:?}\n", td_info);
 
     let mut hasher = Sha384::new();

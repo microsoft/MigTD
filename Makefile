@@ -1,6 +1,6 @@
 AZCVMEMU_FEATURES ?= AzCVMEmu
 IGVM_FILE ?= target/release/migtd.igvm
-LOG_LEVEL ?= trace
+LOG_LEVEL ?= info
 # Common features for IGVM images
 IGVM_FEATURES_BASE ?= vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic
 # test_accept_all feature skips policy verification, bypasses RATLS security
@@ -17,7 +17,7 @@ IGVM_FEATURES_GET_QUOTE ?= $(IGVM_FEATURES_BASE),test_get_quote
 .PHONY: build-igvm-accept build-igvm-accept-all build-igvm-reject build-igvm-reject-all
 .PHONY: generate-hash-accept-all-tls build-igvm-accept-all-tls build-igvm-accept-all-tls-all
 .PHONY: pre-build build-igvm generate-hash build-igvm-all
-.PHONY: build-igvm-get-quote
+.PHONY: build-igvm-get-quote build-igvm-get-quote-all
 
 .DEFAULT_GOAL := build-igvm-all
 
@@ -30,7 +30,7 @@ help:
 	@echo "  build-igvm-accept-all           - Build IGVM with accept all policy"
 	@echo "  build-igvm-reject-all           - Build IGVM with reject all policy"
 	@echo "  build-igvm-accept-all-tls-all   - Build IGVM with disabled RA and accept all policy with TLS"
-	@echo "  build-igvm-get-quote            - Build IGVM that only calls get quote and returns."
+	@echo "  build-igvm-get-quote-all        - Build IGVM that only calls get quote and returns."
 
 build-AzCVMEmu:
 	cargo build --no-default-features --features $(AZCVMEMU_FEATURES)
@@ -87,4 +87,4 @@ build-igvm-all: pre-build build-igvm generate-hash
 build-igvm-get-quote:
 	cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE)
 
-build-igvm-get-quote-all: pre-build build-igvm-get-quote generate-hash-accept-all-tls
+build-igvm-get-quote-all: pre-build build-igvm-get-quote generate-hash
