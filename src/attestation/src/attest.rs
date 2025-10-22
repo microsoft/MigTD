@@ -33,6 +33,7 @@ pub fn attest_init_heap() -> Option<usize> {
 pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
     let mut quote = vec![0u8; TD_QUOTE_SIZE];
     let mut quote_size = TD_QUOTE_SIZE as u32;
+
     unsafe {
         let result = get_quote_inner(
             td_report.as_ptr() as *const c_void,
@@ -40,10 +41,23 @@ pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
             quote.as_mut_ptr() as *mut c_void,
             &mut quote_size as *mut u32,
         );
+
         if result != AttestLibError::Success {
+            log::info!(
+                "get_quote_inner failed: {:?}, quote_size = {}\n",
+                result,
+                quote_size
+            );
             return Err(Error::GetQuote);
         }
     }
+
+    log::info!(
+        "get_quote_inner returned quote_size = {}, {:?}\n",
+        quote_size,
+        quote
+    );
+
     quote.truncate(quote_size as usize);
     Ok(quote)
 }

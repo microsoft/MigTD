@@ -46,10 +46,12 @@ pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i3
     }
 
     if let Err(err) = wait_for_quote_completion(notify_registered, shared.as_bytes()) {
+        log::info!("wait_for_quote_completion failed: {:?}\n", err);
         return err as i32;
     }
     input.copy_from_slice(&shared.as_bytes()[..len as usize]);
 
+    log::info!("servtd_get_quote returned success\n");
     // Success
     0
 }
@@ -75,8 +77,13 @@ fn set_vmm_notification() -> bool {
 
 fn wait_for_quote_completion(notify_registered: bool, buffer: &[u8]) -> Result<(), AttestLibError> {
     // If the VMM notification is successfully registered, wait for VMM injecting the interrupt.
+    log::info!(
+        "wait_for_quote_completion: notify_registered = {}\n",
+        notify_registered
+    );
     if notify_registered {
         wait_for_vmm_notification();
+        log::info!("wait_for_vmm_notification: completed\n");
         return Ok(());
     }
 
@@ -84,13 +91,17 @@ fn wait_for_quote_completion(notify_registered: bool, buffer: &[u8]) -> Result<(
     while status_code == GET_QUOTE_STATUS_IN_FLIGHT {
         status_code = match buffer.get(GET_QUOTE_STATUS_FIELD) {
             Some(bytes) => u64::from_le_bytes(bytes.try_into().unwrap()),
-            None => return Err(AttestLibError::InvalidParameter),
+            None => {
+                log::info!("returning AttestLibError::InvalidParameter\n");
+                return Err(AttestLibError::InvalidParameter);
+            }
         };
     }
 
     if status_code == GET_QUOTE_STATUS_SUCCESS {
         Ok(())
     } else {
+        log::info!("returning AttestLibError::QuoteFailure\n");
         Err(AttestLibError::QuoteFailure)
     }
 }

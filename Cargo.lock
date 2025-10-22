@@ -133,6 +133,7 @@ version = "0.1.0"
 dependencies = [
  "crypto",
  "der",
+ "log",
  "policy",
  "spin 0.9.8",
  "td-payload",

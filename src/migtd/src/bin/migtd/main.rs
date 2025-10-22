@@ -10,7 +10,7 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
-use log::{debug, info};
+use log::{error, info};
 use migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT;
 use migtd::migration::data::MigrationInformation;
 use migtd::migration::session::*;
@@ -53,6 +53,7 @@ pub extern "C" fn main() {
     {
         td_benchmark::StackProfiling::init(0x5a5a_5a5a_5a5a_5a5a, 0xd000);
     }
+
     runtime_main()
 }
 
@@ -71,8 +72,59 @@ pub fn runtime_main() {
     // Measure the input data
     do_measurements();
 
-    // calculate the hash of the TD info and log it
-    print_td_info_hash();
+    let td_report =
+        match tdx_tdcall::tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE])
+        {
+            Ok(report) => report,
+            Err(e) => {
+                error!("Failed to get TD report: {:?}\n", e);
+                return;
+            }
+        };
+    info!("td_report: {:?}\n", td_report);
+    print_td_info_hash(&td_report.td_info);
+
+    #[cfg(feature = "test_get_quote")]
+    {
+        let td_quote = match attestation::get_quote(td_report.as_bytes()) {
+            Ok(quote) => quote,
+            Err(e) => {
+                error!("Failed to get quote - Error: {:?}\n", e);
+                error!("TD report size: {} bytes\n", td_report.as_bytes().len());
+                error!(
+                    "First 32 bytes of TD report: {:02x?}",
+                    &td_report.as_bytes()[..32.min(td_report.as_bytes().len())]
+                );
+
+                // Log the specific error type
+                match e {
+                    attestation::Error::GetQuote => error!(
+                        "Error type: GetQuote - Failed to obtain quote from attestation service\n"
+                    ),
+                    attestation::Error::InitHeap => {
+                        error!("Error type: InitHeap - Heap initialization failed\n")
+                    }
+                    attestation::Error::OutOfMemory => {
+                        error!("Error type: OutOfMemory - Insufficient memory\n")
+                    }
+                    attestation::Error::InvalidOutput => {
+                        error!("Error type: InvalidOutput - Invalid output buffer")
+                    }
+                    attestation::Error::InvalidQuote => {
+                        error!("Error type: InvalidQuote - Quote validation failed\n")
+                    }
+                    attestation::Error::VerifyQuote => {
+                        error!("Error type: VerifyQuote - Quote verification failed\n")
+                    }
+                    attestation::Error::InvalidRootCa => {
+                        error!("Error type: InvalidRootCa - Root CA certificate invalid\n")
+                    }
+                }
+                return;
+            }
+        };
+        info!("td_quote: {:?}\n", td_quote);
+    }
 
     migration::event::register_callback();
 
@@ -109,11 +161,7 @@ pub fn do_measurements() {
     get_ca_and_measure(event_log);
 }
 
-fn print_td_info_hash() {
-    let tdx_report = tdreport::tdcall_report(&[0u8; tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE]);
-    info!("tdx_report: {:?}\n", tdx_report);
-
-    let td_info = tdx_report.unwrap().td_info;
+fn print_td_info_hash(td_info: &tdreport::TdInfo) {
     info!("td_info: {:?}\n", td_info);
 
     let mut hasher = Sha384::new();
