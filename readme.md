@@ -34,7 +34,7 @@ rustup target add x86_64-unknown-none
 
 4. [Attestation Library Prerequisites](https://github.com/intel/SGXDataCenterAttestationPrimitives/tree/tdx_1.5_dcap_mvp_23q1/QuoteGeneration/quote_wrapper/td_migration#prerequisites)
 
-* Ensure that you have the following required operation systems: 
+* Ensure that you have the following required operation systems:
   * Red Hat Enterprise Linux Server release 8.5 64bits
   * CentOS Stream 8 64bit
   * Ubuntu* 22.04 LTS Server 64bits
@@ -126,6 +126,10 @@ To generate IGVM format using vmcall-raw for the guest-host communication with l
 ```
 cargo image --no-default-features --features vmcall-raw,stack-guard,main,test_disable_ra_and_accept_all,vmcall-interrupt,oneshot-apic --log-level info --image-format igvm
 ```
+
+### Policy V2
+
+Please refer to [policy_v2.md](doc/policy_v2.md) for policy v2 generation and image setup.
 
 ### Build for Azure CVM Emulation (AzCVMEmu)
 
@@ -313,8 +317,8 @@ echo "qom-set /objects/tdx0/ vsockport 0" | nc -U /tmp/qmp-sock-src
 
 ### MigTD binding and pre-binding
 
-Migration TD binding (using TDH.SERVTD.BIND) must happen before a migration session can start. This may happen 
-during TD build, before the measurement has been finalized (by TDH.MR.FINALIZE). Alternatively, pre-binding (using 
+Migration TD binding (using TDH.SERVTD.BIND) must happen before a migration session can start. This may happen
+during TD build, before the measurement has been finalized (by TDH.MR.FINALIZE). Alternatively, pre-binding (using
 TDH.SERVTD.PREBIND) can be done during TD build, and actual binding can happen later.
 
 Process ID of MigTD is used to bind a MigTD to a user TD during launch time (taking source user TD as example):
@@ -390,8 +394,8 @@ echo "qom-set /objects/tdx0/ migtd-pid $(pgrep migtd-dst)" | nc -U /tmp/qmp-sock
 
 ### Network connection timeout
 
-Communication channel between two MigTDs relies on the network connection built by host. MigTD 
-sets a timeout for network connection, which requires the connection needs to be setup within 8 
+Communication channel between two MigTDs relies on the network connection built by host. MigTD
+sets a timeout for network connection, which requires the connection needs to be setup within 8
 seconds after triggering the pre-migration. Please note that the timeout duration is not
 configurable.
 
