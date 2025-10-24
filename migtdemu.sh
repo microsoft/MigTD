@@ -21,6 +21,7 @@ DEFAULT_REQUEST_TYPE="migration"
 USE_SUDO=true
 RUN_BOTH=false
 SKIP_RA=false
+EXTRA_FEATURES=""
 DEFAULT_RUST_BACKTRACE="1"
 # Default RUST_LOG: verbose in debug, info in release; can be overridden by env
 DEFAULT_RUST_LOG_DEBUG="debug"
@@ -52,6 +53,7 @@ show_usage() {
     echo "  --skip-ra                    Skip remote attestation (uses mock TD reports/quotes for non-TDX environments)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
+    echo "  --features FEATURES          Add extra cargo features (comma-separated, e.g., 'spdm_attestation,feature2')"
     echo "  --log-level LEVEL            Set Rust log level (trace, debug, info, warn, error) (default: debug for debug builds, info for release builds)"
     echo "  -h, --help                   Show this help message"
     echo
@@ -71,6 +73,7 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
+    echo "  $0 --features spdm_attestation       # Build with extra SPDM attestation feature"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
     echo
@@ -135,13 +138,20 @@ maybe_force_sudo_due_to_tpm() {
 build_migtd() {
     local build_mode="$1"
     local skip_ra="$2"
+    local extra_features="$3"
     
     local features="AzCVMEmu"
     if [[ "$skip_ra" == true ]]; then
         features="AzCVMEmu,test_disable_ra_and_accept_all"
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + skip RA features (mock attestation)...${NC}"
+    fi
+    if [[ -n "$extra_features" ]]; then
+        features="${features},${extra_features}"
+    fi
+    
+    if [[ "$skip_ra" == true ]]; then
+        echo -e "${BLUE}Building MigTD in $build_mode mode with features: $features (mock attestation)...${NC}"
     else
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu features...${NC}"
+        echo -e "${BLUE}Building MigTD in $build_mode mode with features: $features...${NC}"
     fi
     
     if [[ "$build_mode" == "debug" ]]; then
@@ -219,6 +229,10 @@ while [[ $# -gt 0 ]]; do
             USE_SUDO=false
             shift
             ;;
+        --features)
+            EXTRA_FEATURES="$2"
+            shift 2
+            ;;
         --log-level)
             CUSTOM_LOG_LEVEL="$2"
             shift 2
@@ -263,7 +277,7 @@ fi
 cd "$(dirname "$0")"
 
 # Always build MigTD
-build_migtd "$BUILD_MODE" "$SKIP_RA"
+build_migtd "$BUILD_MODE" "$SKIP_RA" "$EXTRA_FEATURES"
 
 # Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
