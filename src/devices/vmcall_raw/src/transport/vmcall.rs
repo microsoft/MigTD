@@ -21,7 +21,7 @@ use tdx_tdcall::tdx;
 #[cfg(feature = "AzCVMEmu")]
 use tdx_tdcall_emu::tdx;
 
-const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 16;
+const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 160;
 const VMCALL_VECTOR: u8 = 0x52;
 
 lazy_static! {
