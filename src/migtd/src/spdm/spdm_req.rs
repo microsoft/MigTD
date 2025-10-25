@@ -249,7 +249,9 @@ async fn send_and_receive_pub_key(spdm_requester: &mut RequesterContext) -> Spdm
     cnt += pub_key_element
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-    cnt += writer.extend_from_slice(my_pub_key.as_slice()).unwrap();
+    cnt += writer
+        .extend_from_slice(my_pub_key.as_slice())
+        .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
     let vdm_payload = VendorDefinedReqPayloadStruct {
         req_length: cnt as u32,
@@ -412,7 +414,9 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     cnt += quote_element
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-    cnt += writer.extend_from_slice(quote_src.as_slice()).unwrap();
+    cnt += writer
+        .extend_from_slice(quote_src.as_slice())
+        .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
     //event log src
     let event_log = get_event_log().ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
@@ -423,7 +427,9 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     cnt += event_log_element
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-    cnt += writer.extend_from_slice(event_log).unwrap();
+    cnt += writer
+        .extend_from_slice(event_log)
+        .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
     //mig policy src
     let mig_policy = get_policy().unwrap();
@@ -436,7 +442,9 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     cnt += mig_policy_element
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-    cnt += writer.extend_from_slice(&mig_policy_hash).unwrap();
+    cnt += writer
+        .extend_from_slice(&mig_policy_hash)
+        .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
     let vdm_payload = VendorDefinedReqPayloadStruct {
         req_length: cnt as u32,
@@ -502,15 +510,25 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
     let quote_dst = reader.take(vdm_element.length as usize).unwrap();
-    let res = attestation::verify_quote(quote_dst);
-    if res.is_err() {
-        error!("mutual attestation failed, end the session!\n");
-        let session = spdm_requester
-            .common
-            .get_session_via_id(session_id)
-            .unwrap();
-        session.teardown();
-        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+    {
+        let res = attestation::verify_quote(quote_dst);
+        if res.is_err() {
+            error!("mutual attestation failed, end the session!\n");
+            let session = spdm_requester
+                .common
+                .get_session_via_id(session_id)
+                .unwrap();
+            session.teardown();
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
+    }
+
+    #[cfg(feature = "test_disable_ra_and_accept_all")]
+    {
+        log::warn!("test_disable_ra_and_accept_all: Skipping quote verification in SPDM requester. This is NOT secure for production use.\n");
+        let _ = quote_dst; // mark as used
     }
 
     //event log dst
