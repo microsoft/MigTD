@@ -71,7 +71,7 @@ pub const STREAM_SOCKET_INFO_HOB_GUID: Guid = Guid::from_fields(
 );
 
 #[repr(C)]
-#[derive(Debug, Pread, Pwrite)]
+#[derive(Debug, Pread, Pwrite, Clone, Default)]
 pub struct MigtdMigrationInformation {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
