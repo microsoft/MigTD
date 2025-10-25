@@ -87,13 +87,54 @@ fn initialize_emulation() {
     let policy_path: &'static str = Box::leak(policy_file_path.clone().into_boxed_str());
     let root_ca_path: &'static str = Box::leak(root_ca_file_path.clone().into_boxed_str());
 
-    let result =
-        td_shim_interface_emu::init_file_based_emulation_with_real_files(policy_path, root_ca_path);
+    #[cfg(feature = "policy_v2")]
+    let result = {
+        let policy_issuer_chain_file_path = env::var("MIGTD_POLICY_ISSUER_CHAIN_FILE")
+            .map_err(|_| {
+                log::error!("Policy v2 requires a policy issuer chain file but MIGTD_POLICY_ISSUER_CHAIN_FILE was not set");
+            })
+            .unwrap_or_else(|_| process::exit(1));
+
+        log::info!(
+            "MIGTD_POLICY_ISSUER_CHAIN_FILE set to: {}\n",
+            policy_issuer_chain_file_path
+        );
+
+        // Verify chain file exists
+        if !std::path::Path::new(&policy_issuer_chain_file_path).exists() {
+            println!(
+                "Policy issuer chain file not found: {}",
+                policy_issuer_chain_file_path
+            );
+            print_usage();
+            process::exit(1);
+        }
+
+        // Initialize with policy chain
+        let chain_path_static: &'static str =
+            Box::leak(policy_issuer_chain_file_path.into_boxed_str());
+        td_shim_interface_emu::init_file_based_emulation_with_policy_chain(
+            policy_path,
+            root_ca_path,
+            chain_path_static,
+        )
+    };
+
+    #[cfg(not(feature = "policy_v2"))]
+    let result = {
+        td_shim_interface_emu::init_file_based_emulation_with_real_files(policy_path, root_ca_path)
+    };
 
     if result {
         log::info!("File-based emulation initialized with real file access. Files will be loaded on demand from:\n");
         log::info!("  Policy: {}\n", policy_file_path);
         log::info!("  Root CA: {}\n", root_ca_file_path);
+
+        #[cfg(feature = "policy_v2")]
+        {
+            let chain_file = env::var("MIGTD_POLICY_ISSUER_CHAIN_FILE").ok();
+            log::info!("  Policy Issuer Chain: {:?}\n", chain_file);
+        }
     } else {
         log::error!("Failed to initialize file-based emulation\n");
         std::process::exit(1);
@@ -378,6 +419,7 @@ fn print_usage() {
     println!("Required Environment Variables:");
     println!("  MIGTD_POLICY_FILE          Path to the migration policy file");
     println!("  MIGTD_ROOT_CA_FILE         Path to the root CA certificate file");
+    println!("  MIGTD_POLICY_ISSUER_CHAIN_FILE Path to the policy issuer certificate chain file");
     println!("  Note: Accessing a vTPM (e.g., /dev/tpmrm0) may require sudo or proper device permissions.");
     println!("        If using TPM2-TSS, you may need to export TSS2_TCTI=device:/dev/tpmrm0");
     println!();
