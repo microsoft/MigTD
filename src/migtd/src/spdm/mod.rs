@@ -160,9 +160,6 @@ impl Codec for SpdmAppContextData {
         #[cfg(not(feature = "vmcall-raw"))]
         {
             size += self.migration_info.mig_policy_id.encode(bytes)?;
-        }
-        #[cfg(not(feature = "vmcall-raw"))]
-        {
             size += self.migration_info.communication_id.encode(bytes)?;
         }
 
@@ -180,9 +177,6 @@ impl Codec for SpdmAppContextData {
         #[cfg(not(feature = "vmcall-raw"))]
         {
             migration_info.mig_policy_id = u64::read(reader)?;
-        }
-        #[cfg(not(feature = "vmcall-raw"))]
-        {
             migration_info.communication_id = u64::read(reader)?;
         }
 
