@@ -13,7 +13,6 @@ attestation = { path = "../attestation", default-features = false, features = ["
 
 [dependencies]
 bitfield = "0.13.2"
-bitfield-struct = "0.11"
 anyhow = { version = "1.0.68", default-features = false }
 async_io = { path = "../async/async_io" }
 async_runtime = { path = "../async/async_runtime" }
@@ -44,6 +43,7 @@ vmcall_raw = { path="../devices/vmcall_raw", optional = true }
 x86 = "0.47.0"
 x86_64 = { version = "0.14", default-features = false, features = ["instructions"] }
 zerocopy = { version = "0.7", features = ["derive"] }
+bitfield-struct = "0.11"
 
 # AzCVMEmu optional deps (grouped)
 tdx-tdcall-emu = { path = "../../deps/td-shim-AzCVMEmu/tdx-tdcall", optional = true }
@@ -55,6 +55,13 @@ tokio = { version = "1.0", features = ["rt", "rt-multi-thread"], optional = true
 
 minicov = { version = "0.2", default-features = false, optional = true }
 td-benchmark = { path = "../../deps/td-shim/devtools/td-benchmark", default-features = false,  optional = true }
+
+spdmlib = {path = "../../deps/spdm-rs/spdmlib", default-features = false, features = ["spdm-ring", "chunk-cap", "mut-auth", "hashed-transcript-data"]}
+codec = {path= "../../deps/spdm-rs/codec"}
+maybe-async = "0.2.7"
+async-trait = "0.1.71"
+zeroize = { version = "1.5.0", features = ["zeroize_derive"]}
+ring = { version = "0.17.14" }
 
 [features]
 default = ["virtio-vsock"]
@@ -72,6 +79,7 @@ oneshot-apic = []
 test_heap_size = ["td-benchmark", "td-payload/test_heap_size"]
 test_stack_size = ["td-benchmark"]
 test_disable_ra_and_accept_all = ["attestation/test", "tdx-tdcall-emu?/test_disable_ra_and_accept_all"] # Dangerous: can only be used for test purpose to bypass the remote attestation
+spdm_attestation = ["main"]
 AzCVMEmu = [
 	"main",                     # Include main feature by default
 	"attestation/AzCVMEmu",
@@ -86,3 +94,6 @@ AzCVMEmu = [
 	"env_logger",
 	"tokio",
 ]
+
+[patch.crates-io]
+sys_time = { path = "src/std-support/sys_time" }
