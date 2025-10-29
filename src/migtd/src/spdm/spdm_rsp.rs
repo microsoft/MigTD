@@ -317,8 +317,10 @@ pub fn handle_exchange_mig_attest_info_req(
     let quote_dst = gen_quote_spdm(&report_data[..report_data_prefix_len + th1_len])
         .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
 
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     let res = attestation::verify_quote(quote_dst.as_slice());
     //  The session MUST be terminated immediately, if the mutual attestation failure
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     if res.is_err() {
         error!("mutual attestation failed, end the session!\n");
         let session = responder_context
@@ -328,7 +330,10 @@ pub fn handle_exchange_mig_attest_info_req(
         session.teardown();
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
-    #[cfg(not(feature = "policy_v2"))]
+    #[cfg(all(
+        not(feature = "test_disable_ra_and_accept_all"),
+        not(feature = "policy_v2")
+    ))]
     let verified_report_local = res.unwrap();
 
     //quote src
@@ -341,8 +346,11 @@ pub fn handle_exchange_mig_attest_info_req(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
     let quote_src = reader.take(vdm_element.length as usize).unwrap();
+
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     let res = attestation::verify_quote(quote_src);
     //  The session MUST be terminated immediately, if the mutual attestation failure
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     if res.is_err() {
         error!("mutual attestation failed, end the session!\n");
         let session = responder_context
@@ -352,7 +360,10 @@ pub fn handle_exchange_mig_attest_info_req(
         session.teardown();
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
-    #[cfg(not(feature = "policy_v2"))]
+    #[cfg(all(
+        not(feature = "test_disable_ra_and_accept_all"),
+        not(feature = "policy_v2")
+    ))]
     let verified_report_peer = res.unwrap();
 
     //event log src
@@ -369,7 +380,10 @@ pub fn handle_exchange_mig_attest_info_req(
     #[cfg(feature = "policy_v2")]
     let _event_log_src = reader.take(vdm_element.length as usize).unwrap();
 
-    #[cfg(not(feature = "policy_v2"))]
+    #[cfg(all(
+        not(feature = "test_disable_ra_and_accept_all"),
+        not(feature = "policy_v2")
+    ))]
     {
         let policy_check_result = mig_policy::authenticate_policy(
             false,
