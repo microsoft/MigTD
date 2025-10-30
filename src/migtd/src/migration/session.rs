@@ -718,10 +718,6 @@ async fn pre_session_data_exchange<T: AsyncRead + AsyncWrite + Unpin>(
 
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
-    use core::time::Duration;
-
-    const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-
     #[cfg(feature = "policy_v2")]
     let mut transport;
     #[cfg(not(feature = "policy_v2"))]

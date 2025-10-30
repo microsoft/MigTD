@@ -69,11 +69,11 @@ pub fn runtime_main() {
     handle_pre_mig();
 }
 
-pub fn basic_info() {
+fn basic_info() {
     info!("MigTD Version - {}\n", MIGTD_VERSION);
 }
 
-pub fn do_measurements() {
+fn do_measurements() {
     // Get the event log recorded by firmware
     let event_log = event_log::get_event_log_mut().expect("Failed to get the event log");
 
