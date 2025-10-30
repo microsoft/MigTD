@@ -84,6 +84,7 @@ pub enum Error {
 
 const TD_QUOTE_SIZE: usize = 0x2000;
 const SERVTD_REQ_BUF_SIZE: usize = 16 * 4 * 1024; // 16 pages
+
 struct ServtdTdxQuoteHdr {
     /* Quote version, filled by TD */
     version: u64,
@@ -130,7 +131,7 @@ pub enum TdxAttestError {
 
 impl TryFrom<i32> for TdxAttestError {
     type Error = &'static str;
-    
+
     fn try_from(code: i32) -> Result<Self, Self::Error> {
         match code {
             0x0000 => Ok(TdxAttestError::TdxAttestSuccess),
@@ -206,10 +207,8 @@ pub fn get_quote_internal(td_report: &[u8]) -> Result<Vec<u8>, TdxAttestError> {
         log::info!("  in_len: ({:?})\n", (*hdr).in_len);
         log::info!("  out_len: ({:?})\n", (*hdr).out_len);
         quote_size = (*hdr).out_len;
-        quote[..quote_size as usize].copy_from_slice(core::slice::from_raw_parts(
-            (*hdr).data.as_ptr() as *const u8,
-            quote_size as usize,
-        ));
+        quote[..quote_size as usize]
+            .copy_from_slice(&get_quote_blob[header_size..header_size + quote_size as usize]);
     };
 
     if servtd_get_quote_ret != 0 {
