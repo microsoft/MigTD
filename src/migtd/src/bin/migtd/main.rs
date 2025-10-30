@@ -206,6 +206,10 @@ pub fn get_quote_internal(td_report: &[u8]) -> Result<Vec<u8>, TdxAttestError> {
         log::info!("  in_len: ({:?})\n", (*hdr).in_len);
         log::info!("  out_len: ({:?})\n", (*hdr).out_len);
         quote_size = (*hdr).out_len;
+        quote[..quote_size as usize].copy_from_slice(core::slice::from_raw_parts(
+            (*hdr).data.as_ptr() as *const u8,
+            quote_size as usize,
+        ));
     };
 
     if servtd_get_quote_ret != 0 {
