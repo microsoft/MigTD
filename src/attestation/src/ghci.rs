@@ -41,9 +41,14 @@ pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i3
 
     let notify_registered = set_vmm_notification();
 
-    if tdvmcall_get_quote(shared.as_mut_bytes()).is_err() {
+    log::info!("ghci.rs servtd_get_quote: Calling tdvmcall_get_quote\n");
+
+    let tdvmcall_get_quote_result = tdvmcall_get_quote(shared.as_mut_bytes());
+    if tdvmcall_get_quote_result.is_err() {
+        log::error!("ghci.rs servtd_get_quote:  tdvmcall_get_quote returned error {:?}\n", tdvmcall_get_quote_result.err());
         return AttestLibError::QuoteFailure as i32;
     }
+    log::info!("ghci.rs servtd_get_quote: tdvmcall_get_quote completed successfully\n");
 
     if let Err(err) = wait_for_quote_completion(notify_registered, shared.as_bytes()) {
         log::info!("wait_for_quote_completion failed: {:?}\n", err);
