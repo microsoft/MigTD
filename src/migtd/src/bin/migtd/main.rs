@@ -128,6 +128,29 @@ pub enum TdxAttestError {
     TdxAttestErrorMax,
 }
 
+impl TryFrom<i32> for TdxAttestError {
+    type Error = &'static str;
+    
+    fn try_from(code: i32) -> Result<Self, Self::Error> {
+        match code {
+            0x0000 => Ok(TdxAttestError::TdxAttestSuccess),
+            0x0001 => Ok(TdxAttestError::TdxAttestErrorUnexpected),
+            0x0002 => Ok(TdxAttestError::TdxAttestErrorInvalidParameter),
+            0x0003 => Ok(TdxAttestError::TdxAttestErrorOutOfMemory),
+            0x0004 => Ok(TdxAttestError::TdxAttestErrorVsockFailure),
+            0x0005 => Ok(TdxAttestError::TdxAttestErrorReportFailure),
+            0x0006 => Ok(TdxAttestError::TdxAttestErrorExtendFailure),
+            0x0007 => Ok(TdxAttestError::TdxAttestErrorNotSupported),
+            0x0008 => Ok(TdxAttestError::TdxAttestErrorQuoteFailure),
+            0x0009 => Ok(TdxAttestError::TdxAttestErrorBusy),
+            0x000a => Ok(TdxAttestError::TdxAttestErrorDeviceFailure),
+            0x000b => Ok(TdxAttestError::TdxAttestErrorInvalidRtmrIndex),
+            0x000c => Ok(TdxAttestError::TdxAttestErrorUnsupportedAttKeyId),
+            _ => Err("Unknown TDX attestation error code"),
+        }
+    }
+}
+
 pub fn get_quote_internal(td_report: &[u8]) -> Result<Vec<u8>, TdxAttestError> {
     let mut quote = vec![0u8; TD_QUOTE_SIZE];
     let mut quote_size = TD_QUOTE_SIZE as u32;
@@ -174,13 +197,6 @@ pub fn get_quote_internal(td_report: &[u8]) -> Result<Vec<u8>, TdxAttestError> {
     let get_quote_blob_ptr = get_quote_blob.as_mut_ptr() as *mut c_void;
     let servtd_get_quote_ret =
         unsafe { servtd_get_quote(get_quote_blob_ptr, SERVTD_REQ_BUF_SIZE as u64) };
-    if servtd_get_quote_ret != 0 {
-        log::error!(
-            "servtd_get_quote failed with error code: {}\n",
-            servtd_get_quote_ret
-        );
-        return Err(TdxAttestError::TdxAttestErrorQuoteFailure);
-    }
 
     unsafe {
         let hdr = get_quote_blob_ptr as *mut ServtdTdxQuoteHdr;
@@ -191,6 +207,14 @@ pub fn get_quote_internal(td_report: &[u8]) -> Result<Vec<u8>, TdxAttestError> {
         log::info!("  out_len: ({:?})\n", (*hdr).out_len);
         quote_size = (*hdr).out_len;
     };
+
+    if servtd_get_quote_ret != 0 {
+        log::error!(
+            "servtd_get_quote failed with error code: {}\n",
+            servtd_get_quote_ret
+        );
+        return Err(TdxAttestError::try_from(servtd_get_quote_ret).unwrap());
+    }
 
     log::info!(
         "get_quote_inner returned quote_size = {}, quote = {:?}\n",

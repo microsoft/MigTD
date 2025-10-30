@@ -41,7 +41,9 @@ pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i3
 
     let notify_registered = set_vmm_notification();
 
-    if tdvmcall_get_quote(shared.as_mut_bytes()).is_err() {
+    let tdvmcall_get_quote_ret = tdvmcall_get_quote(shared.as_mut_bytes());
+    if tdvmcall_get_quote_ret.is_err() {
+        log::info!("tdvmcall_get_quote failed: {:?}\n", tdvmcall_get_quote_ret);
         return AttestLibError::QuoteFailure as i32;
     }
 
