@@ -1,4 +1,6 @@
-// Copyright (c) 2022 Intel Corporation
+// Copyright (c) 2021 Intel Corporation
+// Copyright (c) 2022 Alibaba Cloud
+// Portions Copyright (c) Microsoft Corporation
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
@@ -68,7 +70,8 @@ impl Ccel {
 
     pub fn checksum(&mut self) {
         self.header.checksum = 0;
-        self.header.set_checksum(calculate_checksum(self.as_bytes()));
+        self.header
+            .set_checksum(calculate_checksum(self.as_bytes()));
     }
 }
 

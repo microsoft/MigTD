@@ -140,15 +140,19 @@ build_migtd() {
     local skip_ra="$2"
     local extra_features="$3"
     
-    # Set SPDM_CONFIG for spdmlib build
-    export SPDM_CONFIG="$(pwd)/config/spdm_config.json"
-    
     local features="AzCVMEmu"
     if [[ "$skip_ra" == true ]]; then
         features="AzCVMEmu,test_disable_ra_and_accept_all"
     fi
     if [[ -n "$extra_features" ]]; then
         features="${features},${extra_features}"
+    fi
+    
+    # Set SPDM_CONFIG for spdmlib build only when spdm_attestation feature is used
+    # This prevents unnecessary rebuilds when SPDM is not being used
+    if [[ "$features" == *"spdm_attestation"* ]]; then
+        export SPDM_CONFIG="$(pwd)/config/spdm_config.json"
+        echo -e "${BLUE}Using SPDM config: $SPDM_CONFIG${NC}"
     fi
     
     if [[ "$skip_ra" == true ]]; then

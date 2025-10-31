@@ -1,4 +1,5 @@
-// Copyright (c) 2024 Microsoft Corporation
+// Copyright (c) 2024 Intel Corporation
+// Portions Copyright (c) Microsoft Corporation
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 

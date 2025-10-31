@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft Corporation
+//
+// SPDX-License-Identifier: BSD-2-Clause-Patent
+
 // Interrupt emulation registry for AzCVMEmu.
 // Stores callbacks by vector and allows software-triggered dispatch.
 

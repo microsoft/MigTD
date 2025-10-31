@@ -1,9 +1,9 @@
-// Copyright (c) 2022-2025 Intel Corporation
+// Copyright (c) Microsoft Corporation
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 //! File operations for AzCVMEmu emulation
-//! 
+//!
 //! This module provides file reading functionality that can interface
 //! with the host system's file system in emulated environments.
 
@@ -19,13 +19,13 @@ use std::path::Path;
 pub type FileReader = fn(&str) -> Option<Vec<u8>>;
 
 /// Simple file reader implementation for basic file I/O
-/// 
+///
 /// This function attempts to read a file from the filesystem.
 /// It's designed to work in environments where basic file I/O is available.
 pub fn simple_file_reader(path: &str) -> Option<Vec<u8>> {
     // In a real implementation, this would use the host's file system
     // For demonstration, we'll simulate file reading with some basic logic
-    
+
     // Try to read the file using a simple approach
     // This is a placeholder that would be replaced with actual file I/O
     match path {
@@ -45,13 +45,13 @@ pub fn simple_file_reader(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Read file contents using pattern matching
-/// 
+///
 /// This is a demonstration of how file reading might work in a minimal environment.
 /// In a real implementation, this would use proper file system APIs.
 pub fn pattern_file_reader(path: &str) -> Option<Vec<u8>> {
     // This is a placeholder implementation
     // In a real environment, this would interface with the host OS file system
-    
+
     // For now, return simulated data based on the file path
     match path {
         path if path.contains("policy") => {
@@ -68,7 +68,7 @@ pub fn pattern_file_reader(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Default file reader that provides reasonable test data
-/// 
+///
 /// This reader provides default test data for policy and root CA files
 /// when the actual files are not available or in testing scenarios.
 pub fn default_file_reader(path: &str) -> Option<Vec<u8>> {
@@ -84,7 +84,7 @@ pub fn default_file_reader(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Real file reader implementation using standard library
-/// 
+///
 /// This function reads actual files from the host filesystem when std is available.
 /// It's designed for use in AzCVMEmu environments where standard runtime is available.
 #[cfg(feature = "std")]
@@ -94,7 +94,7 @@ pub fn real_file_reader(path: &str) -> Option<Vec<u8>> {
     if !file_path.exists() || !file_path.is_file() {
         return None;
     }
-    
+
     // Try to read the file
     match fs::read(path) {
         Ok(data) => {
@@ -110,7 +110,7 @@ pub fn real_file_reader(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Real file reader implementation (no-std fallback)
-/// 
+///
 /// When std is not available, this falls back to pattern-based simulation.
 #[cfg(not(feature = "std"))]
 pub fn real_file_reader(path: &str) -> Option<Vec<u8>> {
@@ -119,7 +119,7 @@ pub fn real_file_reader(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Initialize file-based emulation with real file reader
-/// 
+///
 /// This function sets up the emulation with a real file reader that can
 /// access the host filesystem when std feature is enabled.
 pub fn init_with_real_file_reader() {
@@ -127,16 +127,16 @@ pub fn init_with_real_file_reader() {
 }
 
 /// Initialize file-based emulation with real files at specified paths
-/// 
+///
 /// This function loads the policy and root CA files immediately from the filesystem
 /// and stores them in the emulation buffers.
 pub fn init_file_based_emulation_with_real_files(policy_path: &str, root_ca_path: &str) -> bool {
     // Set the file reader first
     crate::td_uefi_pi::fv::set_file_reader(real_file_reader);
-    
+
     // Load the files immediately
     let policy_loaded = crate::td_uefi_pi::fv::load_policy_from_file(policy_path);
     let root_ca_loaded = crate::td_uefi_pi::fv::load_root_ca_from_file(root_ca_path);
-    
+
     policy_loaded && root_ca_loaded
 }
