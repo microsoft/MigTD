@@ -10,6 +10,7 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
+//use core::ffi::c_void;
 use log::{error, info};
 use migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT;
 use migtd::migration::data::MigrationInformation;
@@ -54,7 +55,7 @@ pub extern "C" fn main() {
         td_benchmark::StackProfiling::init(0x5a5a_5a5a_5a5a_5a5a, 0xd000);
     }
 
-    runtime_main()
+    runtime_main();
 }
 
 // AzCVMEmu entry point - standard Rust main function
@@ -82,44 +83,21 @@ pub fn runtime_main() {
             }
         };
     info!("td_report: {:?}\n", td_report);
+    info!("td_report: {:?}\n", td_report.as_bytes());
+    info!("td_report bytes: {}\n", td_report.as_bytes().len());
     print_td_info_hash(&td_report.td_info);
 
     #[cfg(feature = "test_get_quote")]
     {
-        let td_quote = match attestation::get_quote(td_report.as_bytes()) {
+        let td_quote = match attestation::get_quote_workaround(td_report.as_bytes()) {
             Ok(quote) => quote,
             Err(e) => {
                 error!("Failed to get quote - Error: {:?}\n", e);
                 error!("TD report size: {} bytes\n", td_report.as_bytes().len());
                 error!(
-                    "First 32 bytes of TD report: {:02x?}",
+                    "First 32 bytes of TD report: {:02x?}\n",
                     &td_report.as_bytes()[..32.min(td_report.as_bytes().len())]
                 );
-
-                // Log the specific error type
-                match e {
-                    attestation::Error::GetQuote => error!(
-                        "Error type: GetQuote - Failed to obtain quote from attestation service\n"
-                    ),
-                    attestation::Error::InitHeap => {
-                        error!("Error type: InitHeap - Heap initialization failed\n")
-                    }
-                    attestation::Error::OutOfMemory => {
-                        error!("Error type: OutOfMemory - Insufficient memory\n")
-                    }
-                    attestation::Error::InvalidOutput => {
-                        error!("Error type: InvalidOutput - Invalid output buffer")
-                    }
-                    attestation::Error::InvalidQuote => {
-                        error!("Error type: InvalidQuote - Quote validation failed\n")
-                    }
-                    attestation::Error::VerifyQuote => {
-                        error!("Error type: VerifyQuote - Quote verification failed\n")
-                    }
-                    attestation::Error::InvalidRootCa => {
-                        error!("Error type: InvalidRootCa - Root CA certificate invalid\n")
-                    }
-                }
                 return;
             }
         };
