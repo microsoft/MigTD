@@ -9,8 +9,12 @@
 //! and IMDS for quote generation in Azure CVM environments.
 
 use alloc::vec::Vec;
-use az_tdx_vtpm::{hcl, imds, tdx, vtpm};
-use log::{debug, error, info};
+use az_tdx_vtpm::tdx;
+#[cfg(not(feature = "test_mock_report"))]
+use az_tdx_vtpm::{hcl, imds, vtpm};
+use log::{debug, info};
+#[cfg(not(feature = "test_mock_report"))]
+use log::error;
 use original_tdx_tdcall::TdCallError;
 
 /// Simple error type for internal emulation errors that are not TdCallError
@@ -22,15 +26,16 @@ pub enum QuoteError {
     ConversionError,
 }
 
-/// Emulated TD report generation using vTPM interface or a mock report
-/// Returns TdCallError directly to match original tdcall_report function signature
-pub fn tdcall_report_emulated(additional_data: &[u8; 64]) -> Result<tdx::TdReport, TdCallError> {
-    #[cfg(feature = "test_mock_report")]
-    {
-        info!("Using mock TD report for test_mock_report feature");
-        return Ok(create_mock_td_report());
-    }
+/// Emulated TD report generation using mock report
+#[cfg(feature = "test_mock_report")]
+pub fn tdcall_report_emulated(_additional_data: &[u8; 64]) -> Result<tdx::TdReport, TdCallError> {
+    info!("Using mock TD report for test_mock_report feature");
+    Ok(create_mock_td_report())
+}
 
+/// Emulated TD report generation using vTPM interface
+#[cfg(not(feature = "test_mock_report"))]
+pub fn tdcall_report_emulated(additional_data: &[u8; 64]) -> Result<tdx::TdReport, TdCallError> {
     info!("Using AzCVMEmu vTPM interface for report generation");
 
     // Get the vTPM report with our additional data as user data
@@ -120,14 +125,16 @@ pub fn tdcall_report_emulated(additional_data: &[u8; 64]) -> Result<tdx::TdRepor
     }
 }
 
-/// Emulated quote generation using IMDS interface or a mock quote
-/// This function doesn't need to match original tdcall error types
+/// Emulated quote generation using mock quote
+#[cfg(feature = "test_mock_report")]
 pub fn get_quote_emulated(td_report_data: &[u8]) -> Result<Vec<u8>, QuoteError> {
-    #[cfg(feature = "test_mock_report")]
-    {
-        debug!("Using mock quote for test_mock_report feature");
-        return Ok(create_mock_quote(td_report_data));
-    }
+    debug!("Using mock quote for test_mock_report feature");
+    Ok(create_mock_quote(td_report_data))
+}
+
+/// Emulated quote generation using IMDS interface
+#[cfg(not(feature = "test_mock_report"))]
+pub fn get_quote_emulated(td_report_data: &[u8]) -> Result<Vec<u8>, QuoteError> {
 
     debug!(
         "Getting quote from TD report data (size: {})",
@@ -276,7 +283,7 @@ pub fn create_mock_td_report() -> tdx::TdReport {
 }
 
 /// Create a mock quote for testing purposes
-#[cfg(feature = "test_mock_report")]
+#[cfg(any(feature = "test_mock_report", feature = "mock_report_tools"))]
 pub fn create_mock_quote(td_report_data: &[u8]) -> Vec<u8> {
     debug!("Creating mock quote from TD report data (size: {})", td_report_data.len());
 
