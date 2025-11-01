@@ -5,26 +5,31 @@
 # ==============================================================================
 #
 # End-to-end automation for generating custom MigTD v2 policies from live
-# Azure vTPM measurements. This script is for AzCVMEmu mode only when running
-# migtd as an app inside an Azure CVM with TDX.
+# Azure vTPM measurements OR mock data for testing. This script supports both
+# real Azure CVM environments and testing/development scenarios.
 #
 # Features:
 #   - Extracts TD measurements from Azure vTPM (MRTD, RTMRs, XFAM, Attributes)
+#   - OR generates mock measurements for testing with test_mock_report feature
 #   - Updates policy templates with extracted measurements
 #   - Generates certificate chain for signing
 #   - Signs all components (td_identity, tcb_mapping, final policy)
 #   - Creates test-ready signed policy
 #   - Optionally tests the generated policy with migtdemu.sh
+#   - Supports mock report mode for testing
 #
 # Prerequisites:
-#   - Azure TDX CVM with vTPM access
-#   - sudo privileges (required for vTPM device access)
-#   - TPM 2.0 tools installed
+#   - For real mode: Azure TDX CVM with vTPM access, sudo privileges
+#   - For mock mode: No special requirements
+#   - TPM 2.0 tools installed (for real mode)
 #   - jq (JSON processor) installed
 #
 # Usage:
-#   # Complete workflow: extract measurements and generate signed policy
+#   # Real mode: extract measurements from vTPM and generate signed policy
 #   ./sh_script/build_AzCVMEmu_policy_and_test.sh
+#
+#   # Mock mode: generate policy from predictable test data (uses test_mock_report)
+#   ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report
 #
 #   # Skip the integration test at the end
 #   ./sh_script/build_AzCVMEmu_policy_and_test.sh --skip-test
@@ -38,7 +43,7 @@
 # What it does (13 steps):
 #   1. Builds required tools (azcvm-extract-report from deps/td-shim-AzCVMEmu,
 #      json-signer, servtd-collateral-generator, migtd-policy-generator)
-#   2. Extracts report data from Azure vTPM using sudo for device access
+#   2. Extracts report data from Azure vTPM OR generates mock data
 #   3. Updates td_identity.json template with extracted measurements
 #   4. Updates tcb_mapping.json template with extracted measurements
 #   5. Generates certificate chain (root CA + policy signing cert)
@@ -49,7 +54,7 @@
 #   10. Signs final policy with policy signing key
 #   11. Copies certificate chain to output directory
 #   12. Securely deletes private key with shred
-#   13. Optionally tests with ./migtdemu.sh
+#   13. Optionally tests with ./migtdemu.sh (with --mock-report for mock data)
 #
 # Outputs:
 #   - config/AzCVMEmu/policy_v2_signed.json (196 KB) - Signed policy with your measurements
@@ -197,6 +202,8 @@ generate_certificates() {
 }
 
 # Parse command line arguments
+USE_MOCK_REPORT=false
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --output-dir)
@@ -209,13 +216,28 @@ while [[ $# -gt 0 ]]; do
             SKIP_TEST=true
             shift
             ;;
+        --mock-report)
+            USE_MOCK_REPORT=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo
             echo "Options:"
-            echo "  --output-dir DIR    Output directory for generated files (default: config/AzCVMEmu)"
-            echo "  --skip-test         Skip running the MigTD test at the end"
-            echo "  -h, --help          Show this help message"
+            echo "  --output-dir DIR             Output directory for generated files (default: config/AzCVMEmu)"
+            echo "  --skip-test                  Skip running the MigTD test at the end"
+            echo "  --mock-report                Use mock report data with test_mock_report feature"
+            echo "  -h, --help                   Show this help message"
+            echo
+            echo "Examples:"
+            echo "  # Real vTPM mode (normal remote attestation):"
+            echo "  $0"
+            echo
+            echo "  # Mock report mode (uses test_mock_report feature):"
+            echo "  $0 --mock-report"
+            echo
+            echo "  # Generate policy but skip test:"
+            echo "  $0 --mock-report --skip-test"
             exit 0
             ;;
         *)
@@ -230,6 +252,7 @@ echo "  Project root: $PROJECT_ROOT"
 echo "  Source material: $SOURCE_MATERIAL_DIR"
 echo "  Output directory: $OUTPUT_DIR"
 echo "  Temp directory: $TEMP_DIR"
+echo "  Mock report mode: $USE_MOCK_REPORT"
 echo
 
 # Ensure output directory exists
@@ -279,23 +302,38 @@ echo -e "${GREEN}✓ All tools built successfully${NC}"
 echo
 
 #
-# Step 2: Extract report data from vTPM
+# Step 2: Extract report data from vTPM or generate mock data
 #
 echo -e "${BLUE}=== Step 2: Extracting Report Data ===${NC}"
 cd "$TEMP_DIR"
 
-# Use sudo to access vTPM device (requires /dev/tpmrm0 access)
-echo "Note: Using sudo to access vTPM device..."
-sudo "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report"
+if [ "$USE_MOCK_REPORT" = true ]; then
+    echo "Using mock report data for testing..."
+    echo -e "${YELLOW}Note: Will use test_mock_report feature for building${NC}"
+    "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report" \
+        --mock-report \
+        --output-json "migtd_report_data.json"
 
-# Report extractor creates migtd_report_data.json in current directory
-if [ ! -f "migtd_report_data.json" ]; then
-    echo -e "${RED}Error: Failed to extract report data${NC}" >&2
-    exit 1
+    if [ ! -f "migtd_report_data.json" ]; then
+        echo -e "${RED}Error: Failed to generate mock report data${NC}" >&2
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Mock report data generated${NC}"
+else
+    # Use sudo to access vTPM device (requires /dev/tpmrm0 access)
+    echo "Note: Using sudo to access vTPM device..."
+    sudo "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report"
+
+    # Report extractor creates migtd_report_data.json in current directory
+    if [ ! -f "migtd_report_data.json" ]; then
+        echo -e "${RED}Error: Failed to extract report data${NC}" >&2
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Report data extracted from vTPM${NC}"
 fi
 
 mv migtd_report_data.json "$REPORT_DATA_FILE"
-echo -e "${GREEN}✓ Report data extracted to: $REPORT_DATA_FILE${NC}"
+echo -e "${GREEN}✓ Report data saved to: $REPORT_DATA_FILE${NC}"
 
 # Parse extracted values (using camelCase field names from JSON)
 MRTD=$(jq -r '.mrtd' "$REPORT_DATA_FILE")
@@ -317,6 +355,10 @@ echo "  RTMR0: ${RTMR0:0:32}..."
 echo "  RTMR1: ${RTMR1:0:32}..."
 echo "  XFAM: $XFAM"
 echo "  Attributes: $ATTRIBUTES"
+
+if [ "$USE_MOCK_REPORT" = true ]; then
+    echo -e "${YELLOW}  Note: Mock data will be tested with skip-ra mode${NC}"
+fi
 echo
 
 #
@@ -455,10 +497,19 @@ echo "Generated files:"
 echo "  📄 Policy: $OUTPUT_POLICY"
 echo "  📄 Certificate chain: $OUTPUT_CERT_CHAIN"
 echo
-echo "Policy contains measurements extracted from live vTPM report:"
-echo "  MRTD: ${MRTD:0:64}..."
-echo "  RTMR0: ${RTMR0:0:64}..."
-echo "  RTMR1: ${RTMR1:0:64}..."
+
+if [ "$USE_MOCK_REPORT" = true ]; then
+    echo "Policy contains MOCK measurements for testing:"
+    echo "  MRTD: ${MRTD:0:64}..."
+    echo "  RTMR0: ${RTMR0:0:64}..."
+    echo "  RTMR1: ${RTMR1:0:64}..."
+    echo -e "${YELLOW}  Note: This policy will be tested with test_mock_report feature${NC}"
+else
+    echo "Policy contains measurements extracted from live vTPM report:"
+    echo "  MRTD: ${MRTD:0:64}..."
+    echo "  RTMR0: ${RTMR0:0:64}..."
+    echo "  RTMR1: ${RTMR1:0:64}..."
+fi
 echo
 
 #
@@ -466,23 +517,37 @@ echo
 #
 if [ -z "$SKIP_TEST" ]; then
     echo -e "${BLUE}=== Step 13: Testing Policy ===${NC}"
-    echo "Running: ./migtdemu.sh --policy-v2 --policy-file $OUTPUT_POLICY --policy-issuer-chain-file $OUTPUT_CERT_CHAIN --debug --both"
+
+    # Build the migtdemu.sh command
+    TEST_CMD="./migtdemu.sh --policy-v2 --policy-file $OUTPUT_POLICY --policy-issuer-chain-file $OUTPUT_CERT_CHAIN --debug --both"
+
+    if [ "$USE_MOCK_REPORT" = true ]; then
+        TEST_CMD="$TEST_CMD --mock-report"
+        echo "Running with mock report mode: $TEST_CMD"
+        echo -e "${YELLOW}Note: Using test_mock_report feature for mock TD reports/quotes${NC}"
+    else
+        echo "Running with real remote attestation: $TEST_CMD"
+    fi
     echo
 
     cd "$PROJECT_ROOT"
-    if ./migtdemu.sh --policy-v2 --policy-file "$OUTPUT_POLICY" --policy-issuer-chain-file "$OUTPUT_CERT_CHAIN" --debug --both; then
+    if $TEST_CMD; then
         echo
         echo -e "${GREEN}✓✓✓ SUCCESS: Policy validation and key exchange completed! ✓✓✓${NC}"
     else
         echo
         echo -e "${YELLOW}⚠ Test failed. Check the output above for errors.${NC}"
         echo "You can manually test with:"
-        echo "  ./migtdemu.sh --policy-v2 --policy-file $OUTPUT_POLICY --policy-issuer-chain-file $OUTPUT_CERT_CHAIN --debug --both"
+        echo "  $TEST_CMD"
         exit 1
     fi
 else
     echo -e "${YELLOW}Test skipped. To test manually, run:${NC}"
-    echo "  ./migtdemu.sh --policy-v2 --policy-file $OUTPUT_POLICY --policy-issuer-chain-file $OUTPUT_CERT_CHAIN --debug --both"
+    TEST_CMD="./migtdemu.sh --policy-v2 --policy-file $OUTPUT_POLICY --policy-issuer-chain-file $OUTPUT_CERT_CHAIN --debug --both"
+    if [ "$USE_MOCK_REPORT" = true ]; then
+        TEST_CMD="$TEST_CMD --mock-report"
+    fi
+    echo "  $TEST_CMD"
 fi
 
 echo

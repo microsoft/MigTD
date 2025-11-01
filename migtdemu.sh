@@ -21,6 +21,7 @@ DEFAULT_REQUEST_TYPE="migration"
 USE_SUDO=true
 RUN_BOTH=false
 SKIP_RA=false
+USE_MOCK_REPORT=false
 EXTRA_FEATURES=""
 USE_POLICY_V2=false
 DEFAULT_RUST_BACKTRACE="1"
@@ -54,6 +55,7 @@ show_usage() {
     echo "  --release                    Build in release mode (default)"
     echo "  --policy-v2                  Enable policy v2 support (requires --policy-file and --policy-issuer-chain-file to be specified)"
     echo "  --skip-ra                    Skip remote attestation (uses mock TD reports/quotes for non-TDX environments)"
+    echo "  --mock-report                Use mock report data for RA and policy v2 (non-TDX, but full attestation flow)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
     echo "  --features FEATURES          Add extra cargo features (comma-separated, e.g., 'spdm_attestation,feature2')"
@@ -67,6 +69,9 @@ show_usage() {
     echo "  - Skip RA mode (--skip-ra) disables remote attestation and uses mock TD reports/quotes,"
     echo "    allowing MigTD to run in non-TDX, non-Azure CVM environments without TPM2-TSS dependencies."
     echo "    This is useful for development and testing on any Linux system."
+    echo "  - Mock report mode (--mock-report) uses the test_mock_report feature to generate mock"
+    echo "    TD reports/quotes but still performs the full attestation flow. This is useful for"
+    echo "    testing attestation logic without requiring real TDX hardware."
     echo " - When using --policy-v2, you must explicitly specify a policy file with --policy-file and"
     echo "    a policy issuer chain file with --policy-issuer-chain-file. You can use the provided"
     echo "    example files in config/AzCVMEmu. Some reference values in those files for the ServTD may become"
@@ -81,6 +86,8 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
+    echo "  $0 --mock-report --role source       # Build with mock report mode (full attestation with mock data)"
+    echo "  $0 --mock-report --both              # Run both source and destination with mock report mode"
     echo "  $0 --features spdm_attestation       # Build with extra SPDM attestation feature"
     echo "  $0 --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --debug --both     # Run both with policy v2 in debug mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
@@ -107,6 +114,11 @@ check_file() {
 maybe_force_sudo_due_to_tpm() {
     # Skip TPM checks in skip RA mode since it uses mock attestation
     if [[ "$SKIP_RA" == true ]]; then
+        return 0
+    fi
+
+    # Skip TPM checks in mock report mode since it uses mock TD reports/quotes
+    if [[ "$USE_MOCK_REPORT" == true ]]; then
         return 0
     fi
 
@@ -146,38 +158,17 @@ maybe_force_sudo_due_to_tpm() {
 # Function to build MigTD
 build_migtd() {
     local build_mode="$1"
-    local skip_ra="$2"
-    local extra_features="$3"
-    
-    local features="AzCVMEmu"
-    if [[ "$use_policy_v2" == true ]]; then
-        features="$features,policy_v2"
-    fi
-    if [[ "$skip_ra" == true ]]; then
-        features="$features,test_disable_ra_and_accept_all"
-    fi
-    if [[ -n "$extra_features" ]]; then
-        features="${features},${extra_features}"
-    fi
-    
+    local features="$2"
+
+    # Display build message based on enabled features
+    echo -e "${BLUE}Building MigTD in $build_mode mode with features: $features...${NC}"
+
     # Set SPDM_CONFIG for spdmlib build only when spdm_attestation feature is used
     # This prevents unnecessary rebuilds when SPDM is not being used
     if [[ "$features" == *"spdm_attestation"* ]]; then
         export SPDM_CONFIG="$(pwd)/config/spdm_config.json"
         echo -e "${BLUE}Using SPDM config: $SPDM_CONFIG${NC}"
     fi
-
-    if [[ "$skip_ra" == true && "$use_policy_v2" == true ]]; then
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + policy v2 + skip RA features...${NC}"
-    elif [[ "$skip_ra" == true ]]; then
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + skip RA features...${NC}"
-    elif [[ "$use_policy_v2" == true ]]; then
-        echo -e "${BLUE}Building MigTD in $build_mode mode with AzCVMEmu + policy v2 features...${NC}"
-    else
-        echo -e "${BLUE}Building MigTD in $build_mode mode with features: $features...${NC}"
-    fi
-
-
     if [[ "$build_mode" == "debug" ]]; then
         if ! cargo build --features "$features" --no-default-features; then
             echo -e "${RED}Error: Failed to build MigTD in debug mode${NC}" >&2
@@ -254,6 +245,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_RA=true
             shift
             ;;
+        --mock-report)
+            USE_MOCK_REPORT=true
+            shift
+            ;;
         --both)
             RUN_BOTH=true
             shift
@@ -292,6 +287,18 @@ if [[ "$REQUEST_TYPE" != "migration" && "$REQUEST_TYPE" != "getreport" ]]; then
     exit 1
 fi
 
+# Validate that --skip-ra and --mock-report are mutually exclusive
+if [[ "$SKIP_RA" == true && "$USE_MOCK_REPORT" == true ]]; then
+    echo -e "${RED}Error: --skip-ra and --mock-report options are mutually exclusive${NC}" >&2
+    echo "Use --skip-ra to bypass attestation entirely, or --mock-report to test with mock data but full attestation flow" >&2
+    exit 1
+fi
+
+# Automatically disable sudo for mock report mode (no TPM access needed)
+if [[ "$USE_MOCK_REPORT" == true ]]; then
+    USE_SUDO=false
+fi
+
 # Validate role (skip when running both or when doing getreport)
 if [[ "$RUN_BOTH" != true && "$REQUEST_TYPE" == "migration" ]]; then
     if [[ "$ROLE" != "source" && "$ROLE" != "destination" ]]; then
@@ -323,8 +330,32 @@ fi
 # Change to MigTD directory
 cd "$(dirname "$0")"
 
+# Build features string based on configuration
+build_features_string() {
+    local features="AzCVMEmu"
+
+    if [[ "$USE_POLICY_V2" == true ]]; then
+        features="$features,policy_v2"
+    fi
+
+    if [[ "$SKIP_RA" == true ]]; then
+        features="$features,test_disable_ra_and_accept_all"
+    elif [[ "$USE_MOCK_REPORT" == true ]]; then
+        features="$features,test_mock_report"
+    fi
+
+    if [[ -n "$EXTRA_FEATURES" ]]; then
+        features="$features,$EXTRA_FEATURES"
+    fi
+
+    echo "$features"
+}
+
+# Build the features string
+CARGO_FEATURES=$(build_features_string)
+
 # Always build MigTD
-build_migtd "$BUILD_MODE" "$SKIP_RA" "$EXTRA_FEATURES" "$USE_POLICY_V2"
+build_migtd "$BUILD_MODE" "$CARGO_FEATURES"
 
 # Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
@@ -411,8 +442,10 @@ else
 fi
 if [[ "$SKIP_RA" == true ]]; then
     echo "  Skip RA mode: enabled (mock attestation, no TDX/Azure CVM/TPM required)"
+elif [[ "$USE_MOCK_REPORT" == true ]]; then
+    echo "  Mock report mode: enabled (full attestation with mock TD reports/quotes)"
 else
-    echo "  Skip RA mode: disabled (requires TDX/Azure CVM/TPM for attestation)"
+    echo "  Attestation mode: normal (requires TDX/Azure CVM/TPM for real attestation)"
 fi
 if [[ "$REQUEST_TYPE" == "migration" ]]; then
     if [[ "$RUN_BOTH" == true ]]; then
@@ -446,7 +479,7 @@ fi
 
 # Prefer TPM resource manager device for TPM2TSS if present
 TSS2_TCTI_AUTO=""
-if [[ "$SKIP_RA" != true && -e /dev/tpmrm0 ]]; then
+if [[ "$SKIP_RA" != true && "$USE_MOCK_REPORT" != true && -e /dev/tpmrm0 ]]; then
     TSS2_TCTI_AUTO="device:/dev/tpmrm0"
 fi
 
