@@ -16,3 +16,4 @@ zerocopy = { version = "0.7", features = ["derive"] }
 default = ["std"]
 no-metadata-checks = []
 std = []
+policy_v2 = []

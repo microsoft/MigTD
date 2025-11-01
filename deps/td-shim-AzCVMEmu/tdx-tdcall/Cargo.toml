@@ -27,7 +27,8 @@ interrupt-emu = { path = "../interrupt-emu", package = "interrupt-emu" }
 [features]
 default = []
 no-std = []
-test_disable_ra_and_accept_all = []
+test_mock_report = []
+mock_report_tools = []
 
 [lib]
 name = "tdx_tdcall_emu"
