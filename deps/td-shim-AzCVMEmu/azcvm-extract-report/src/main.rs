@@ -7,8 +7,12 @@
 //! This tool extracts report information from vTPM in Azure CVM environments
 //! and outputs the data needed for ServTD collateral (TCB mapping and identity).
 //!
+//! For testing and development with migtd configured with skip-ra-and-accept-all,
+//! use the --mock-report flag to generate predictable test data.
+//!
 //! Usage:
 //!   azcvm-extract-report --output-json report_data.json
+//!   azcvm-extract-report --mock-report --output-json mock_report_data.json
 
 use anyhow::{Context, Result};
 use az_tdx_vtpm::tdx;
@@ -27,6 +31,10 @@ struct Args {
     /// Custom report data (48 bytes hex string)
     #[arg(long)]
     report_data: Option<String>,
+
+    /// Generate mock report for skip-ra-and-accept-all mode (testing/development only)
+    #[arg(long)]
+    mock_report: bool,
 
     /// Enable verbose logging
     #[arg(short, long)]
@@ -58,17 +66,23 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-fn get_td_report_from_vtpm(report_data: Option<&[u8; 48]>) -> Result<tdx::TdReport> {
-    log::info!("Getting TD report from vTPM using tdcall_report_emulated");
+fn get_td_report_from_vtpm(report_data: Option<&[u8; 48]>, use_mock: bool) -> Result<tdx::TdReport> {
+    if use_mock {
+        // Use the existing create_mock_td_report function from tdx-tdcall-emu
+        use tdx_tdcall_emu::tdreport_emu::create_mock_td_report;
+        Ok(create_mock_td_report())
+    } else {
+        log::info!("Getting TD report from vTPM using tdcall_report_emulated");
 
-    let default_report_data = [0u8; 48];
-    let data = report_data.unwrap_or(&default_report_data);
+        let default_report_data = [0u8; 48];
+        let data = report_data.unwrap_or(&default_report_data);
 
-    let mut report_data_64 = [0u8; 64];
-    report_data_64[..48].copy_from_slice(data);
+        let mut report_data_64 = [0u8; 64];
+        report_data_64[..48].copy_from_slice(data);
 
-    tdcall_report_emulated(&report_data_64)
-        .map_err(|e| anyhow::anyhow!("Failed to get TD report: {:?}", e))
+        tdcall_report_emulated(&report_data_64)
+            .map_err(|e| anyhow::anyhow!("Failed to get TD report: {:?}", e))
+    }
 }
 
 fn extract_report_data(td_report: &tdx::TdReport) -> Result<ReportData> {
@@ -105,6 +119,7 @@ fn extract_report_data(td_report: &tdx::TdReport) -> Result<ReportData> {
 
     Ok(data)
 }
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -116,6 +131,11 @@ fn main() -> Result<()> {
 
     log::info!("MigTD AzCVM Report Extractor Tool");
     log::info!("==================================");
+
+    if args.mock_report {
+        log::info!("🧪 MOCK MODE: Generating test data for skip-ra-and-accept-all");
+        log::info!("    This data is suitable for testing MigTD with disabled remote attestation");
+    }
 
     let report_data = if let Some(ref hex_str) = args.report_data {
         let bytes = hex::decode(hex_str).context("Invalid hex string for report data")?;
@@ -129,7 +149,7 @@ fn main() -> Result<()> {
         None
     };
 
-    let td_report = get_td_report_from_vtpm(report_data.as_ref())
+    let td_report = get_td_report_from_vtpm(report_data.as_ref(), args.mock_report)
         .context("Failed to get TD report from vTPM")?;
 
     let report_data = extract_report_data(&td_report).context("Failed to extract report data")?;
