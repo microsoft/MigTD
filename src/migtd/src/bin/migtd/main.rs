@@ -97,7 +97,7 @@ pub fn runtime_main() {
                 error!(
                     "First 32 bytes of TD report: {:02x?}\n",
                     &td_report.as_bytes()[..32.min(td_report.as_bytes().len())]
-                );                
+                );
                 return;
             }
         };
