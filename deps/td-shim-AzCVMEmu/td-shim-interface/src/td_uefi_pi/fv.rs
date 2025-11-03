@@ -12,13 +12,18 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use r_efi::efi::Guid;
 
 // Static buffers to store emulated files
-static mut POLICY_BUFFER: [u8; 32768] = [0; 32768]; // 32KB for policy files
+const POLICY_BUFFER_SIZE: usize = 1024 * 1024; // 1MB for policy files (increased to handle large v2 policies)
+static mut POLICY_BUFFER: [u8; POLICY_BUFFER_SIZE] = [0; POLICY_BUFFER_SIZE];
 static mut POLICY_SIZE: usize = 0;
 static POLICY_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 static mut ROOT_CA_BUFFER: [u8; 4096] = [0; 4096]; // 4KB for root CA files
 static mut ROOT_CA_SIZE: usize = 0;
 static ROOT_CA_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+static mut POLICY_ISSUER_CHAIN_BUFFER: [u8; 8192] = [0; 8192]; // 8KB for policy issuer chain files
+static mut POLICY_ISSUER_CHAIN_SIZE: usize = 0;
+static POLICY_ISSUER_CHAIN_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Known GUIDs for policy and root CA files in migtd
 const MIGTD_POLICY_FFS_GUID: Guid = Guid::from_fields(
@@ -37,6 +42,16 @@ const MIGTD_ROOT_CA_FFS_GUID: Guid = Guid::from_fields(
     0xB1,
     0x3D,
     &[0xA2, 0x1B, 0xD0, 0xC8, 0xFF, 0xF6],
+);
+
+// {B3C1DCFE-6BEF-449F-A183-63A84EA1E0B4}
+pub const MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID: Guid = Guid::from_fields(
+    0xb3c1dcfe,
+    0x6bef,
+    0x449f,
+    0xa1,
+    0x83,
+    &[0x63, 0xa8, 0x4e, 0xa1, 0xe0, 0xb4],
 );
 
 /// Set policy data for emulation
@@ -68,6 +83,22 @@ pub fn set_root_ca_data(data: &[u8]) -> bool {
         *root_ca_size_ptr = data.len();
     }
     ROOT_CA_INITIALIZED.store(true, Ordering::SeqCst);
+    true
+}
+
+/// Set policy issuer chain data for emulation
+pub fn set_policy_issuer_chain_data(data: &[u8]) -> bool {
+    unsafe {
+        let chain_buffer_ptr = ptr::addr_of_mut!(POLICY_ISSUER_CHAIN_BUFFER);
+        if data.len() > (*chain_buffer_ptr).len() {
+            return false;
+        }
+
+        let chain_size_ptr = ptr::addr_of_mut!(POLICY_ISSUER_CHAIN_SIZE);
+        (*chain_buffer_ptr)[..data.len()].copy_from_slice(data);
+        *chain_size_ptr = data.len();
+    }
+    POLICY_ISSUER_CHAIN_INITIALIZED.store(true, Ordering::SeqCst);
     true
 }
 
@@ -111,11 +142,25 @@ pub fn load_root_ca_from_file(path: &str) -> bool {
     false
 }
 
+/// Load policy issuer chain data from file path (if file reader is set)
+pub fn load_policy_issuer_chain_from_file(path: &str) -> bool {
+    unsafe {
+        let file_reader_ptr = ptr::addr_of!(FILE_READER);
+        if let Some(reader) = *file_reader_ptr {
+            if let Some(data) = reader(path) {
+                return set_policy_issuer_chain_data(&data);
+            }
+        }
+    }
+    false
+}
+
 /// Get a file from firmware volume - emulated version supporting policy and root CA files
 ///
 /// This implementation supports common files needed by migtd:
 /// - Policy files (using MIGTD_POLICY_FFS_GUID)
 /// - Root CA files (using MIGTD_ROOT_CA_FFS_GUID)
+/// - Policy issuer chain files (using MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID)
 ///
 /// Other files will return None
 pub fn get_file_from_fv(
@@ -139,6 +184,12 @@ pub fn get_file_from_fv(
             let root_ca_buffer_ptr = ptr::addr_of!(ROOT_CA_BUFFER);
             let root_ca_size_ptr = ptr::addr_of!(ROOT_CA_SIZE);
             Some(&(*root_ca_buffer_ptr)[..*root_ca_size_ptr])
+        }
+    } else if file_name == MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID && POLICY_ISSUER_CHAIN_INITIALIZED.load(Ordering::SeqCst) {
+        unsafe {
+            let chain_buffer_ptr = ptr::addr_of!(POLICY_ISSUER_CHAIN_BUFFER);
+            let chain_size_ptr = ptr::addr_of!(POLICY_ISSUER_CHAIN_SIZE);
+            Some(&(*chain_buffer_ptr)[..*chain_size_ptr])
         }
     } else {
         None

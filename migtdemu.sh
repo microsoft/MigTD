@@ -21,7 +21,9 @@ DEFAULT_REQUEST_TYPE="migration"
 USE_SUDO=true
 RUN_BOTH=false
 SKIP_RA=false
+USE_MOCK_REPORT=false
 EXTRA_FEATURES=""
+USE_POLICY_V2=false
 DEFAULT_RUST_BACKTRACE="1"
 # Default RUST_LOG: verbose in debug, info in release; can be overridden by env
 DEFAULT_RUST_LOG_DEBUG="debug"
@@ -48,9 +50,12 @@ show_usage() {
     echo "  -y, --request-type TYPE      Set request type: 'migration' or 'getreport' (default: migration)"
     echo "  --policy-file FILE           Set policy file path (default: config/policy.json)"
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
+    echo "  --policy-issuer-chain-file FILE Set policy issuer chain file path (required when using --policy-v2)"
     echo "  --debug                      Build in debug mode (default: release)"
     echo "  --release                    Build in release mode (default)"
+    echo "  --policy-v2                  Enable policy v2 support (requires --policy-file and --policy-issuer-chain-file to be specified)"
     echo "  --skip-ra                    Skip remote attestation (uses mock TD reports/quotes for non-TDX environments)"
+    echo "  --mock-report                Use mock report data for RA and policy v2 (non-TDX, but full attestation flow)"
     echo "  --both                       Start destination first, then source (same host)"
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
     echo "  --features FEATURES          Add extra cargo features (comma-separated, e.g., 'spdm_attestation,feature2')"
@@ -64,6 +69,14 @@ show_usage() {
     echo "  - Skip RA mode (--skip-ra) disables remote attestation and uses mock TD reports/quotes,"
     echo "    allowing MigTD to run in non-TDX, non-Azure CVM environments without TPM2-TSS dependencies."
     echo "    This is useful for development and testing on any Linux system."
+    echo "  - Mock report mode (--mock-report) uses the test_mock_report feature to generate mock"
+    echo "    TD reports/quotes but still performs the full attestation flow. This is useful for"
+    echo "    testing attestation logic without requiring real TDX hardware."
+    echo " - When using --policy-v2, you must explicitly specify a policy file with --policy-file and"
+    echo "    a policy issuer chain file with --policy-issuer-chain-file. You can use the provided"
+    echo "    example files in config/AzCVMEmu. Some reference values in those files for the ServTD may become"
+    echo "    outdated over time. Use ./sh_script/build_AzCVMEmu_policy_and_test.sh to generate updated policy"
+    echo "    and issuer chain files."
     echo
     echo "Examples:"
     echo "  # Migration testing (traditional workflow)"
@@ -73,7 +86,10 @@ show_usage() {
     echo "  $0 --release --role destination      # Build release and run as destination"
     echo "  $0 --skip-ra --role source           # Build with skip RA mode (no TDX/Azure CVM/TPM required)"
     echo "  $0 --skip-ra --both                  # Run both source and destination with skip RA mode"
+    echo "  $0 --mock-report --role source       # Build with mock report mode (full attestation with mock data)"
+    echo "  $0 --mock-report --both              # Run both source and destination with mock report mode"
     echo "  $0 --features spdm_attestation       # Build with extra SPDM attestation feature"
+    echo "  $0 --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --debug --both     # Run both with policy v2 in debug mode"
     echo "  $0 --log-level debug --role source   # Run with debug log level"
     echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
     echo
@@ -86,7 +102,7 @@ show_usage() {
 check_file() {
     local file="$1"
     local description="$2"
-    
+
     if [[ ! -f "$file" ]]; then
         echo -e "${RED}Error: $description file not found: $file${NC}" >&2
         echo -e "${YELLOW}Please ensure the file exists or specify a different path.${NC}" >&2
@@ -100,7 +116,12 @@ maybe_force_sudo_due_to_tpm() {
     if [[ "$SKIP_RA" == true ]]; then
         return 0
     fi
-    
+
+    # Skip TPM checks in mock report mode since it uses mock TD reports/quotes
+    if [[ "$USE_MOCK_REPORT" == true ]]; then
+        return 0
+    fi
+
     # Only relevant if user requested no sudo explicitly
     if [[ "$USE_SUDO" == false ]]; then
         local need_sudo=false
@@ -137,30 +158,17 @@ maybe_force_sudo_due_to_tpm() {
 # Function to build MigTD
 build_migtd() {
     local build_mode="$1"
-    local skip_ra="$2"
-    local extra_features="$3"
-    
-    local features="AzCVMEmu"
-    if [[ "$skip_ra" == true ]]; then
-        features="AzCVMEmu,test_disable_ra_and_accept_all"
-    fi
-    if [[ -n "$extra_features" ]]; then
-        features="${features},${extra_features}"
-    fi
-    
+    local features="$2"
+
+    # Display build message based on enabled features
+    echo -e "${BLUE}Building MigTD in $build_mode mode with features: $features...${NC}"
+
     # Set SPDM_CONFIG for spdmlib build only when spdm_attestation feature is used
     # This prevents unnecessary rebuilds when SPDM is not being used
     if [[ "$features" == *"spdm_attestation"* ]]; then
         export SPDM_CONFIG="$(pwd)/config/spdm_config.json"
         echo -e "${BLUE}Using SPDM config: $SPDM_CONFIG${NC}"
     fi
-    
-    if [[ "$skip_ra" == true ]]; then
-        echo -e "${BLUE}Building MigTD in $build_mode mode with features: $features (mock attestation)...${NC}"
-    else
-        echo -e "${BLUE}Building MigTD in $build_mode mode with features: $features...${NC}"
-    fi
-    
     if [[ "$build_mode" == "debug" ]]; then
         if ! cargo build --features "$features" --no-default-features; then
             echo -e "${RED}Error: Failed to build MigTD in debug mode${NC}" >&2
@@ -183,6 +191,7 @@ DEST_PORT="$DEFAULT_DEST_PORT"
 REQUEST_TYPE="$DEFAULT_REQUEST_TYPE"
 POLICY_FILE="$DEFAULT_POLICY_FILE"
 ROOT_CA_FILE="$DEFAULT_ROOT_CA_FILE"
+POLICY_ISSUER_CHAIN_FILE=""  # No default - mandatory when using --policy-v2
 BUILD_MODE="$DEFAULT_BUILD_MODE"
 CUSTOM_LOG_LEVEL=""
 
@@ -216,6 +225,10 @@ while [[ $# -gt 0 ]]; do
             ROOT_CA_FILE="$2"
             shift 2
             ;;
+        --policy-issuer-chain-file)
+            POLICY_ISSUER_CHAIN_FILE="$2"
+            shift 2
+            ;;
         --debug)
             BUILD_MODE="debug"
             shift
@@ -224,8 +237,16 @@ while [[ $# -gt 0 ]]; do
             BUILD_MODE="release"
             shift
             ;;
+        --policy-v2)
+            USE_POLICY_V2=true
+            shift
+            ;;
         --skip-ra)
             SKIP_RA=true
+            shift
+            ;;
+        --mock-report)
+            USE_MOCK_REPORT=true
             shift
             ;;
         --both)
@@ -266,6 +287,18 @@ if [[ "$REQUEST_TYPE" != "migration" && "$REQUEST_TYPE" != "getreport" ]]; then
     exit 1
 fi
 
+# Validate that --skip-ra and --mock-report are mutually exclusive
+if [[ "$SKIP_RA" == true && "$USE_MOCK_REPORT" == true ]]; then
+    echo -e "${RED}Error: --skip-ra and --mock-report options are mutually exclusive${NC}" >&2
+    echo "Use --skip-ra to bypass attestation entirely, or --mock-report to test with mock data but full attestation flow" >&2
+    exit 1
+fi
+
+# Automatically disable sudo for mock report mode (no TPM access needed)
+if [[ "$USE_MOCK_REPORT" == true ]]; then
+    USE_SUDO=false
+fi
+
 # Validate role (skip when running both or when doing getreport)
 if [[ "$RUN_BOTH" != true && "$REQUEST_TYPE" == "migration" ]]; then
     if [[ "$ROLE" != "source" && "$ROLE" != "destination" ]]; then
@@ -280,11 +313,49 @@ if [[ "$REQUEST_TYPE" == "getreport" && "$RUN_BOTH" == true ]]; then
     exit 1
 fi
 
+# Validate policy v2 requirements
+if [[ "$USE_POLICY_V2" == true ]]; then
+    if [[ "$POLICY_FILE" == "$DEFAULT_POLICY_FILE" ]]; then
+        echo -e "${RED}Error: When using --policy-v2, you must explicitly specify a policy file with --policy-file${NC}" >&2
+        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --debug --both${NC}" >&2
+        exit 1
+    fi
+    if [[ -z "$POLICY_ISSUER_CHAIN_FILE" ]]; then
+        echo -e "${RED}Error: When using --policy-v2, you must specify a policy issuer chain file with --policy-issuer-chain-file${NC}" >&2
+        echo -e "${YELLOW}Example: $0 --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --debug --both${NC}" >&2
+        exit 1
+    fi
+fi
+
 # Change to MigTD directory
 cd "$(dirname "$0")"
 
+# Build features string based on configuration
+build_features_string() {
+    local features="AzCVMEmu"
+
+    if [[ "$USE_POLICY_V2" == true ]]; then
+        features="$features,policy_v2"
+    fi
+
+    if [[ "$SKIP_RA" == true ]]; then
+        features="$features,test_disable_ra_and_accept_all"
+    elif [[ "$USE_MOCK_REPORT" == true ]]; then
+        features="$features,test_mock_report"
+    fi
+
+    if [[ -n "$EXTRA_FEATURES" ]]; then
+        features="$features,$EXTRA_FEATURES"
+    fi
+
+    echo "$features"
+}
+
+# Build the features string
+CARGO_FEATURES=$(build_features_string)
+
 # Always build MigTD
-build_migtd "$BUILD_MODE" "$SKIP_RA" "$EXTRA_FEATURES"
+build_migtd "$BUILD_MODE" "$CARGO_FEATURES"
 
 # Determine binary path based on build mode (unified migtd binary)
 if [[ "$BUILD_MODE" == "debug" ]]; then
@@ -296,6 +367,9 @@ fi
 # Check if configuration files exist
 check_file "$POLICY_FILE" "Policy"
 check_file "$ROOT_CA_FILE" "Root CA"
+if [[ "$USE_POLICY_V2" == true ]]; then
+    check_file "$POLICY_ISSUER_CHAIN_FILE" "Policy Issuer Chain"
+fi
 
 # Evaluate TPM access and elevate if necessary
 maybe_force_sudo_due_to_tpm
@@ -361,10 +435,17 @@ echo -e "${BLUE}Setting up environment variables...${NC}"
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Build mode: $BUILD_MODE"
 echo "  Request type: $REQUEST_TYPE"
+if [[ "$USE_POLICY_V2" == true ]]; then
+    echo "  Policy version: v2"
+else
+    echo "  Policy version: v1 (default)"
+fi
 if [[ "$SKIP_RA" == true ]]; then
     echo "  Skip RA mode: enabled (mock attestation, no TDX/Azure CVM/TPM required)"
+elif [[ "$USE_MOCK_REPORT" == true ]]; then
+    echo "  Mock report mode: enabled (full attestation with mock TD reports/quotes)"
 else
-    echo "  Skip RA mode: disabled (requires TDX/Azure CVM/TPM for attestation)"
+    echo "  Attestation mode: normal (requires TDX/Azure CVM/TPM for real attestation)"
 fi
 if [[ "$REQUEST_TYPE" == "migration" ]]; then
     if [[ "$RUN_BOTH" == true ]]; then
@@ -377,6 +458,7 @@ fi
 echo "  Request ID: $REQUEST_ID"
 echo "  Policy file: $POLICY_FILE"
 echo "  Root CA file: $ROOT_CA_FILE"
+echo "  Policy Issuer Chain file: $POLICY_ISSUER_CHAIN_FILE"
 echo "  Use sudo: $USE_SUDO"
 
 echo
@@ -397,7 +479,7 @@ fi
 
 # Prefer TPM resource manager device for TPM2TSS if present
 TSS2_TCTI_AUTO=""
-if [[ "$SKIP_RA" != true && -e /dev/tpmrm0 ]]; then
+if [[ "$SKIP_RA" != true && "$USE_MOCK_REPORT" != true && -e /dev/tpmrm0 ]]; then
     TSS2_TCTI_AUTO="device:/dev/tpmrm0"
 fi
 
@@ -431,9 +513,9 @@ elif [[ "$RUN_BOTH" == true ]]; then
     (
         set -x
         if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
+            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
         else
-            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
+            run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${DEST_ARGS[@]}"
         fi
     ) > dest.out.log 2>&1 &
     DEST_PID=$!
@@ -459,26 +541,26 @@ elif [[ "$RUN_BOTH" == true ]]; then
         "--dest-port" "$DEST_PORT"
     )
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
-    echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+    echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
     echo
     # Run source in foreground
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
     else
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
     fi
     echo
     # Run source in foreground; on failure, show last logs and exit non-zero
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
         SRC_EXIT_CODE=$?
     else
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
         SRC_EXIT_CODE=$?
     fi
     echo -e "${BLUE}Source migtd exit code: $SRC_EXIT_CODE${NC}"
-    
+
     # Check destination exit code before stopping it
     if kill -0 "$DEST_PID" 2>/dev/null; then
         echo -e "${BLUE}Destination is still running, stopping it...${NC}"
@@ -492,7 +574,7 @@ elif [[ "$RUN_BOTH" == true ]]; then
         DEST_EXIT_CODE=$?
         echo -e "${BLUE}Destination migtd exit code: $DEST_EXIT_CODE${NC}"
     fi
-    
+
     if [[ "$SRC_EXIT_CODE" -ne 0 ]]; then
         echo -e "${RED}Source run failed. Last 100 lines of destination log:${NC}"
         tail -n 100 dest.out.log || true
@@ -510,16 +592,16 @@ else
     echo -e "${BLUE}Starting MigTD in $ROLE mode...${NC}"
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG TSS2_TCTI=$TSS2_TCTI_AUTO $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
     else
-        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
+        echo -e "${YELLOW}Command: ${SUDO_STR}MIGTD_POLICY_FILE=$POLICY_FILE MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE RUST_BACKTRACE=$RUST_BACKTRACE RUST_LOG=$RUST_LOG $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
     fi
     echo
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" "TSS2_TCTI=$TSS2_TCTI_AUTO" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
         EXIT_CODE=$?
     else
-        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
+        run_cmd "MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
         EXIT_CODE=$?
     fi
     echo -e "${BLUE}MigTD exit code: $EXIT_CODE${NC}"

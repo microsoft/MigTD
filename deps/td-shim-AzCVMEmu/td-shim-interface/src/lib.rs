@@ -43,4 +43,9 @@ pub use td_uefi_pi::fv::{
     load_policy_from_file, load_root_ca_from_file, set_policy_data, set_root_ca_data,
 };
 
+#[cfg(feature = "policy_v2")]
+pub use td_uefi_pi::fv::load_policy_issuer_chain_from_file;
+
 pub use file_ops::init_file_based_emulation_with_real_files;
+#[cfg(feature = "policy_v2")]
+pub use file_ops::init_file_based_emulation_with_policy_chain;
