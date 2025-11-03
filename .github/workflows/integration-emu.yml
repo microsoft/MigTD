@@ -181,3 +181,156 @@ jobs:
               echo "Check the test logs above and uploaded artifacts for debugging details."
               ;;
           esac
+
+  policy-v2-mock-report-test:
+    name: Policy v2 with Mock Report End-to-End Test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      # Install first since it's needed to build NASM
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@a7a1a882e2d06ebe05d5bb97c3e1f8c984ae96fc # v2.0.7
+        with:
+          version: "10.0"
+          directory: ${{ runner.temp }}/llvm
+      
+      - name: Install libtinfo5
+        run: sudo apt-get update -y && sudo apt-get install libtinfo5 -y
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install build dependencies
+        run: sudo apt-get install build-essential ocaml ocamlbuild automake autoconf libtool wget python-is-python3 libssl-dev git cmake perl libtss2-dev pkg-config jq -y
+
+      - name: Checkout sources
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1.0.7
+        with:
+          profile: ${{ env.TOOLCHAIN_PROFILE }}
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+          components: rust-src
+
+      - name: Add x86_64-unknown-none target
+        run: rustup target add x86_64-unknown-none
+        
+      - name: Run preparation script
+        run: bash sh_script/preparation.sh
+
+      - name: Run policy v2 generation and test script
+        id: policy_v2_test
+        run: |
+          echo "=== Running Policy v2 Mock Report Test Script ==="
+          echo "This script will:"
+          echo "  1. Build all required tools (azcvm-extract-report, json-signer, etc.)"
+          echo "  2. Generate mock report data"
+          echo "  3. Update policy templates with mock measurements"
+          echo "  4. Generate certificates and sign policy components"
+          echo "  5. Create and sign final policy v2"
+          echo "  6. Build MigTD with mock report feature"
+          echo "  7. Run end-to-end test with both source and destination"
+          echo ""
+          
+          chmod +x ./sh_script/build_AzCVMEmu_policy_and_test.sh
+          
+          # Run the script with timeout
+          set +e
+          timeout 600 ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report
+          EXIT_CODE=$?
+          set -e
+          
+          echo ""
+          echo "Script completed with exit code: $EXIT_CODE"
+          
+          if [[ $EXIT_CODE -eq 0 ]]; then
+            echo "✅ Policy v2 with mock report test completed successfully"
+            echo "test_status=success" >> $GITHUB_OUTPUT
+          elif [[ $EXIT_CODE -eq 124 ]]; then
+            echo "❌ Test timed out after 10 minutes"
+            echo "test_status=timeout" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "❌ Test failed with exit code $EXIT_CODE"
+            echo "test_status=failed" >> $GITHUB_OUTPUT
+            exit $EXIT_CODE
+          fi
+
+      - name: Check test outputs
+        if: always()
+        run: |
+          echo "=== Test Execution Summary ==="
+          echo "Test status: ${{ steps.policy_v2_test.outputs.test_status || 'unknown' }}"
+          
+          if [[ -f "dest.out.log" ]]; then
+            DEST_LOG_SIZE=$(wc -l < dest.out.log)
+            echo "Destination log found: $DEST_LOG_SIZE lines"
+            
+            echo ""
+            echo "=== Last 50 lines of destination log ==="
+            tail -n 50 dest.out.log
+            
+            echo ""
+            echo "=== First 20 lines of destination log ==="
+            head -n 20 dest.out.log
+          else
+            echo "No destination log file found"
+          fi
+          
+          # Check if policy files were generated
+          if [[ -f "config/AzCVMEmu/policy_v2_signed.json" ]]; then
+            POLICY_SIZE=$(wc -c < config/AzCVMEmu/policy_v2_signed.json)
+            echo ""
+            echo "Policy file generated: ${POLICY_SIZE} bytes"
+          fi
+          
+          if [[ -f "config/AzCVMEmu/policy_issuer_chain.pem" ]]; then
+            echo "Certificate chain file generated"
+          fi
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        with:
+          name: policy-v2-test-logs-${{ github.run_id }}
+          path: |
+            dest.out.log
+            *.log
+            config/AzCVMEmu/policy_v2_signed.json
+            config/AzCVMEmu/policy_issuer_chain.pem
+            target/release/migtd
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Report final status
+        if: always()
+        run: |
+          case "${{ steps.policy_v2_test.outputs.test_status }}" in
+            "success")
+              echo "🎉 Policy v2 mock report test passed successfully!"
+              echo "✅ All 13 steps of policy generation completed"
+              echo "✅ Mock report data generated"
+              echo "✅ Policy v2 signed and validated"
+              echo "✅ End-to-end migration test passed"
+              echo "The PR is ready for code review."
+              ;;
+            "timeout")
+              echo "⏰ Policy v2 test timed out"
+              echo "❌ Tests timed out after 10 minutes"
+              echo "Check logs for hanging processes or infinite loops."
+              ;;
+            "failed"|*)
+              echo "❌ Policy v2 test failed"
+              echo "Check the test logs above and uploaded artifacts for debugging details."
+              echo "The script performs all 13 steps:"
+              echo "  1-4: Build tools and generate mock measurements"
+              echo "  5-7: Generate certificates and sign components"
+              echo "  8-10: Generate collateral and merge policy"
+              echo "  11-13: Copy files and run integration test"
+              ;;
+          esac
