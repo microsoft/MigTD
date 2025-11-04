@@ -14,7 +14,10 @@ members = [
     "src/async/async_runtime",
     "tests/test-td-payload",
     "tools/migtd-hash",
+    "tools/migtd-collateral-generator",
     "tools/migtd-policy-generator",
+    "tools/servtd-collateral-generator",
+    "tools/json-signer",
     "xtask",
     ]
 
@@ -25,7 +28,7 @@ default-members = [
 exclude = [
     "deps/td-shim",
     "deps/rustls",
-    "deps/td-shim-AzCVMEmu"
+    "deps/spdm-rs/sys_time"
     ]
 
 resolver = "2"
@@ -45,3 +48,5 @@ lto = true
 
 [patch.crates-io]
 ring = { path = "deps/td-shim/library/ring" }
+sys_time = { path = "src/std-support/sys_time" }
+

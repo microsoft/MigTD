@@ -63,6 +63,15 @@ jobs:
           sudo pytest -k "pre_binding" --servtd_hash $(cargo hash --image $GITHUB_WORKSPACE/target/release/migtd.bin)
           popd
       
+      - name: Build Migration TD binary with policy v2
+        run: cargo image  --policy-v2 --policy config/templates/policy_v2_signed.json --policy-issuer-chain config/templates/policy_issuer_chain.pem --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
+      
+      - name: Run Tests - Test policy v2
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "policy_v2"
+          popd
+      
       - name: Build all test binaries
         run: bash sh_script/build_final.sh -t test -c -a on
 
@@ -104,6 +113,15 @@ jobs:
           sudo pytest -k "pre_binding" --device_type serial --servtd_hash $(cargo hash --image $GITHUB_WORKSPACE/target/release/migtd.bin)
           popd
       
+      - name: Build Migration TD binary with policy v2
+        run: cargo image --no-default-features --features stack-guard,virtio-serial --policy-v2 --policy config/templates/policy_v2_signed.json --policy-issuer-chain config/templates/policy_issuer_chain.pem --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
+      
+      - name: Run Tests - Test policy v2
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "policy_v2" --device_type serial
+          popd
+      
       - name: Build all test binaries
         run: bash sh_script/build_final.sh -t test -c -a on -d serial
 
@@ -112,5 +130,117 @@ jobs:
           pushd sh_script/test
           sudo pytest -k "function" --device_type serial
           popd
+  
+  spdm_attestation:
+    name: Run SPDM Attestation Test
+    runs-on: [self-hosted, tdx]
+
+    steps:
+      - name: Clean test repository
+        run: |
+          sudo rm -rf sh_script/test/
+
+      - name: Checkout sources
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with: 
+          submodules: recursive
       
+      - name: Preparation Work
+        run: bash sh_script/preparation.sh
+
+      - name: Set Spdm Config
+        run: echo "SPDM_CONFIG=../../../config/spdm_config.json" >> "$GITHUB_ENV"
+
+      - name: Build Migration TD binary with SPDM feature
+        run: cargo image --features spdm_attestation --policy config/policy_pre_production_fmspc.json --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
+
+      - name: Run Tests - Test Migration TD 20 Cycles
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "cycle"
+          popd
+
+      - name: Build all test binaries
+        run: bash sh_script/build_final.sh -t test -c -a on -d spdm_attestation
+
+      - name: Run SPDM Attestation Tests
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "function"
+          popd
+
+  spdm_attestation_serial:
+    name: Run SPDM Attestation Test (virtio-serial)
+    runs-on: [self-hosted, tdx]
+
+    steps:
+      - name: Clean test repository
+        run: |
+          sudo rm -rf sh_script/test/
+
+      - name: Checkout sources
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with: 
+          submodules: recursive
       
+      - name: Preparation Work
+        run: bash sh_script/preparation.sh
+
+      - name: Set Spdm Config
+        run: echo "SPDM_CONFIG=../../../config/spdm_config.json" >> "$GITHUB_ENV"
+
+      - name: Build Migration TD binary with SPDM feature
+        run: cargo image --no-default-features --features stack-guard,virtio-serial,spdm_attestation --policy config/policy_pre_production_fmspc.json --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
+
+      - name: Run Tests - Test Migration TD 20 Cycles
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "cycle" --device_type serial
+          popd
+
+      - name: Build all test binaries
+        run: bash sh_script/build_final.sh -t test -c -a on -d spdm_attestation_serial
+
+      - name: Run SPDM Attestation Tests
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "function" --device_type serial
+          popd
+
+  spdm_attestation_policy_v2:
+    name: Run SPDM Attestation Test with Policy V2
+    runs-on: [self-hosted, tdx]
+
+    steps:
+      - name: Clean test repository
+        run: |
+          sudo rm -rf sh_script/test/
+
+      - name: Checkout sources
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with: 
+          submodules: recursive
+      
+      - name: Preparation Work
+        run: bash sh_script/preparation.sh
+
+      - name: Set Spdm Config
+        run: echo "SPDM_CONFIG=../../../config/spdm_config_policy_v2.json" >> "$GITHUB_ENV"
+
+      - name: Build Migration TD binary with SPDM feature and Policy V2
+        run: cargo image --features spdm_attestation --policy-v2 --policy config/templates/policy_v2_signed.json --policy-issuer-chain config/templates/policy_issuer_chain.pem
+
+      - name: Run Tests - Test Migration TD 20 Cycles
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "cycle"
+          popd
+
+      - name: Build Migration TD binary with SPDM feature and Policy V2
+        run: cargo image --no-default-features --features stack-guard,virtio-serial,spdm_attestation --policy-v2 --policy config/templates/policy_v2_signed.json --policy-issuer-chain config/templates/policy_issuer_chain.pem
+
+      - name: Run Tests - Test Migration TD 20 Cycles
+        run: |
+          pushd sh_script/test
+          sudo pytest -k "cycle" --device_type serial
+          popd

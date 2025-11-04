@@ -71,7 +71,7 @@ pub const STREAM_SOCKET_INFO_HOB_GUID: Guid = Guid::from_fields(
 );
 
 #[repr(C)]
-#[derive(Debug, Pread, Pwrite)]
+#[derive(Debug, Pread, Pwrite, Clone, Default)]
 pub struct MigtdMigrationInformation {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
@@ -87,12 +87,35 @@ pub struct MigtdMigrationInformation {
     // Binding handle for the MigTD and the target TD
     pub binding_handle: u64,
 
+    #[cfg(not(feature = "vmcall-raw"))]
     // ID for the migration policy
     pub mig_policy_id: u64,
 
+    #[cfg(not(feature = "vmcall-raw"))]
     // Unique identifier for the communication between MigTD and VMM
     // It can be retrieved from MIGTD_STREAM_SOCKET_INFO HOB
     pub communication_id: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Pread, Pwrite)]
+#[cfg(feature = "vmcall-raw")]
+pub struct ReportInfo {
+    // ID for the migration request, which can be used in TDG.VP.VMCALL
+    // <Service.MigTD.ReportStatus>
+    pub mig_request_id: u64,
+    pub reportdata: [u8; 64],
+}
+
+#[repr(C)]
+#[derive(Debug, Pread, Pwrite)]
+#[cfg(feature = "vmcall-raw")]
+pub struct EnableLogAreaInfo {
+    // ID for the migration request, which can be used in TDG.VP.VMCALL
+    // <Service.MigTD.ReportStatus>
+    pub mig_request_id: u64,
+    pub log_max_level: u8,
+    pub reserved: [u8; 7],
 }
 
 #[repr(C)]
@@ -133,7 +156,7 @@ pub struct MigtdMigpolicy {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(PartialEq)]
 pub enum MigrationResult {
     Success = 0,
     InvalidParameter = 1,
@@ -145,6 +168,9 @@ pub enum MigrationResult {
     MutualAttestationError = 7,
     PolicyUnsatisfiedError = 8,
     InvalidPolicyError = 9,
+    VmmCanceled = 10,
+    VmmInternalError = 11,
+    UnsupportedOperationError = 12,
 }
 
 #[cfg(any(feature = "virtio-vsock", feature = "vmcall-vsock"))]
@@ -164,9 +190,10 @@ impl From<VirtioSerialError> for MigrationResult {
 impl From<RatlsError> for MigrationResult {
     fn from(e: RatlsError) -> Self {
         match e {
-            RatlsError::Crypto(_) | RatlsError::X509(_) | RatlsError::InvalidEventlog => {
-                MigrationResult::SecureSessionError
-            }
+            RatlsError::Crypto(_)
+            | RatlsError::X509(_)
+            | RatlsError::InvalidEventlog
+            | RatlsError::InvalidPolicy => MigrationResult::SecureSessionError,
             RatlsError::TdxModule(_) => MigrationResult::TdxModuleError,
             RatlsError::GetQuote | RatlsError::VerifyQuote => {
                 MigrationResult::MutualAttestationError

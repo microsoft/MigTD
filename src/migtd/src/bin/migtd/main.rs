@@ -12,8 +12,15 @@ use core::task::Poll;
 
 //use core::ffi::c_void;
 use log::{error, info};
-use migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT;
+#[cfg(feature = "policy_v2")]
+use alloc::string::String;
+#[cfg(feature = "vmcall-raw")]
+use alloc::vec::Vec;
+use migtd::event_log::*;
+#[cfg(not(feature = "vmcall-raw"))]
 use migtd::migration::data::MigrationInformation;
+#[cfg(feature = "vmcall-raw")]
+use migtd::migration::data::WaitForRequestResponse;
 use migtd::migration::session::*;
 use migtd::migration::MigrationResult;
 use migtd::{config, event_log, migration};
@@ -42,12 +49,6 @@ mod cvmemu;
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// Event IDs that will be used to tag the event log
-const TAGGED_EVENT_ID_POLICY: u32 = 0x1;
-const TAGGED_EVENT_ID_ROOT_CA: u32 = 0x2;
-const TAGGED_EVENT_ID_TEST: u32 = 0x32;
-
-#[cfg(not(feature = "AzCVMEmu"))]
 #[no_mangle]
 pub extern "C" fn main() {
     #[cfg(feature = "test_stack_size")]
@@ -132,10 +133,14 @@ pub fn do_measurements() {
         return;
     }
 
+    #[cfg(feature = "policy_v2")]
+    get_policy_issuer_chain_and_measure(event_log);
+
     // Get migration td policy from CFV and measure it into RMTR
     get_policy_and_measure(event_log);
 
     // Get root certificate from CFV and measure it into RMTR
+    #[cfg(not(feature = "policy_v2"))]
     get_ca_and_measure(event_log);
 }
 
@@ -153,6 +158,8 @@ fn measure_test_feature(event_log: &mut [u8]) {
     // Measure and extend the migtd test feature to RTMR
     event_log::write_tagged_event_log(
         event_log,
+        MR_INDEX_TEST_FEATURE,
+        TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
         TAGGED_EVENT_ID_TEST,
         TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
     )
@@ -163,29 +170,85 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
     // Read migration policy from CFV
     let policy = config::get_policy().expect("Fail to get policy from CFV\n");
 
+    #[cfg(feature = "policy_v2")]
+    let version = initialize_policy();
+
+    #[cfg(feature = "policy_v2")]
+    let event_data = version.as_bytes();
+
+    #[cfg(not(feature = "policy_v2"))]
+    let event_data = policy;
+
     // Measure and extend the migration policy to RTMR
-    event_log::write_tagged_event_log(event_log, TAGGED_EVENT_ID_POLICY, policy)
-        .expect("Failed to log migration policy");
+    event_log::write_tagged_event_log(
+        event_log,
+        MR_INDEX_POLICY,
+        policy,
+        TAGGED_EVENT_ID_POLICY,
+        event_data,
+    )
+    .expect("Failed to log migration policy");
 }
 
+#[cfg(feature = "policy_v2")]
+fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
+    // Read policy issuer chain from CFV
+    let policy_issuer_chain =
+        config::get_policy_issuer_chain().expect("Fail to get policy issuer chain from CFV\n");
+
+    // Measure and extend the policy issuer chain to RTMR
+    event_log::write_tagged_event_log(
+        event_log,
+        MR_INDEX_POLICY_ISSUER_CHAIN,
+        policy_issuer_chain,
+        TAGGED_EVENT_ID_POLICY_ISSUER_CHAIN,
+        policy_issuer_chain,
+    )
+    .expect("Failed to log policy issuer chain");
+}
+
+#[cfg(not(feature = "policy_v2"))]
 fn get_ca_and_measure(event_log: &mut [u8]) {
     let root_ca = config::get_root_ca().expect("Fail to get root certificate from CFV\n");
 
     // Measure and extend the root certificate to RTMR
-    event_log::write_tagged_event_log(event_log, TAGGED_EVENT_ID_ROOT_CA, root_ca)
-        .expect("Failed to log SGX root CA\n");
+    event_log::write_tagged_event_log(
+        event_log,
+        MR_INDEX_ROOT_CA,
+        root_ca,
+        TAGGED_EVENT_ID_ROOT_CA,
+        root_ca,
+    )
+    .expect("Failed to log SGX root CA\n");
 
     attestation::root_ca::set_ca(root_ca).expect("Invalid root certificate\n");
 }
 
-fn handle_pre_mig() {
-    #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
-    const MAX_CONCURRENCY_REQUESTS: usize = 16;
-    #[cfg(not(any(feature = "vmcall-interrupt", feature = "vmcall-raw")))]
-    const MAX_CONCURRENCY_REQUESTS: usize = 1;
+#[cfg(feature = "policy_v2")]
+fn initialize_policy() -> String {
+    use migtd::mig_policy;
 
+    let policy = config::get_policy().expect("Fail to get policy from CFV\n");
+    let policy_issuer_chain =
+        config::get_policy_issuer_chain().expect("Fail to get policy issuer chain from CFV\n");
+    // Initialize and verify the migration policy
+    let version = mig_policy::init_policy(policy, policy_issuer_chain)
+        .expect("Failed to initialize migration policy");
+    // Initialize and verify the migration policy
+    mig_policy::init_tcb_info().expect("Failed to initialize migration policy");
+
+    version
+}
+
+fn handle_pre_mig() {
+    const MAX_CONCURRENCY_REQUESTS: usize = 12;
+
+    #[cfg(not(feature = "vmcall-raw"))]
     // Set by `wait_for_request` async task when getting new request from VMM.
     static PENDING_REQUEST: Mutex<Option<MigrationInformation>> = Mutex::new(None);
+    #[cfg(feature = "vmcall-raw")]
+    // Set by `wait_for_request` async task when getting new request from VMM.
+    static PENDING_REQUEST: Mutex<Option<WaitForRequestResponse>> = Mutex::new(None);
 
     async_runtime::add_task(async move {
         loop {
@@ -247,10 +310,49 @@ fn handle_pre_mig() {
 
                 #[cfg(not(feature = "vmcall-raw"))]
                 {
-                    let _ = report_status(status as u8, request.mig_info.mig_request_id);
-                }
+                    let status = exchange_msk(&request)
+                        .await
+                        .map(|_| MigrationResult::Success)
+                        .unwrap_or_else(|e| e);
 
-                REQUESTS.lock().remove(&request.mig_info.mig_request_id);
+                    let _ = report_status(status as u8, request.mig_info.mig_request_id);
+                    REQUESTS.lock().remove(&request.mig_info.mig_request_id);
+                }
+                #[cfg(feature = "vmcall-raw")]
+                {
+                    let mut data: Vec<u8> = Vec::new();
+                    match request {
+                        WaitForRequestResponse::StartMigration(wfr_info) => {
+                            let status = exchange_msk(&wfr_info)
+                                .await
+                                .map(|_| MigrationResult::Success)
+                                .unwrap_or_else(|e| e);
+                            let _ = report_status(
+                                status as u8,
+                                wfr_info.mig_info.mig_request_id,
+                                &data,
+                            )
+                            .await;
+                            REQUESTS.lock().remove(&wfr_info.mig_info.mig_request_id);
+                        }
+                        WaitForRequestResponse::GetTdReport(wfr_info) => {
+                            let status = get_tdreport(&wfr_info.reportdata, &mut data)
+                                .await
+                                .map(|_| MigrationResult::Success)
+                                .unwrap_or_else(|e| e);
+                            let _ =
+                                report_status(status as u8, wfr_info.mig_request_id, &data).await;
+                            REQUESTS.lock().remove(&wfr_info.mig_request_id);
+                        }
+                        WaitForRequestResponse::EnableLogArea(wfr_info) => {
+                            // TODO: support this feature
+                            let status = MigrationResult::UnsupportedOperationError;
+                            let _ =
+                                report_status(status as u8, wfr_info.mig_request_id, &data).await;
+                            REQUESTS.lock().remove(&wfr_info.mig_request_id);
+                        }
+                    }
+                }
             });
         }
         sleep();

@@ -134,6 +134,9 @@ To build MigTD as a standard Rust app that can run in Azure TDX CVM environment,
 cargo build --no-default-features --features AzCVMEmu
 ```
 The detailed AzCVMEmu mode instructions can be found in `doc/AzCVMEmu.md`.
+### Policy V2
+
+Please refer to [policy_v2.md](doc/policy_v2.md) for policy v2 generation and image setup.
 
 ### Generate SERVTD_INFO_HASH
 

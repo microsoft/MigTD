@@ -18,6 +18,7 @@ async_io = { path = "../async/async_io" }
 async_runtime = { path = "../async/async_runtime" }
 attestation = { path = "../attestation", default-features = false, optional = true }
 cc-measurement = { path = "../../deps/td-shim/cc-measurement"}
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 crypto = { path = "../crypto" }
 futures-util = { version = "0.3.17", default-features = false }
 lazy_static = { version = "1.0", features = ["spin_no_std"] }
@@ -42,6 +43,7 @@ vmcall_raw = { path="../devices/vmcall_raw", optional = true }
 x86 = "0.47.0"
 x86_64 = { version = "0.14", default-features = false, features = ["instructions"] }
 zerocopy = { version = "0.7", features = ["derive"] }
+bitfield-struct = "0.11"
 
 # AzCVMEmu optional deps (grouped)
 tdx-tdcall-emu = { path = "../../deps/td-shim-AzCVMEmu/tdx-tdcall", optional = true }
@@ -55,11 +57,19 @@ minicov = { version = "0.2", default-features = false, optional = true }
 td-benchmark = { path = "../../deps/td-shim/devtools/td-benchmark", default-features = false,  optional = true }
 sha2 = { version = "0.10.2", default-features = false, optional = true }
 
+spdmlib = {path = "../../deps/spdm-rs/spdmlib", default-features = false, features = ["spdm-ring", "chunk-cap", "mut-auth", "hashed-transcript-data"]}
+codec = {path= "../../deps/spdm-rs/codec"}
+maybe-async = "0.2.7"
+async-trait = "0.1.71"
+zeroize = { version = "1.5.0", features = ["zeroize_derive"]}
+ring = { version = "0.17.14" }
+
 [features]
 default = ["virtio-vsock"]
 cet-shstk = ["td-payload/cet-shstk"]
 coverage = ["minicov"]
-main = ["attestation", "policy/log", "sha2"]
+main = ["attestation", "policy/log"]
+policy_v2 = ["policy/policy_v2", "attestation/attest-lib-ext"]
 stack-guard = ["td-payload/stack-guard"]
 virtio-vsock = ["vsock/virtio-vsock"]
 virtio-serial = ["virtio_serial"]
@@ -87,3 +97,7 @@ AzCVMEmu = [
 test_accept_all = [] # Test flag: Skip policy verification
 test_reject_all = [] # Test flag: Force migration status to always report unsupported
 test_get_quote = [] # Test flag: Get the quote and exit.
+spdm_attestation = ["main"]
+
+[patch.crates-io]
+sys_time = { path = "src/std-support/sys_time" }
