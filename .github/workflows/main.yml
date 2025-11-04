@@ -118,12 +118,6 @@ jobs:
       - name: Build MigTD binary with a default production migration policy(virtio-serial)
         run: cargo image --debug --no-default-features --features main,stack-guard,virtio-serial
 
-  build_migtd_test_flavors:
-    name: Build final migtd with Makefile (test flavors)
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
-
-    steps:
       - name: Build MigTD IGVM (production)
         run: make build-igvm-all
 
