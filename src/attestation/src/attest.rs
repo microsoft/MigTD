@@ -137,8 +137,12 @@ pub fn get_quote_workaround(td_report: &[u8]) -> Result<Vec<u8>, Error> {
         log::info!("  in_len: ({:?})\n", (*hdr).in_len);
         log::info!("  out_len: ({:?})\n", (*hdr).out_len);
         quote_size = (*hdr).out_len;
-        if(quote_size > TD_QUOTE_SIZE as u32) {
-            log::error!("Quote size {} exceeds buffer size {}\n", quote_size, TD_QUOTE_SIZE);
+        if (quote_size > TD_QUOTE_SIZE as u32) {
+            log::error!(
+                "Quote size {} exceeds buffer size {}\n",
+                quote_size,
+                TD_QUOTE_SIZE
+            );
             return Err(Error::GetQuote);
         }
         quote[..quote_size as usize]
