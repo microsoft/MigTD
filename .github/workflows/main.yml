@@ -117,3 +117,24 @@ jobs:
 
       - name: Build MigTD binary with a default production migration policy(virtio-serial)
         run: cargo image --debug --no-default-features --features main,stack-guard,virtio-serial
+
+  build_migtd_test_flavors:
+    name: Build final migtd with Makefile (test flavors)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Build MigTD IGVM (production)
+        run: make build-igvm-all
+
+      - name: Build MigTD IGVM (accept all policy)
+        run: make build-igvm-accept-all
+
+      - name: Build MigTD IGVM (reject all policy)
+        run: make build-igvm-reject-all
+
+      - name: Build MigTD IGVM (test get quote)
+        run: make build-igvm-get-quote-all
+
+      - name: Build MigTD IGVM (disable RA and accept all)
+        run: make build-igvm-accept-all-tls-all
