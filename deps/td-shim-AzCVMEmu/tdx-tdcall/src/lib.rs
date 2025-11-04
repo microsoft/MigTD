@@ -57,7 +57,7 @@ pub mod tdx {
         tdvmcall_mmio_write,
         tdvmcall_rdmsr,
         tdvmcall_service,
-        tdvmcall_setup_event_notify,
+        // tdvmcall_setup_event_notify is emulated, not re-exported
         tdvmcall_sti_halt,
         tdvmcall_wrmsr,
         // Re-export types
@@ -69,7 +69,7 @@ pub mod tdx {
         tdcall_extend_rtmr, tdcall_servtd_rd, tdcall_servtd_wr, tdcall_sys_rd, tdcall_sys_wr,
         tdvmcall_get_quote, tdvmcall_migtd_receive_sync as tdvmcall_migtd_receive,
         tdvmcall_migtd_reportstatus, tdvmcall_migtd_send_sync as tdvmcall_migtd_send,
-        tdvmcall_migtd_waitforrequest,
+        tdvmcall_migtd_waitforrequest, tdvmcall_setup_event_notify,
     };
 }
 
@@ -80,7 +80,9 @@ pub mod tdreport {
     use original_tdx_tdcall::TdCallError;
 
     // Re-export some useful constants and types from original
-    pub use original_tdx_tdcall::tdreport::{TdxReport, TD_REPORT_SIZE};
+    pub use original_tdx_tdcall::tdreport::{
+        TdxReport, TD_REPORT_ADDITIONAL_DATA_SIZE, TD_REPORT_SIZE,
+    };
 
     /// Emulated tdcall_report function for AzCVMEmu mode
     /// Now returns the exact same error type as the original for perfect compatibility

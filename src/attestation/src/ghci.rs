@@ -2,9 +2,6 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-// This module is only compiled for non-AzCVMEmu modes
-#![cfg(not(feature = "AzCVMEmu"))]
-
 use core::ops::Range;
 use core::sync::atomic::{AtomicU8, Ordering};
 use core::{ffi::c_void, slice::from_raw_parts_mut};
@@ -24,15 +21,20 @@ const GET_QUOTE_STATUS_IN_FLIGHT: u64 = 0xFFFFFFFF_FFFFFFFF;
 
 pub static NOTIFIER: AtomicU8 = AtomicU8::new(0);
 
+#[cfg(not(feature = "AzCVMEmu"))]
 #[no_mangle]
 pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i32 {
+    ghci_get_quote(tdquote_req_buf, len)
+}
+
+pub fn ghci_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i32 {
     if tdquote_req_buf.is_null() || len > GET_QUOTE_MAX_SIZE {
         return AttestLibError::InvalidParameter as i32;
     }
 
     let input = unsafe { from_raw_parts_mut(tdquote_req_buf as *mut u8, len as usize) };
 
-    let mut shared = if let Some(shared) = SharedMemory::new(len as usize / 0x1000) {
+    let mut shared = if let Some(shared) = SharedMemory::new((len as usize + 0xfff) / 0x1000) {
         shared
     } else {
         return AttestLibError::OutOfMemory as i32;

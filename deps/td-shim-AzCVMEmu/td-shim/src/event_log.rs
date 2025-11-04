@@ -21,14 +21,17 @@ pub const CCEL_CC_TYPE_TDX: u8 = 2;
 #[derive(Debug, Clone, Copy)]
 pub struct MockCcel {
     pub lasa: u64, // Event log base address (points to our buffer)
-    pub laml: u32, // Event log length
+    pub laml: u64, // Event log length (changed from u32 to u64 to match td-shim-interface)
 }
+
+// Re-export as Ccel to match td-shim-interface::acpi::Ccel
+pub type Ccel = MockCcel;
 
 impl MockCcel {
     pub fn new(buffer_ptr: *const u8, buffer_len: usize) -> Self {
         Self {
             lasa: buffer_ptr as u64,
-            laml: buffer_len as u32,
+            laml: buffer_len as u64,
         }
     }
 
@@ -50,11 +53,70 @@ impl MockCcel {
 
 // Mock ACPI tables function
 pub fn get_acpi_tables() -> Option<&'static [&'static [u8]]> {
-    // Return a mock CCEL table - just need the signature
-    static MOCK_CCEL: &[u8] =
-        b"CCEL\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-    static TABLES: &[&[u8]] = &[MOCK_CCEL];
-    Some(TABLES)
+    use core::mem::size_of;
+    use zerocopy::AsBytes;
+
+    // Initialize the event log to get the CCEL
+    init_event_log();
+
+    // Create a proper CCEL table pointing to our event log buffer
+    unsafe {
+        let event_log_ptr = ptr::addr_of!(EVENT_LOG);
+        if let Some(log) = (*event_log_ptr).as_ref() {
+            // Use lazy static to store the CCEL bytes
+            static mut MOCK_CCEL_BYTES: [u8; 64] = [0u8; 64]; // Large enough for full Ccel structure
+            static mut INITIALIZED: bool = false;
+
+            if !INITIALIZED {
+                // Create a MockCcel with the event log buffer info
+                let mock_ccel = MockCcel::new(log.data.as_ptr(), EVENT_LOG_BUFFER_SIZE);
+
+                // Build a proper CCEL ACPI table structure
+                // GenericSdtHeader (36 bytes) + cc_type (1) + cc_subtype (1) + reserved (2) + laml (8) + lasa (8) = 56 bytes
+
+                // Signature: "CCEL"
+                MOCK_CCEL_BYTES[0..4].copy_from_slice(b"CCEL");
+                // Length: size of structure (56 bytes)
+                MOCK_CCEL_BYTES[4..8].copy_from_slice(&56u32.to_le_bytes());
+                // Revision: 1
+                MOCK_CCEL_BYTES[8] = 1;
+                // Checksum: 0 (we'll skip checksum for now)
+                MOCK_CCEL_BYTES[9] = 0;
+                // OEM ID: "INTEL "
+                MOCK_CCEL_BYTES[10..16].copy_from_slice(b"INTEL ");
+                // OEM Table ID: "EMULATED"
+                MOCK_CCEL_BYTES[16..24].copy_from_slice(b"EMULATED");
+                // OEM Revision: 1
+                MOCK_CCEL_BYTES[24..28].copy_from_slice(&1u32.to_le_bytes());
+                // Creator ID: "EMUL"
+                MOCK_CCEL_BYTES[28..32].copy_from_slice(b"EMUL");
+                // Creator Revision: 1
+                MOCK_CCEL_BYTES[32..36].copy_from_slice(&1u32.to_le_bytes());
+
+                // CC Type: TDX (2)
+                MOCK_CCEL_BYTES[36] = CCEL_CC_TYPE_TDX;
+                // CC Subtype: 0
+                MOCK_CCEL_BYTES[37] = 0;
+                // Reserved: 0
+                MOCK_CCEL_BYTES[38..40].copy_from_slice(&0u16.to_le_bytes());
+                // LAML (log area maximum length)
+                MOCK_CCEL_BYTES[40..48].copy_from_slice(&mock_ccel.laml.to_le_bytes());
+                // LASA (log area start address)
+                MOCK_CCEL_BYTES[48..56].copy_from_slice(&mock_ccel.lasa.to_le_bytes());
+
+                INITIALIZED = true;
+            }
+
+            // Return a slice of the initialized CCEL bytes
+            let ccel_slice: &'static [u8] = &MOCK_CCEL_BYTES[..56];
+            static mut TABLES_STORAGE: Option<[&'static [u8]; 1]> = None;
+            if TABLES_STORAGE.is_none() {
+                TABLES_STORAGE = Some([ccel_slice]);
+            }
+            return TABLES_STORAGE.as_ref().map(|t| &t[..]);
+        }
+    }
+    None
 }
 
 pub const PLATFORM_CONFIG_HOB: &[u8] = b"td_hob\0";

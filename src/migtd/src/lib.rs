@@ -19,6 +19,21 @@ compile_error!("AzCVMEmu only supports vmcall-raw transport. Disable virtio-seri
 #[cfg_attr(feature = "main", macro_use)]
 extern crate alloc;
 
+// Re-export TDX dependencies conditionally to avoid feature gates throughout the code
+#[cfg(not(feature = "AzCVMEmu"))]
+extern crate td_payload;
+#[cfg(not(feature = "AzCVMEmu"))]
+extern crate td_shim_interface;
+#[cfg(not(feature = "AzCVMEmu"))]
+extern crate tdx_tdcall;
+
+#[cfg(feature = "AzCVMEmu")]
+extern crate td_payload_emu as td_payload;
+#[cfg(feature = "AzCVMEmu")]
+extern crate td_shim_interface_emu as td_shim_interface;
+#[cfg(feature = "AzCVMEmu")]
+extern crate tdx_tdcall_emu as tdx_tdcall;
+
 pub mod config;
 pub mod driver;
 pub mod event_log;

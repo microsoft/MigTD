@@ -57,12 +57,6 @@ mod v2 {
 
     use crate::config::get_policy_issuer_chain;
 
-    // Use emulated TDX calls when AzCVMEmu feature is enabled
-    #[cfg(not(feature = "AzCVMEmu"))]
-    use tdx_tdcall;
-    #[cfg(feature = "AzCVMEmu")]
-    use tdx_tdcall_emu as tdx_tdcall;
-
     lazy_static! {
         pub static ref LOCAL_TCB_INFO: Once<PolicyEvaluationInfo> = Once::new();
         pub static ref VERIFIED_POLICY: Once<VerifiedPolicy<'static>> = Once::new();
