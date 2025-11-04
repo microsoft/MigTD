@@ -19,8 +19,6 @@ use super::*;
 #[cfg(feature = "policy_v2")]
 use crate::config::get_policy;
 use crate::event_log::get_event_log;
-#[cfg(feature = "AzCVMEmu")]
-use tdx_tdcall_emu as tdx_tdcall;
 use verify::*;
 
 type Result<T> = core::result::Result<T, RatlsError>;

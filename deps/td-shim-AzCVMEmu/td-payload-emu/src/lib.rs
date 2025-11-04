@@ -16,8 +16,11 @@ pub mod arch {
     // Re-export most arch functionality from real td-payload
     pub use td_payload_real::arch::*;
 
-    // Override only the IDT module for emulation
+    // Override the IDT module for emulation
     pub mod idt;
+
+    // Override the APIC module for emulation
+    pub mod apic;
 }
 
 pub mod mm {
@@ -27,3 +30,6 @@ pub mod mm {
     // Override only the shared module for emulation
     pub mod shared;
 }
+
+// Override the ACPI module for emulation
+pub mod acpi;

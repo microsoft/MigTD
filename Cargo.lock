@@ -169,6 +169,7 @@ dependencies = [
  "der",
  "spin 0.9.8",
  "td-payload",
+ "td-payload-emu",
  "tdx-tdcall",
  "tdx-tdcall-emu",
 ]
@@ -2195,6 +2196,7 @@ dependencies = [
  "lazy_static",
  "spin 0.9.8",
  "td-payload",
+ "td-shim-emu",
 ]
 
 [[package]]
