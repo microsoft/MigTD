@@ -46,6 +46,8 @@ lazy_static! {
     static ref SYS_FIELDS: Mutex<HashMap<u64, u64>> = Mutex::new(HashMap::new());
     /// Event notification vector for GetQuote completion
     static ref EVENT_NOTIFY_VECTOR: Mutex<Option<u64>> = Mutex::new(None);
+    /// Pending receive buffer for large transfers that span multiple GHCI transactions
+    static ref PENDING_RECV_BUFFER: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 }
 
 /// Emulated migration request info used by tdvmcall_migtd_waitforrequest
@@ -230,6 +232,14 @@ pub fn tcp_send_data(data: &[u8]) -> Result<(), TdVmcallError> {
 
 /// Receive raw data from TCP connection
 pub fn tcp_receive_data() -> Result<Vec<u8>, TdVmcallError> {
+    {
+        let mut pending = PENDING_RECV_BUFFER.lock();
+        if pending.is_some() {
+            log::warn!("TCP: Clearing stale pending receive buffer");
+            *pending = None;
+        }
+    }
+
     let mut stream_guard = TCP_STREAM.lock();
     let stream = stream_guard.as_mut().ok_or_else(|| {
         error!("No TCP connection available for receiving data");
@@ -255,6 +265,36 @@ pub fn tcp_receive_data() -> Result<Vec<u8>, TdVmcallError> {
     Ok(buffer)
 }
 
+/// Receive a chunk of data that fits within a GHCI buffer
+fn tcp_receive_data_chunk(max_chunk_size: usize) -> Result<Vec<u8>, TdVmcallError> {
+    let mut pending = PENDING_RECV_BUFFER.lock();
+
+    if let Some(mut pending_data) = pending.take() {
+        if pending_data.len() <= max_chunk_size {
+            return Ok(pending_data);
+        } else {
+            let chunk = pending_data.drain(..max_chunk_size).collect::<Vec<u8>>();
+            *pending = Some(pending_data);
+            return Ok(chunk);
+        }
+    }
+
+    drop(pending);
+    let full_data = tcp_receive_data()?;
+
+    if full_data.len() <= max_chunk_size {
+        return Ok(full_data);
+    }
+
+    let mut data = full_data;
+    let chunk = data.drain(..max_chunk_size).collect::<Vec<u8>>();
+
+    let mut pending = PENDING_RECV_BUFFER.lock();
+    *pending = Some(data);
+
+    Ok(chunk)
+}
+
 /// Helper function to parse GHCI 1.5 buffer format
 fn parse_ghci_buffer(buffer: &[u8]) -> (u64, u32, &[u8]) {
     if buffer.len() < 12 {
@@ -274,6 +314,7 @@ fn parse_ghci_buffer(buffer: &[u8]) -> (u64, u32, &[u8]) {
 /// Helper function to format GHCI 1.5 buffer format
 fn format_ghci_buffer(buffer: &mut [u8], status: u64, payload: &[u8]) {
     if buffer.len() < 12 {
+        error!("GHCI buffer too small: need at least 12 bytes for header");
         return;
     }
 
@@ -326,13 +367,20 @@ pub fn tdvmcall_migtd_receive_sync(
     data_buffer: &mut [u8],
     interrupt: u8,
 ) -> Result<(), TdVmcallError> {
-    // Receive payload over TCP
-    let received_payload = tcp_receive_data()?;
+    if data_buffer.len() < 12 {
+        error!(
+            "GHCI buffer too small for receive: need at least 12 bytes, got {}",
+            data_buffer.len()
+        );
+        return Err(TdVmcallError::VmcallOperandInvalid);
+    }
 
-    // Format response into GHCI 1.5 buffer (status = 1 for success)
+    let max_payload_size = data_buffer.len() - 12;
+
+    let received_payload = tcp_receive_data_chunk(max_payload_size)?;
+
     format_ghci_buffer(data_buffer, 1, &received_payload);
 
-    // Trigger the registered interrupt callback to emulate VMM signaling
     intr::trigger(interrupt);
     Ok(())
 }
@@ -800,4 +848,36 @@ pub fn tdvmcall_setup_event_notify(vector: u64) -> Result<(), original_tdx_tdcal
     *EVENT_NOTIFY_VECTOR.lock() = Some(vector);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_large_payload_chunking() {
+        *PENDING_RECV_BUFFER.lock() = None;
+
+        let large_payload = vec![0x11; 200_000];
+        *PENDING_RECV_BUFFER.lock() = Some(large_payload.clone());
+
+        /// Maximum GHCI buffer payload size (buffer size - 12 byte header)
+        /// Aligned with MAX_VMCALL_RAW_STREAM_MTU (64KB) used in vmcall_raw transport
+        let max_ghci_payload =  (0x1000 * 16) - 12;
+        let mut received_data = Vec::new();
+
+        for _ in 0..3 {
+            let chunk = tcp_receive_data_chunk(max_ghci_payload).unwrap();
+            assert_eq!(chunk.len(), max_ghci_payload);
+            received_data.extend_from_slice(&chunk);
+        }
+
+        let chunk4 = tcp_receive_data_chunk(max_ghci_payload).unwrap();
+        let expected_remainder = 200_000 - (max_ghci_payload * 3);
+        assert_eq!(chunk4.len(), expected_remainder);
+        received_data.extend_from_slice(&chunk4);
+
+        assert_eq!(received_data, large_payload);
+        assert!(PENDING_RECV_BUFFER.lock().is_none());
+    }
 }
