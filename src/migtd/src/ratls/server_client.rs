@@ -101,7 +101,15 @@ fn gen_quote(public_key: &[u8]) -> Result<Vec<u8>> {
     let mut additional_data = [0u8; 64];
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
     let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
-    attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
+    #[cfg(not(feature = "AzCVMEmu"))]
+    {
+        attestation::get_quote_workaround(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
+    }
+
+    #[cfg(feature = "AzCVMEmu")]
+    {
+        attestation::get_quote(td_report.as_bytes()).map_err(|_| RatlsError::GetQuote)
+    }
 }
 
 fn verify_server_cert(cert: &[u8], quote: &[u8]) -> core::result::Result<(), CryptoError> {

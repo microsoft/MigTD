@@ -18,6 +18,25 @@ const TD_QUOTE_SIZE: usize = 0x2000;
 const TD_REPORT_VERIFY_SIZE: usize = 1024;
 const ATTEST_HEAP_SIZE: usize = 0x80000;
 
+extern "C" {
+    pub fn servtd_get_quote(tdquote_req_buf: *mut core::ffi::c_void, len: u64) -> i32;
+}
+
+struct ServtdTdxQuoteHdr {
+    /* Quote version, filled by TD */
+    version: u64,
+    /* Status code of Quote request, filled by VMM */
+    status: u64,
+    /* Length of TDREPORT, filled by TD */
+    in_len: u32,
+    /* Length of Quote, filled by VMM */
+    out_len: u32,
+    /* Actual Quote data or TDREPORT on input */
+    data: [u64; 0],
+}
+
+const SERVTD_REQ_BUF_SIZE: usize = 16 * 4 * 1024; // 16 pages
+
 pub fn attest_init_heap() -> Option<usize> {
     unsafe {
         let heap_base =
@@ -56,6 +75,92 @@ pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
         "get_quote_inner returned quote_size = {}, {:?}\n",
         quote_size,
         quote
+    );
+
+    quote.truncate(quote_size as usize);
+    Ok(quote)
+}
+
+#[cfg(not(feature = "AzCVMEmu"))]
+pub fn get_quote_workaround(td_report: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut quote = vec![0u8; TD_QUOTE_SIZE];
+    let mut quote_size = TD_QUOTE_SIZE as u32;
+
+    let mut get_quote_blob = vec![0u8; SERVTD_REQ_BUF_SIZE];
+
+    // Dump header
+    let hdr = ServtdTdxQuoteHdr {
+        version: 1,
+        status: 0,
+        in_len: td_report.len() as u32,
+        out_len: quote_size as u32,
+        data: [],
+    };
+
+    let header_size = core::mem::size_of::<ServtdTdxQuoteHdr>();
+    let hdr_bytes =
+        unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, header_size) };
+    get_quote_blob[..header_size].copy_from_slice(hdr_bytes);
+
+    log::info!(
+        "Header size: {}, TD report size: {}\n",
+        header_size,
+        td_report.len()
+    );
+
+    log::info!("ServtdTdxQuoteHdr values before calling servtd_get_quote:\n");
+    log::info!("  version: {} ({:?})\n", hdr.version, hdr.version);
+    log::info!("  status: {} (0x{:x})\n", hdr.status, hdr.status);
+    log::info!("  in_len: {} ({:?})\n", hdr.in_len, hdr.in_len);
+    log::info!("  out_len: {} ({:?})\n", hdr.out_len, hdr.out_len);
+
+    // Copy TD report at data offset (after header)
+    get_quote_blob[header_size..header_size + td_report.len()].copy_from_slice(td_report);
+
+    // Dump the first 64 bytes of the blob for debugging
+    let dump_len = core::cmp::min(64, get_quote_blob.len());
+    log::info!(
+        "First {} bytes of get_quote_blob: {:02x?}\n",
+        dump_len,
+        &get_quote_blob[..dump_len]
+    );
+
+    let get_quote_blob_ptr = get_quote_blob.as_mut_ptr() as *mut c_void;
+    let servtd_get_quote_ret =
+        unsafe { servtd_get_quote(get_quote_blob_ptr, SERVTD_REQ_BUF_SIZE as u64) };
+
+    unsafe {
+        let hdr = get_quote_blob_ptr as *mut ServtdTdxQuoteHdr;
+        log::info!("ServtdTdxQuoteHdr values after calling servtd_get_quote:\n");
+        log::info!("  version: ({:?})\n", (*hdr).version);
+        log::info!("  status: (0x{:x})\n", (*hdr).status);
+        log::info!("  in_len: ({:?})\n", (*hdr).in_len);
+        log::info!("  out_len: ({:?})\n", (*hdr).out_len);
+        quote_size = (*hdr).out_len;
+        if (quote_size > TD_QUOTE_SIZE as u32) {
+            log::error!(
+                "Quote size {} exceeds buffer size {}\n",
+                quote_size,
+                TD_QUOTE_SIZE
+            );
+            return Err(Error::GetQuote);
+        }
+        quote[..quote_size as usize]
+            .copy_from_slice(&get_quote_blob[header_size..header_size + quote_size as usize]);
+    };
+
+    if servtd_get_quote_ret != 0 {
+        log::error!(
+            "servtd_get_quote failed with error code: {}\n",
+            servtd_get_quote_ret
+        );
+        return Err(Error::GetQuote);
+    }
+
+    log::info!(
+        "get_quote_workaround returned quote_size = {}, quote = {:?}\n",
+        quote_size,
+        &quote[..quote_size as usize]
     );
 
     quote.truncate(quote_size as usize);
