@@ -713,87 +713,485 @@ pub fn tdcall_sys_wr(field_identifier: u64, value: u64) -> core::result::Result<
     Ok(())
 }
 
-/// Emulation for TDG.VP.VMCALL<GetQuote>: Generate TD-Quote using vTPM
+/// Emulation for TDG.VP.VMCALL<GetQuote>: Generate TD-Quote using vTPM or return hardcoded collateral
 /// This mimics the exact API signature of tdx_tdcall::tdx::tdvmcall_get_quote
+///
+/// GHCI header (bytes 0-23, 24 bytes total):
+///    - Offset 0-7:   Version (u64)
+///    - Offset 8-15:  Status (u64)
+///    - Offset 16-19: in_len (u32)
+///    - Offset 20-23: out_len (u32)
+///
+/// Starting at offset 24, three scenarios are supported:
+///
+/// Scenario 1: Legacy quote request (TDREPORT only)
+///    - Offset 24+:   TDREPORT (1024 bytes)
+///    - in_len = 1024
+///
+/// Scenario 2: Collateral request (QGS_MSG for collateral)
+///    - Offset 24+:   QGS_MSG (starts with 4-byte SERVTD_HEADER + QGS message content)
+///    - in_len = QGS_MSG size (typically < 100 bytes)
+///
+/// Scenario 3: Quote request with QGS header (QGS_MSG + TDREPORT)
+///    - Offset 24+:   QGS_MSG (starts with 4-byte SERVTD_HEADER + QGS message content)
+///    - Offset N+:    TDREPORT (1024 bytes)
+///    - in_len = QGS_MSG size + 1024
 pub fn tdvmcall_get_quote(buffer: &mut [u8]) -> Result<(), original_tdx_tdcall::TdVmcallError> {
     use original_tdx_tdcall::TdVmcallError;
 
-    log::info!("AzCVMEmu: tdvmcall_get_quote emulated using vTPM interface");
+    log::info!("AzCVMEmu: tdvmcall_get_quote emulated");
 
     // TDX GHCI GetQuote buffer format:
     // Offset 0-7:   Version (u64, filled by TD)
     // Offset 8-15:  Status (u64, filled by VMM) - 0=success, 0xFFFFFFFFFFFFFFFF=in_flight
-    // Offset 16-19: TDREPORT length (u32, filled by TD)
-    // Offset 20-23: Quote buffer length (u32, filled by TD)
-    // Offset 24+:   TDREPORT data (filled by TD)
-    // After TDREPORT: Quote data (filled by VMM)
+    // Offset 16-19: in_len (u32, filled by TD)
+    // Offset 20-23: out_len (u32, filled by TD)
+    // Offset 24+:   Data (TDREPORT for quote, or SERVTD_HEADER+QGS_MSG for collateral)
 
     if buffer.len() < 24 {
         error!("GetQuote buffer too small: need at least 24 bytes for header");
         return Err(TdVmcallError::VmcallOperandInvalid);
     }
 
-    // Read the TDREPORT length from the buffer (u32 at offset 16)
-    let tdreport_length =
-        u32::from_le_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]) as usize;
+    // Read in_len to determine the payload size (u32 at offset 16)
+    let in_len = u32::from_le_bytes([buffer[16], buffer[17], buffer[18], buffer[19]]) as usize;
 
-    if tdreport_length == 0 || buffer.len() < 24 + tdreport_length {
+    if in_len == 0 || buffer.len() < 24 + in_len {
         error!(
-            "GetQuote buffer invalid: tdreport_length={} buffer_len={}",
-            tdreport_length,
+            "GetQuote buffer invalid: in_len={} buffer_len={}",
+            in_len,
             buffer.len()
         );
         return Err(TdVmcallError::VmcallOperandInvalid);
     }
 
-    // Extract the TDREPORT data (starts at offset 24)
-    let tdreport_data = &buffer[24..24 + tdreport_length];
+    // Detect request type by checking the payload format:
+    // Strategy: Assume QGS header first, validate version and type fields.
+    // If validation fails, fall back to pure TDREPORT (legacy) scenario.
+    // 1. Pure TDREPORT (1024 bytes): Legacy quote request (fallback)
+    // 2. SERVTD_HEADER + QGS_MSG: Parse QGS message type field to distinguish:
+    //    - GET_COLLATERAL_REQ (type=2): Collateral request
+    //    - GET_QUOTE_REQ (type=0): Quote request with QGS header + TDREPORT
+    const SERVTD_HEADER_SIZE: usize = 4;
+    const TDREPORT_SIZE: usize = 1024;
+    const QGS_MSG_HEADER_SIZE: usize = 16; // qgs_msg_header_t size
 
-    // Pass the entire TDREPORT to quote generation
-    // get_quote_emulated() can handle full TDREPORT and will extract what it needs
+    // QGS message types and version from qgs_msg_lib.h
+    const GET_QUOTE_REQ: u32 = 0;
+    const GET_COLLATERAL_REQ: u32 = 2;
+    const QGS_MSG_LIB_MAJOR_VER: u16 = 1;
+    const QGS_MSG_LIB_MINOR_VER: u16 = 1;
+
+    // Try to parse as QGS message with SERVTD_HEADER
+    // Check if we have enough data for SERVTD_HEADER + QGS message header
+    if buffer.len() >= 24 + SERVTD_HEADER_SIZE + QGS_MSG_HEADER_SIZE {
+        // Parse SERVTD_HEADER to get QGS message size (big-endian)
+        let qgs_msg_size =
+            u32::from_be_bytes([buffer[24], buffer[25], buffer[26], buffer[27]]) as usize;
+
+        // Parse QGS message header to get version and type fields
+        // qgs_msg_header_t starts at offset 28 (after SERVTD_HEADER at 24-27):
+        //   Offset 28-29: major_version (u16)
+        //   Offset 30-31: minor_version (u16)
+        //   Offset 32-35: type (u32)
+        //   Offset 36-39: size (u32)
+        //   Offset 40-43: error_code (u32)
+        let qgs_major_version = u16::from_le_bytes([buffer[28], buffer[29]]);
+        let qgs_minor_version = u16::from_le_bytes([buffer[30], buffer[31]]);
+        let qgs_msg_type = u32::from_le_bytes([buffer[32], buffer[33], buffer[34], buffer[35]]);
+
+        // Validate QGS message version and type
+        // If they match expected values, treat as QGS message
+        // Otherwise, fall back to pure TDREPORT scenario
+        let is_valid_qgs_version = qgs_major_version == QGS_MSG_LIB_MAJOR_VER
+            && qgs_minor_version == QGS_MSG_LIB_MINOR_VER;
+        let is_valid_qgs_type = qgs_msg_type == GET_QUOTE_REQ || qgs_msg_type == GET_COLLATERAL_REQ;
+
+        if is_valid_qgs_version && is_valid_qgs_type {
+            // Valid QGS message detected
+            log::info!(
+                "AzCVMEmu: QGS message detected - version={}.{}, type={}, msg_size={}",
+                qgs_major_version,
+                qgs_minor_version,
+                qgs_msg_type,
+                qgs_msg_size
+            );
+
+            match qgs_msg_type {
+                GET_COLLATERAL_REQ => {
+                    // Collateral request - just QGS message, no TDREPORT
+                    log::info!(
+                        "AzCVMEmu: GET_COLLATERAL_REQ detected, returning hardcoded collateral"
+                    );
+                    return handle_collateral_request(buffer, in_len);
+                }
+                GET_QUOTE_REQ => {
+                    // Quote request with QGS header - QGS message followed by TDREPORT
+                    log::info!("AzCVMEmu: GET_QUOTE_REQ detected, generating quote using vTPM");
+                    return handle_quote_request(buffer, in_len, true);
+                }
+                _ => {
+                    // Should not reach here due to is_valid_qgs_type check
+                    error!("AzCVMEmu: Unexpected QGS message type: {}", qgs_msg_type);
+                    let error_status = 0x8000000000000000u64;
+                    buffer[8..16].copy_from_slice(&error_status.to_le_bytes());
+                    return Err(TdVmcallError::VmcallOperandInvalid);
+                }
+            }
+        } else {
+            // Invalid QGS header - fall back to pure TDREPORT scenario
+            log::info!(
+                "AzCVMEmu: QGS header validation failed (version={}.{}, type={}), treating as pure TDREPORT",
+                qgs_major_version,
+                qgs_minor_version,
+                qgs_msg_type
+            );
+        }
+    }
+
+    // Fall back to pure TDREPORT - legacy quote request
+    log::info!(
+        "AzCVMEmu: Detected legacy quote request (pure TDREPORT), generating quote using vTPM"
+    );
+    handle_quote_request(buffer, in_len, false)
+}
+
+/// Handle collateral request by returning hardcoded collateral data
+fn handle_collateral_request(
+    buffer: &mut [u8],
+    _in_len: usize,
+) -> Result<(), original_tdx_tdcall::TdVmcallError> {
+    use original_tdx_tdcall::TdVmcallError;
+
+    // Use the hardcoded collateral data from collateral_data module
+    // This data is a PackedCollateral structure:
+    // - First 20 bytes: header with size fields (u16 version, various u32 sizes)
+    // - Remaining bytes: actual collateral data (certificates, CRLs, TCB info)
+    let collateral = crate::collateral_data::HARDCODED_COLLATERAL;
+
+    // The collateral data format from config/collateral_production_fmspc.json:
+    // struct PackedCollateral {
+    //     u16 major_version;           // offset 0-1
+    //     u16 minor_version;           // offset 2-3
+    //     u32 pck_crl_issuer_chain_size;    // offset 4-7
+    //     u32 root_ca_crl_size;             // offset 8-11
+    //     u32 pck_crl_size;                 // offset 12-15
+    //     u32 tcb_info_issuer_chain_size;   // offset 16-19
+    //     u32 tcb_info_size;                // offset 20-23
+    //     u32 qe_identity_issuer_chain_size; // offset 24-27
+    //     u32 qe_identity_size;             // offset 28-31
+    //     u8[] data;                        // offset 32+
+    // }
+    const PACKED_COLLATERAL_HEADER_SIZE: usize = 32;
+
+    if collateral.len() < PACKED_COLLATERAL_HEADER_SIZE {
+        error!("Collateral data too small: {} bytes", collateral.len());
+        let error_status = 0x8000000000000000u64;
+        buffer[8..16].copy_from_slice(&error_status.to_le_bytes());
+        return Err(TdVmcallError::VmcallOperandInvalid);
+    }
+
+    // Extract PackedCollateral header fields (little-endian)
+    let major_version = u16::from_le_bytes([collateral[0], collateral[1]]);
+    let minor_version = u16::from_le_bytes([collateral[2], collateral[3]]);
+    let pck_crl_issuer_chain_size =
+        u32::from_le_bytes([collateral[4], collateral[5], collateral[6], collateral[7]]);
+    let root_ca_crl_size =
+        u32::from_le_bytes([collateral[8], collateral[9], collateral[10], collateral[11]]);
+    let pck_crl_size = u32::from_le_bytes([
+        collateral[12],
+        collateral[13],
+        collateral[14],
+        collateral[15],
+    ]);
+    let tcb_info_issuer_chain_size = u32::from_le_bytes([
+        collateral[16],
+        collateral[17],
+        collateral[18],
+        collateral[19],
+    ]);
+    let tcb_info_size = u32::from_le_bytes([
+        collateral[20],
+        collateral[21],
+        collateral[22],
+        collateral[23],
+    ]);
+    let qe_identity_issuer_chain_size = u32::from_le_bytes([
+        collateral[24],
+        collateral[25],
+        collateral[26],
+        collateral[27],
+    ]);
+    let qe_identity_size = u32::from_le_bytes([
+        collateral[28],
+        collateral[29],
+        collateral[30],
+        collateral[31],
+    ]);
+
+    let collaterals_data = &collateral[PACKED_COLLATERAL_HEADER_SIZE..];
+
+    // Build GetCollateralResponse structure:
+    // struct MsgHeader {        // 16 bytes
+    //     u16 major_version;    // offset 0-1
+    //     u16 minor_version;    // offset 2-3
+    //     u32 type_;            // offset 4-7
+    //     u32 size;             // offset 8-11
+    //     u32 error_code;       // offset 12-15
+    // }
+    // struct GetCollateralResponse {
+    //     MsgHeader header;     // 16 bytes
+    //     u16 major_version;    // 16-17
+    //     u16 minor_version;    // 18-19
+    //     ... size fields ...   // 20-47 (7 * u32)
+    //     u8[] collaterals;     // 48+
+    // }
+    const MSG_HEADER_SIZE: usize = 16;
+    const GET_COLLATERAL_RESPONSE_HEADER: usize = 48; // MsgHeader + version fields + size fields
+    const SERVTD_HEADER_SIZE: usize = 4;
+
+    let msg_size = GET_COLLATERAL_RESPONSE_HEADER + collaterals_data.len();
+    let total_size = msg_size + 2 * 2; // extra 2*sizeof(u16) as per original implementation
+    let out_len = SERVTD_HEADER_SIZE + total_size;
+
+    let data_start = 24;
+    if buffer.len() < data_start + out_len {
+        error!(
+            "Buffer too small for collateral response: need {} bytes, have {}",
+            data_start + out_len,
+            buffer.len()
+        );
+        let error_status = 0x8000000000000000u64;
+        buffer[8..16].copy_from_slice(&error_status.to_le_bytes());
+        return Err(TdVmcallError::VmcallOperandInvalid);
+    }
+
+    // Write SERVTD_HEADER (4-byte big-endian size)
+    buffer[data_start] = ((total_size >> 24) & 0xFF) as u8;
+    buffer[data_start + 1] = ((total_size >> 16) & 0xFF) as u8;
+    buffer[data_start + 2] = ((total_size >> 8) & 0xFF) as u8;
+    buffer[data_start + 3] = (total_size & 0xFF) as u8;
+
+    let rsp_start = data_start + SERVTD_HEADER_SIZE;
+
+    // Write MsgHeader
+    buffer[rsp_start..rsp_start + 2].copy_from_slice(&1u16.to_le_bytes()); // major_version = 1
+    buffer[rsp_start + 2..rsp_start + 4].copy_from_slice(&0u16.to_le_bytes()); // minor_version = 0
+    buffer[rsp_start + 4..rsp_start + 8].copy_from_slice(&3u32.to_le_bytes()); // type_ = 3
+    buffer[rsp_start + 8..rsp_start + 12].copy_from_slice(&(total_size as u32).to_le_bytes()); // size
+    buffer[rsp_start + 12..rsp_start + 16].copy_from_slice(&0u32.to_le_bytes()); // error_code = 0
+
+    // Write GetCollateralResponse fields
+    buffer[rsp_start + 16..rsp_start + 18].copy_from_slice(&major_version.to_le_bytes());
+    buffer[rsp_start + 18..rsp_start + 20].copy_from_slice(&minor_version.to_le_bytes());
+    buffer[rsp_start + 20..rsp_start + 24]
+        .copy_from_slice(&pck_crl_issuer_chain_size.to_le_bytes());
+    buffer[rsp_start + 24..rsp_start + 28].copy_from_slice(&root_ca_crl_size.to_le_bytes());
+    buffer[rsp_start + 28..rsp_start + 32].copy_from_slice(&pck_crl_size.to_le_bytes());
+    buffer[rsp_start + 32..rsp_start + 36]
+        .copy_from_slice(&tcb_info_issuer_chain_size.to_le_bytes());
+    buffer[rsp_start + 36..rsp_start + 40].copy_from_slice(&tcb_info_size.to_le_bytes());
+    buffer[rsp_start + 40..rsp_start + 44]
+        .copy_from_slice(&qe_identity_issuer_chain_size.to_le_bytes());
+    buffer[rsp_start + 44..rsp_start + 48].copy_from_slice(&qe_identity_size.to_le_bytes());
+
+    // Write collaterals data
+    buffer[rsp_start + GET_COLLATERAL_RESPONSE_HEADER
+        ..rsp_start + GET_COLLATERAL_RESPONSE_HEADER + collaterals_data.len()]
+        .copy_from_slice(collaterals_data);
+
+    // Update out_len field (u32 at offset 20)
+    buffer[20..24].copy_from_slice(&(out_len as u32).to_le_bytes());
+
+    // Set status to success (0)
+    buffer[8..16].copy_from_slice(&0u64.to_le_bytes());
+
+    log::info!(
+        "AzCVMEmu: Returned wrapped collateral response, total size: {} bytes (msg_size={}, collaterals_data={})",
+        out_len, msg_size, collaterals_data.len()
+    );
+
+    // Trigger event notification if a vector was registered
+    if let Some(vector) = *EVENT_NOTIFY_VECTOR.lock() {
+        log::info!("AzCVMEmu: Triggering interrupt vector {}", vector);
+        intr::trigger(vector as u8);
+    }
+
+    Ok(())
+}
+
+/// Handle quote request by generating a quote using vTPM
+///
+/// # Parameters
+/// - `buffer`: The GHCI buffer containing the request and will receive the response
+/// - `in_len`: The input data length from the GHCI header
+/// - `has_qgs_header`: If true, the request has SERVTD_HEADER + QGS message before TDREPORT
+fn handle_quote_request(
+    buffer: &mut [u8],
+    in_len: usize,
+    has_qgs_header: bool,
+) -> Result<(), original_tdx_tdcall::TdVmcallError> {
+    use original_tdx_tdcall::TdVmcallError;
+
+    const SERVTD_HEADER_SIZE: usize = 4;
+    const TDREPORT_SIZE: usize = 1024;
+
+    // Determine where the TDREPORT starts based on whether there's a QGS header
+    let tdreport_offset = if has_qgs_header {
+        // Parse SERVTD_HEADER to get QGS message size (big-endian)
+        let qgs_msg_size =
+            u32::from_be_bytes([buffer[24], buffer[25], buffer[26], buffer[27]]) as usize;
+
+        // Parse qgs_msg_get_quote_req_t structure:
+        //   Offset 28-43: qgs_msg_header_t (16 bytes)
+        //   Offset 44-47: report_size (u32)
+        //   Offset 48-51: id_list_size (u32)
+        //   Offset 52+:   report (1024 bytes) followed by optional id_list
+
+        // The TDREPORT starts right after the QGS request header
+        const QGS_GET_QUOTE_REQ_HEADER_SIZE: usize = 16 + 4 + 4; // qgs_msg_header_t + report_size + id_list_size
+        let tdreport_start = 24 + SERVTD_HEADER_SIZE + QGS_GET_QUOTE_REQ_HEADER_SIZE;
+
+        log::info!(
+            "AzCVMEmu: Quote request with QGS header - qgs_msg_size={}, tdreport at offset {}",
+            qgs_msg_size,
+            tdreport_start
+        );
+        tdreport_start
+    } else {
+        // Legacy format: TDREPORT starts right after GHCI header
+        log::info!("AzCVMEmu: Legacy quote request - tdreport at offset 24");
+        24
+    };
+
+    // Validate we have enough data for the TDREPORT
+    if buffer.len() < tdreport_offset + TDREPORT_SIZE {
+        error!(
+            "GetQuote buffer too small for TDREPORT: need {} bytes, have {}",
+            tdreport_offset + TDREPORT_SIZE,
+            buffer.len()
+        );
+        let error_status = 0x8000000000000000u64;
+        buffer[8..16].copy_from_slice(&error_status.to_le_bytes());
+        return Err(TdVmcallError::VmcallOperandInvalid);
+    }
+
+    // Extract TDREPORT data
+    let tdreport_data = &buffer[tdreport_offset..tdreport_offset + TDREPORT_SIZE];
+
+    // Pass the TDREPORT to quote generation
     let quote = match crate::tdreport_emu::get_quote_emulated(tdreport_data) {
         Ok(quote) => quote,
         Err(e) => {
             error!("Failed to generate quote in AzCVMEmu mode: {:?}", e);
-            // Set status to error
-            let error_status = 0x8000000000000000u64; // GET_QUOTE_ERROR
-            let status_bytes = error_status.to_le_bytes();
-            buffer[8..16].copy_from_slice(&status_bytes);
+            let error_status = 0x8000000000000000u64;
+            buffer[8..16].copy_from_slice(&error_status.to_le_bytes());
             return Err(TdVmcallError::Other);
         }
     };
 
-    // Check if there's enough space after TDREPORT for the quote
-    let quote_start_offset = 24 + tdreport_length;
-    if buffer.len() < quote_start_offset + quote.len() {
-        error!(
-            "GetQuote buffer too small for quote: need {} bytes, have {}",
-            quote_start_offset + quote.len(),
-            buffer.len()
+    // Prepare the response based on request format
+    if has_qgs_header {
+        // Response format: SERVTD_HEADER + qgs_msg_get_quote_resp_t
+        // qgs_msg_get_quote_resp_t structure:
+        //   - qgs_msg_header_t (16 bytes): major_version, minor_version, type, size, error_code
+        //   - selected_id_size (4 bytes): 0 in our case
+        //   - quote_size (4 bytes)
+        //   - quote data
+        const QGS_MSG_HEADER_SIZE: usize = 16;
+        const QGS_GET_QUOTE_RESP_HEADER_SIZE: usize = QGS_MSG_HEADER_SIZE + 4 + 4; // header + selected_id_size + quote_size
+        const GET_QUOTE_RESP: u32 = 1;
+        const QGS_MSG_LIB_MAJOR_VER: u16 = 1;
+        const QGS_MSG_LIB_MINOR_VER: u16 = 1;
+
+        let qgs_response_size = QGS_GET_QUOTE_RESP_HEADER_SIZE + quote.len();
+        let response_offset = 24; // Start of SERVTD_HEADER
+
+        // Check if there's enough space for the response
+        let required_space = SERVTD_HEADER_SIZE + qgs_response_size;
+        if buffer.len() < response_offset + required_space {
+            error!(
+                "GetQuote buffer too small for quote response: need {} bytes, have {}",
+                response_offset + required_space,
+                buffer.len()
+            );
+            let error_status = 0x8000000000000000u64;
+            buffer[8..16].copy_from_slice(&error_status.to_le_bytes());
+            return Err(TdVmcallError::VmcallOperandInvalid);
+        }
+
+        // Write SERVTD_HEADER with QGS response message size (big-endian)
+        buffer[response_offset] = ((qgs_response_size >> 24) & 0xFF) as u8;
+        buffer[response_offset + 1] = ((qgs_response_size >> 16) & 0xFF) as u8;
+        buffer[response_offset + 2] = ((qgs_response_size >> 8) & 0xFF) as u8;
+        buffer[response_offset + 3] = (qgs_response_size & 0xFF) as u8;
+
+        // Write qgs_msg_header_t (16 bytes) at offset 28
+        let qgs_msg_offset = response_offset + SERVTD_HEADER_SIZE;
+
+        // major_version (u16, little-endian)
+        buffer[qgs_msg_offset..qgs_msg_offset + 2]
+            .copy_from_slice(&QGS_MSG_LIB_MAJOR_VER.to_le_bytes());
+        // minor_version (u16, little-endian)
+        buffer[qgs_msg_offset + 2..qgs_msg_offset + 4]
+            .copy_from_slice(&QGS_MSG_LIB_MINOR_VER.to_le_bytes());
+        // type (u32, little-endian) = GET_QUOTE_RESP
+        buffer[qgs_msg_offset + 4..qgs_msg_offset + 8]
+            .copy_from_slice(&GET_QUOTE_RESP.to_le_bytes());
+        // size (u32, little-endian) = total QGS message size
+        buffer[qgs_msg_offset + 8..qgs_msg_offset + 12]
+            .copy_from_slice(&(qgs_response_size as u32).to_le_bytes());
+        // error_code (u32, little-endian) = 0 (success)
+        buffer[qgs_msg_offset + 12..qgs_msg_offset + 16].copy_from_slice(&0u32.to_le_bytes());
+
+        // Write selected_id_size (u32, little-endian) = 0
+        buffer[qgs_msg_offset + 16..qgs_msg_offset + 20].copy_from_slice(&0u32.to_le_bytes());
+
+        // Write quote_size (u32, little-endian)
+        buffer[qgs_msg_offset + 20..qgs_msg_offset + 24]
+            .copy_from_slice(&(quote.len() as u32).to_le_bytes());
+
+        // Write the quote data after the QGS response header
+        let quote_offset = qgs_msg_offset + QGS_GET_QUOTE_RESP_HEADER_SIZE;
+        buffer[quote_offset..quote_offset + quote.len()].copy_from_slice(&quote);
+
+        // Update out_len field (u32 at offset 20) - SERVTD_HEADER + QGS response
+        buffer[20..24].copy_from_slice(&(required_space as u32).to_le_bytes());
+
+        log::info!(
+            "AzCVMEmu: Generated quote with QGS response header successfully - quote_size={}, qgs_response_size={}, total_response={}",
+            quote.len(), qgs_response_size, required_space
         );
-        // Set status to error
-        let error_status = 0x8000000000000000u64; // GET_QUOTE_ERROR
-        let status_bytes = error_status.to_le_bytes();
-        buffer[8..16].copy_from_slice(&status_bytes);
-        return Err(TdVmcallError::VmcallOperandInvalid);
+    } else {
+        // Legacy response format: quote directly after input data
+        let quote_start_offset = 24 + in_len;
+
+        // Check if there's enough space after TDREPORT for the quote
+        if buffer.len() < quote_start_offset + quote.len() {
+            error!(
+                "GetQuote buffer too small for quote: need {} bytes, have {}",
+                quote_start_offset + quote.len(),
+                buffer.len()
+            );
+            let error_status = 0x8000000000000000u64;
+            buffer[8..16].copy_from_slice(&error_status.to_le_bytes());
+            return Err(TdVmcallError::VmcallOperandInvalid);
+        }
+
+        // Write the generated quote after the TDREPORT
+        buffer[quote_start_offset..quote_start_offset + quote.len()].copy_from_slice(&quote);
+
+        // Update out_len field (u32 at offset 20) - just the quote size
+        buffer[20..24].copy_from_slice(&(quote.len() as u32).to_le_bytes());
+
+        log::info!(
+            "AzCVMEmu: Generated quote successfully (legacy format), size: {}",
+            quote.len()
+        );
     }
 
-    // Write the generated quote after the TDREPORT
-    buffer[quote_start_offset..quote_start_offset + quote.len()].copy_from_slice(&quote);
-
-    // Update the Quote buffer length field (u32 at offset 20)
-    let quote_length_bytes = (quote.len() as u32).to_le_bytes();
-    buffer[20..24].copy_from_slice(&quote_length_bytes);
-
     // Set status to success (0)
-    let success_status = 0u64;
-    let status_bytes = success_status.to_le_bytes();
-    buffer[8..16].copy_from_slice(&status_bytes);
-
-    log::info!(
-        "AzCVMEmu: tdvmcall_get_quote completed successfully, quote size: {}",
-        quote.len()
-    );
+    buffer[8..16].copy_from_slice(&0u64.to_le_bytes());
 
     // Trigger event notification if a vector was registered
     if let Some(vector) = *EVENT_NOTIFY_VECTOR.lock() {
@@ -863,7 +1261,7 @@ mod tests {
 
         /// Maximum GHCI buffer payload size (buffer size - 12 byte header)
         /// Aligned with MAX_VMCALL_RAW_STREAM_MTU (64KB) used in vmcall_raw transport
-        let max_ghci_payload =  (0x1000 * 16) - 12;
+        let max_ghci_payload = (0x1000 * 16) - 12;
         let mut received_data = Vec::new();
 
         for _ in 0..3 {

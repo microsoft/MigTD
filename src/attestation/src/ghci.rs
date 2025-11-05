@@ -21,7 +21,6 @@ const GET_QUOTE_STATUS_IN_FLIGHT: u64 = 0xFFFFFFFF_FFFFFFFF;
 
 pub static NOTIFIER: AtomicU8 = AtomicU8::new(0);
 
-#[cfg(not(feature = "AzCVMEmu"))]
 #[no_mangle]
 pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i32 {
     ghci_get_quote(tdquote_req_buf, len)
