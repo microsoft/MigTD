@@ -6,10 +6,14 @@ pub struct SharedMemory {
 
 impl SharedMemory {
     pub fn new(pages: usize) -> Option<Self> {
-        if pages == 0 { return None; }
+        if pages == 0 {
+            return None;
+        }
         // 4KiB pages typical in TDX environment
         let size = pages.checked_mul(4096)?;
-        Some(Self { buf: Vec::from_iter(core::iter::repeat(0u8).take(size)) })
+        Some(Self {
+            buf: Vec::from_iter(core::iter::repeat(0u8).take(size)),
+        })
     }
 
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
@@ -22,7 +26,7 @@ impl SharedMemory {
     }
 
     pub fn copy_to_private_shadow(&mut self) -> Option<&[u8]> {
-        // In emulation mode, just return the buffer directly since we're not dealing with 
+        // In emulation mode, just return the buffer directly since we're not dealing with
         // actual shared/private memory conversion like in real TDX
         Some(&self.buf)
     }

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 //! Hand-off Block (HOB) emulation for Azure CVM environment
-//! 
+//!
 //! When using AzCVMEmu with vmcall-raw, HOB emulation is not required.
 //! This module provides minimal stubs that satisfy compilation requirements only.
 
