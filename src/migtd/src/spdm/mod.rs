@@ -31,7 +31,6 @@ pub use spdm_req::spdm_requester;
 pub use spdm_req::spdm_requester_transfer_msk;
 pub use spdm_rsp::spdm_responder;
 pub use spdm_rsp::spdm_responder_transfer_msk;
-use tdx_tdcall;
 
 pub use spdm_vdm::*;
 
