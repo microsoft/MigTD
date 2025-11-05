@@ -31,7 +31,6 @@ pub use spdm_req::spdm_requester;
 pub use spdm_req::spdm_requester_transfer_msk;
 pub use spdm_rsp::spdm_responder;
 pub use spdm_rsp::spdm_responder_transfer_msk;
-use tdx_tdcall;
 
 pub use spdm_vdm::*;
 
@@ -87,7 +86,8 @@ pub fn gen_quote_spdm(report_data: &[u8]) -> Result<Vec<u8>, MigrationResult> {
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
     let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
 
-    let res = attestation::get_quote(td_report.as_bytes()).unwrap();
+    let res =
+        attestation::get_quote(td_report.as_bytes()).map_err(|_| MigrationResult::Unsupported)?;
     Ok(res)
 }
 
@@ -157,10 +157,11 @@ impl Codec for SpdmAppContextData {
         #[cfg(not(feature = "vmcall-raw"))]
         {
             size += self.migration_info.mig_policy_id.encode(bytes)?;
-            size += self.migration_info.communication_id.encode(bytes)?;
+            size += self.migration_info.communication_id.encode(bytes)?
         }
 
         size += self.private_key.encode(bytes)?;
+
         Ok(size)
     }
 
@@ -178,6 +179,7 @@ impl Codec for SpdmAppContextData {
         }
 
         let private_key = PrivateKeyDer::read(reader)?;
+
         Some(Self {
             migration_info,
             private_key,

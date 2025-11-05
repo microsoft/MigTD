@@ -216,6 +216,13 @@ impl BuildArgs {
         let sh = Shell::new()?;
         sh.set_var("CC_x86_64_unknown_none", "clang");
         sh.set_var("AR_x86_64_unknown_none", "llvm-ar");
+        sh.set_var(
+            "SPDM_CONFIG",
+            PROJECT_ROOT
+                .join("config/spdm_config.json")
+                .to_str()
+                .unwrap(),
+        );
 
         cmd!(
             sh,
@@ -267,8 +274,6 @@ impl BuildArgs {
             "-f",
             "0BE92DC3-6221-4C98-87C1-8EEFFD70DE5A",
             self.policy()?.to_str().unwrap(),
-            "CA437832-4C51-4322-B13D-A21BD0C8FFF6",
-            self.root_ca()?.to_str().unwrap(),
         ]);
 
         let cmd = if self.policy_v2 {
@@ -277,7 +282,10 @@ impl BuildArgs {
                 self.policy_issuer_chain()?.to_str().unwrap(),
             ])
         } else {
-            cmd
+            cmd.args(&[
+                "CA437832-4C51-4322-B13D-A21BD0C8FFF6",
+                self.root_ca()?.to_str().unwrap(),
+            ])
         };
 
         cmd.args(&["-o", bin.to_str().unwrap()]).run()?;
