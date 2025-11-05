@@ -29,6 +29,9 @@ pub mod tdx_emu;
 // Our emulated tdreport module
 pub mod tdreport_emu;
 
+// Hardcoded collateral data for AzCVMEmu mode
+mod collateral_data;
+
 // Re-export TDX emulation functions
 pub use tdx_emu::{
     connect_tcp_client, init_tcp_emulation_with_mode, start_tcp_server_sync, tcp_receive_data,

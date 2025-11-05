@@ -22,10 +22,6 @@ mod attest;
 mod binding;
 mod ghci;
 
-// Conditionally compile collateral for AzCVMEmu mode
-#[cfg(feature = "AzCVMEmu")]
-mod collateral;
-
 pub mod root_ca;
 
 pub use attest::*;
