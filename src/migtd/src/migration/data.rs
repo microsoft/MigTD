@@ -239,6 +239,7 @@ pub struct ReportStatusResponse {
     pub reserved: u64,
 }
 
+#[derive(Debug, Clone)]
 #[cfg(feature = "vmcall-raw")]
 pub enum WaitForRequestResponse {
     StartMigration(MigrationInformation),
@@ -246,6 +247,7 @@ pub enum WaitForRequestResponse {
     EnableLogArea(EnableLogAreaInfo),
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct MigrationInformation {
     pub mig_info: MigtdMigrationInformation,
     #[cfg(all(

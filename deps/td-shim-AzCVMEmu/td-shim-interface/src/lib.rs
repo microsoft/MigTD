@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 //! TD-shim interface emulation for Azure CVM environment
-//! 
+//!
 //! This crate provides minimal emulation of td-shim-interface functionality
 //! to support the policy crate in Azure CVM environments where the real
 //! td-shim is not available.
@@ -34,15 +34,12 @@
 
 extern crate alloc;
 
-pub mod td_uefi_pi;
 pub mod file_ops;
+pub mod td_uefi_pi;
 
 // Re-export key functions for convenience
 pub use td_uefi_pi::fv::{
-    set_policy_data,
-    set_root_ca_data,
-    load_policy_from_file,
-    load_root_ca_from_file,
+    load_policy_from_file, load_root_ca_from_file, set_policy_data, set_root_ca_data,
 };
 
 pub use file_ops::init_file_based_emulation_with_real_files;

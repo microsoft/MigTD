@@ -6,10 +6,10 @@
 //! Firmware Volume emulation
 //! Provides file-based emulation for policy and root CA files in migtd
 
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::ptr;
-use r_efi::efi::Guid;
 use crate::td_uefi_pi::pi::fv::FV_FILETYPE_RAW;
+use core::ptr;
+use core::sync::atomic::{AtomicBool, Ordering};
+use r_efi::efi::Guid;
 
 // Static buffers to store emulated files
 static mut POLICY_BUFFER: [u8; 32768] = [0; 32768]; // 32KB for policy files
@@ -116,7 +116,7 @@ pub fn load_root_ca_from_file(path: &str) -> bool {
 /// This implementation supports common files needed by migtd:
 /// - Policy files (using MIGTD_POLICY_FFS_GUID)
 /// - Root CA files (using MIGTD_ROOT_CA_FFS_GUID)
-/// 
+///
 /// Other files will return None
 pub fn get_file_from_fv(
     _fv_data: &[u8],
@@ -127,15 +127,15 @@ pub fn get_file_from_fv(
     if fv_file_type != FV_FILETYPE_RAW {
         return None;
     }
-    
+
     if file_name == MIGTD_POLICY_FFS_GUID && POLICY_INITIALIZED.load(Ordering::SeqCst) {
-        unsafe { 
+        unsafe {
             let policy_buffer_ptr = ptr::addr_of!(POLICY_BUFFER);
             let policy_size_ptr = ptr::addr_of!(POLICY_SIZE);
             Some(&(*policy_buffer_ptr)[..*policy_size_ptr])
         }
     } else if file_name == MIGTD_ROOT_CA_FFS_GUID && ROOT_CA_INITIALIZED.load(Ordering::SeqCst) {
-        unsafe { 
+        unsafe {
             let root_ca_buffer_ptr = ptr::addr_of!(ROOT_CA_BUFFER);
             let root_ca_size_ptr = ptr::addr_of!(ROOT_CA_SIZE);
             Some(&(*root_ca_buffer_ptr)[..*root_ca_size_ptr])

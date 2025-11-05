@@ -11,11 +11,11 @@ use core::future::poll_fn;
 use core::task::Poll;
 
 //use core::ffi::c_void;
-use log::{error, info};
 #[cfg(feature = "policy_v2")]
 use alloc::string::String;
 #[cfg(feature = "vmcall-raw")]
 use alloc::vec::Vec;
+use log::{error, info};
 use migtd::event_log::*;
 #[cfg(not(feature = "vmcall-raw"))]
 use migtd::migration::data::MigrationInformation;
@@ -302,11 +302,6 @@ fn handle_pre_mig() {
                             .unwrap_or_else(|e| e)
                     }
                 };
-
-                #[cfg(feature = "vmcall-raw")]
-                {
-                    let _ = report_status(status as u8, request.mig_info.mig_request_id).await;
-                }
 
                 #[cfg(not(feature = "vmcall-raw"))]
                 {

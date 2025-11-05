@@ -100,6 +100,7 @@ pub struct MigtdMigrationInformation {
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite)]
 #[cfg(feature = "vmcall-raw")]
+#[derive(Clone)]
 pub struct ReportInfo {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
@@ -110,6 +111,7 @@ pub struct ReportInfo {
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite)]
 #[cfg(feature = "vmcall-raw")]
+#[derive(Clone)]
 pub struct EnableLogAreaInfo {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>

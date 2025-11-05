@@ -5,10 +5,7 @@
 #[cfg(feature = "attest-lib-ext")]
 use crate::binding::verify_quote_integrity_ex;
 use crate::{
-    binding::{
-        get_quote as get_quote_inner, init_heap, verify_quote_integrity, AttestLibError,
-        QveCollateral,
-    },
+    binding::{init_heap, verify_quote_integrity, AttestLibError, QveCollateral},
     root_ca::ROOT_CA_PUBLIC_KEY,
     Error, TD_VERIFIED_REPORT_SIZE,
 };
@@ -183,7 +180,7 @@ pub fn get_quote_workaround(td_report: &[u8]) -> Result<Vec<u8>, Error> {
         log::info!("  in_len: ({:?})\n", (*hdr).in_len);
         log::info!("  out_len: ({:?})\n", (*hdr).out_len);
         quote_size = (*hdr).out_len;
-        if (quote_size > TD_QUOTE_SIZE as u32) {
+        if quote_size > TD_QUOTE_SIZE as u32 {
             log::error!(
                 "Quote size {} exceeds buffer size {}\n",
                 quote_size,
