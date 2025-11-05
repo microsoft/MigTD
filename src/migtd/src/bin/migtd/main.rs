@@ -28,7 +28,6 @@ use sha2::{Digest, Sha384};
 use spin::Mutex;
 use tdx_tdcall::tdreport;
 
-
 // Local trait to convert TdInfo to bytes without external dependency
 trait TdInfoAsBytes {
     fn as_bytes(&self) -> &[u8];
@@ -311,7 +310,7 @@ fn handle_pre_mig() {
                         }
                         MigrationResult::InvalidPolicyError => {
                             error!("Invalid migration policy provided\n");
-                            return; 
+                            return;
                         }
                         MigrationResult::VmmCanceled => {
                             error!("Migration canceled by VMM\n");
@@ -329,12 +328,12 @@ fn handle_pre_mig() {
                             // This shouldn't happen in an error context, but included for completeness
                             info!("Migration operation succeeded\n");
                             return;
-                            }
-                        }      
+                        }
                     }
-                };
-            }
-        });
+                }
+            };
+        }
+    });
 
     loop {
         // Poll the async runtime to execute tasks
