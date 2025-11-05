@@ -18,7 +18,7 @@ use td_payload::arch::idt::InterruptStack;
 use td_payload::mm::shared::SharedMemory;
 use tdx_tdcall::tdx;
 
-const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 160;
+const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 16;
 const VMCALL_VECTOR: u8 = 0x52;
 
 lazy_static! {
