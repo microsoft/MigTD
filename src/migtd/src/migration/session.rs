@@ -261,7 +261,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
             VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
             log::info!("wait_for_request after VMCALL_SERVICE_FLAG load and store \n");
         } else {
-            log::info!("wait_for_request VMCALL_SERVICE_FLAG load returning Poll::Pending\n");
+            //log::info!("wait_for_request VMCALL_SERVICE_FLAG load returning Poll::Pending\n");
             return Poll::Pending;
         }
 

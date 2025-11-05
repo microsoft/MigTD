@@ -326,7 +326,7 @@ fn handle_pre_mig() {
                         }
                         MigrationResult::Success => {
                             // This shouldn't happen in an error context, but included for completeness
-                            info!("Migration operation succeeded\n");
+                            info!("wait_for_request operation succeeded\n");
                             return;
                         }
                     }
@@ -361,7 +361,7 @@ fn handle_pre_mig() {
                         #[cfg(feature = "test_reject_all")]
                         {
                             // Don't execute exchange_msk, just return Unsupported
-                            info!("wait_for_request returning MigrationResult::Unsupported \n");
+                            error!("wait_for_request returning MigrationResult::Unsupported \n");
                             MigrationResult::Unsupported
                         }
                     };

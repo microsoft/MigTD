@@ -121,7 +121,7 @@ pub struct EnableLogAreaInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Pread, Pwrite)]
+#[derive(Debug, Pread, Pwrite, Clone, Default)]
 pub struct MigtdStreamSocketInfo {
     // Unique identifier for the communication between MigTD and VMM
     // It can be used in MigtdMigrationInformation Hob
