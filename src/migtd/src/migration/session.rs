@@ -240,10 +240,10 @@ fn process_buffer(buffer: &mut [u8]) -> (u64, u32) {
 
 #[cfg(feature = "vmcall-raw")]
 pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
+    log::info!("Waiting for migration request from VMM\n");
+
     let data_status: u64 = 0;
     let data_length: u32 = 0;
-
-    log::info!("Waiting for migration request from VMM\n");
 
     let mut data_buffer = SharedMemory::new(1).ok_or(MigrationResult::OutOfResource)?;
 
@@ -252,27 +252,37 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
     data_buffer[0..8].copy_from_slice(&u64::to_le_bytes(data_status));
     data_buffer[8..12].copy_from_slice(&u32::to_le_bytes(data_length));
 
+    log::info!("wait_for_request before tdvmcall_migtd_waitforrequest \n");
     tdx::tdvmcall_migtd_waitforrequest(data_buffer, event::VMCALL_SERVICE_VECTOR)?;
+    log::info!("wait_for_request after tdvmcall_migtd_waitforrequest \n");
 
     poll_fn(|_cx| {
         if VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
             VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
+            log::info!("wait_for_request after VMCALL_SERVICE_FLAG load and store \n");
         } else {
+            log::info!("wait_for_request VMCALL_SERVICE_FLAG load returning Poll::Pending\n");
             return Poll::Pending;
         }
 
+        log::info!("wait_for_request before process_buffer \n");
         let (data_status, data_length) = process_buffer(data_buffer);
+        log::info!("wait_for_request after process_buffer \n");
 
         let data_status_bytes = data_status.to_le_bytes();
         if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
+            log::info!("wait_for_request data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS returning Poll::Pending\n");
             return Poll::Pending;
         }
+        log::info!("wait_for_request data_status_bytes: {:x?}\n", data_status_bytes);
 
         let operation: u8 = data_status_bytes[1];
+        log::info!("wait_for_request operation: {}\n", operation);
         if operation == DataStatusOperation::StartMigration as u8 {
             // data_length should be MigtdMigrationInformation
             let expected_datalength = size_of::<MigtdMigrationInformation>();
             if data_length != expected_datalength as u32 {
+                log::info!("wait_for_request data_length != expected_datalength as u32 returning Poll::Pending\n");
                 return Poll::Pending;
             }
             let slice = &data_buffer[12..12 + data_length as usize];
@@ -358,6 +368,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
                 Poll::Ready(Ok(WaitForRequestResponse::EnableLogArea(wfr_info)))
             }
         } else {
+            log::info!("wait_for_request Poll::Pending as u32 returning Poll::Pending\n");
             Poll::Pending
         }
     })
@@ -794,7 +805,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             );
 
             let mut remote_information = ExchangeInformation::default();
-            let mut exchange_information = exchange_info(&info)?;
+            let mut exchange_information = exchange_info(&info.mig_info, info.is_src())?;
 
             if info.is_src() {
                 migration_log!(
@@ -865,7 +876,7 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
 
             let mig_ver =
                 cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
-            set_mig_version(info, mig_ver)?;
+            set_mig_version(&info.mig_info, mig_ver)?;
             migration_log!(
                 info,
                 info.mig_info.mig_request_id,

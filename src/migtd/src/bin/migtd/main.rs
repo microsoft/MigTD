@@ -28,6 +28,7 @@ use sha2::{Digest, Sha384};
 use spin::Mutex;
 use tdx_tdcall::tdreport;
 
+
 // Local trait to convert TdInfo to bytes without external dependency
 trait TdInfoAsBytes {
     fn as_bytes(&self) -> &[u8];
@@ -269,12 +270,71 @@ fn handle_pre_mig() {
             })
             .await;
 
-            if let Ok(request) = wait_for_request().await {
-                info!("wait_for_request returned : {:?} \n", request);
-                *PENDING_REQUEST.lock() = Some(request);
+            let return_val = match wait_for_request().await {
+                Ok(request) => {
+                    info!("wait_for_request returned : {:?} \n", request);
+                    *PENDING_REQUEST.lock() = Some(request);
+                }
+                Err(e) => {
+                    match e {
+                        MigrationResult::InvalidParameter => {
+                            error!("Invalid parameter provided to migration operation\n");
+                            return;
+                        }
+                        MigrationResult::Unsupported => {
+                            error!("Migration is not supported by VMM\n");
+                            return;
+                        }
+                        MigrationResult::OutOfResource => {
+                            error!("Out of resources during migration operation\n");
+                            return;
+                        }
+                        MigrationResult::TdxModuleError => {
+                            error!("TDX module error during migration operation\n");
+                            return;
+                        }
+                        MigrationResult::NetworkError => {
+                            error!("Network error during migration communication\n");
+                            return;
+                        }
+                        MigrationResult::SecureSessionError => {
+                            error!("Secure session establishment failed\n");
+                            return;
+                        }
+                        MigrationResult::MutualAttestationError => {
+                            error!("Mutual attestation failed during migration\n");
+                            return;
+                        }
+                        MigrationResult::PolicyUnsatisfiedError => {
+                            error!("Migration policy requirements not satisfied\n");
+                            return;
+                        }
+                        MigrationResult::InvalidPolicyError => {
+                            error!("Invalid migration policy provided\n");
+                            return; 
+                        }
+                        MigrationResult::VmmCanceled => {
+                            error!("Migration canceled by VMM\n");
+                            return;
+                        }
+                        MigrationResult::VmmInternalError => {
+                            error!("VMM internal error during migration\n");
+                            return;
+                        }
+                        MigrationResult::UnsupportedOperationError => {
+                            error!("Unsupported operation requested\n");
+                            return;
+                        }
+                        MigrationResult::Success => {
+                            // This shouldn't happen in an error context, but included for completeness
+                            info!("Migration operation succeeded\n");
+                            return;
+                            }
+                        }      
+                    }
+                };
             }
-        }
-    });
+        });
 
     loop {
         // Poll the async runtime to execute tasks
@@ -285,24 +345,6 @@ fn handle_pre_mig() {
 
         if let Some(request) = new_request {
             async_runtime::add_task(async move {
-                // Determine the status based on enabled features
-                let status = {
-                    #[cfg(feature = "test_reject_all")]
-                    {
-                        // Don't execute exchange_msk, just return Unsupported
-                        info!("wait_for_request returning MigrationResult::Unsupported \n");
-                        MigrationResult::Unsupported
-                    }
-                    #[cfg(not(feature = "test_reject_all"))]
-                    {
-                        // Normal behavior - execute and use the actual result
-                        let exchange_result = exchange_msk(&request).await;
-                        exchange_result
-                            .map(|_| MigrationResult::Success)
-                            .unwrap_or_else(|e| e)
-                    }
-                };
-
                 #[cfg(not(feature = "vmcall-raw"))]
                 {
                     let status = exchange_msk(&request)
@@ -315,6 +357,16 @@ fn handle_pre_mig() {
                 }
                 #[cfg(feature = "vmcall-raw")]
                 {
+                    // Determine the status based on enabled features
+                    let status = {
+                        #[cfg(feature = "test_reject_all")]
+                        {
+                            // Don't execute exchange_msk, just return Unsupported
+                            info!("wait_for_request returning MigrationResult::Unsupported \n");
+                            MigrationResult::Unsupported
+                        }
+                    };
+
                     let mut data: Vec<u8> = Vec::new();
                     match request {
                         WaitForRequestResponse::StartMigration(wfr_info) => {
