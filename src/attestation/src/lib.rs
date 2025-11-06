@@ -21,7 +21,6 @@ extern crate tdx_tdcall_emu as tdx_tdcall;
 mod attest;
 mod binding;
 mod ghci;
-
 pub mod root_ca;
 
 pub use attest::*;
