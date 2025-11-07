@@ -10,27 +10,29 @@ For development and testing MigTD core logic e2e flows, including RATLS with TDX
 
 **Note:** The `AzCVMEmu` feature only works with the `vmcall-raw` transport feature. When building with `AzCVMEmu`, the `main` and `vmcall-raw` features are enabled by default. You do not need to include them explicitly in the `--features` list.
 
-**Production build** (requires Azure CVM + TPM2‑TSS):
+**Emulation architecture details:** See `deps/td-shim-AzCVMEmu/README.md` for detailed documentation on the emulation layer implementation.
+
+#### Build Options
+
+#### Build Options
+
+**Default build** (requires Azure TDX CVM + TPM2‑TSS):
+```bash
+cargo build --no-default-features --features AzCVMEmu
 ```
-cargo build --no-default-features --features "AzCVMEmu" --bin migtd
+This mode uses real Azure IMDS attestation and allows testing policy rules for platform TCB level. Running on two Azure TDX CVMs with different TCB levels enables verification of policy enforcement based on TCB version requirements.
+
+**Mock report build** (testing with mock data but full attestation flow - on any Linux machine):
+```bash
+cargo build --no-default-features --features AzCVMEmu,test_mock_report
 ```
 
-**Test build** (development/testing - no TDX/Azure CVM required):
+**Skip RA build** (development/testing - no TDX/Azure CVM required, bypasses attestation - on any Linux machine):
+```bash
+cargo build --no-default-features --features AzCVMEmu,test_disable_ra_and_accept_all
 ```
-cargo build --no-default-features --features "AzCVMEmu,test_disable_ra_and_accept_all" --bin migtd
-```
 
-**⚠️ Warning**: The `test_disable_ra_and_accept_all` feature bypasses remote attestation entirely and uses mock TD reports/quotes. This allows emulation mode MigTD to run in non-TDX, non-Azure CVM environments but will not cover MigTD code's TDX quote generation and verification flow.
-
-This builds the `migtd` binary and required dependencies.
-
-This enables MigTD to run as a standard command-line application with:
-- Standard library support (std)
-- File-based configuration for policy and root CA data
-- TCP transport for source/destination communication
-- Command-line argument parsing with help and error handling
-
-#### Running MigTD in AzCVMEmu Mode
+#### Running MigTD in AzCVMEmu Mode in Azure TDX CVM
 
 
 Prerequisites:
@@ -61,28 +63,29 @@ The easiest way to run MigTD in AzCVMEmu mode is using the provided `migtdemu.sh
 # Display help
 ./migtdemu.sh --help
 
-# Build release and run as source (default)
-./migtdemu.sh
+# Default mode (requires Azure TDX CVM + TPM)
+./migtdemu.sh --role source
+./migtdemu.sh --role destination
 
-# Build debug and run as destination
-./migtdemu.sh --debug --role destination
+# Mock report mode (full attestation with mock data - on any Linux machine)
+./migtdemu.sh --mock-report --role source
+./migtdemu.sh --mock-report --both
 
-# Run with custom configuration
-./migtdemu.sh --role source --request-id 42 --dest-ip 192.168.1.100 --dest-port 8002
-
-# Skip RA mode (no TDX/Azure CVM/TPM required)
+# Skip RA mode (no attestation - on any Linux machine)
 ./migtdemu.sh --skip-ra --role source
-
-# Skip RA mode with both source and destination
 ./migtdemu.sh --skip-ra --both
+
+# Debug build with custom configuration
+./migtdemu.sh --debug --role source --request-id 42 --dest-ip 192.168.1.100 --dest-port 8002
 ```
 
 Script capabilities at a glance:
 - Builds MigTD with `--no-default-features --features AzCVMEmu` in the selected mode (debug/release).
-- With `--skip-ra` flag: Builds with `--features "AzCVMEmu,test_disable_ra_and_accept_all"` for mock attestation.
+- With `--mock-report` flag: Builds with `--features "AzCVMEmu,test_mock_report"` for mock TD reports/quotes with full attestation flow (works on any Linux machine).
+- With `--skip-ra` flag: Builds with `--features "AzCVMEmu,test_disable_ra_and_accept_all"` to bypass attestation entirely (works on any Linux machine).
 - Validates and sets required env vars: `MIGTD_POLICY_FILE` and `MIGTD_ROOT_CA_FILE`.
 - Auto-sets `RUST_BACKTRACE` (1) and `RUST_LOG` (debug in debug builds, info in release) unless already set.
-- If `/dev/tpmrm0` (or TPM2-ABRMD socket) is present and permissions are insufficient, it automatically enables sudo even if `--no-sudo` is passed.
+- If `/dev/tpmrm0` (or TPM2-ABRMD socket) is present and permissions are insufficient, it automatically enables sudo even if `--no-sudo` is passed (not needed with `--mock-report` or `--skip-ra`).
 - Exports `TSS2_TCTI=device:/dev/tpmrm0` when the device exists, to help TPM2-TSS.
 - Single-role mode: runs just source or destination.
 - `--both`: starts destination in the background, waits for it to listen, then runs source in the foreground; destination logs go to `dest.out.log` and are tailed on failure.
@@ -94,8 +97,12 @@ Supported options:
 - `-p, --dest-port PORT`           destination port (default: 8001)
 - `--policy-file FILE`             policy file path (default: config/policy.json)
 - `--root-ca-file FILE`            root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)
+- `--policy-issuer-chain-file FILE` policy issuer chain file path (required with --policy-v2)
+- `--policy-v2`                    enable policy v2 support
+- `--features FEATURES`            add extra cargo features (comma-separated, e.g., 'spdm_attestation')
 - `--debug | --release`            build mode (default: release)
-- `--skip-ra`                      skip remote attestation (uses mock TD reports/quotes for non-TDX environments)
+- `--mock-report`                  use mock TD reports/quotes with full attestation flow (on any Linux machine)
+- `--skip-ra`                      skip remote attestation entirely (on any Linux machine)
 - `--both`                         orchestrate destination then source on localhost
 - `--no-sudo`                      do not use sudo unless forced by TPM permissions
 - `-h, --help`                     show script help
@@ -107,27 +114,30 @@ What the script prints/shows:
 
 **Example usage with migtdemu.sh:**
 ```bash
-# Terminal 1: Start destination MigTD in release mode
+# Default mode (requires Azure TDX CVM + TPM)
 ./migtdemu.sh --role destination --request-id 42
-
-# Terminal 2: Start source MigTD connecting to the destination
 ./migtdemu.sh --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8001
+./migtdemu.sh --both --request-id 77
 
-# Test mode examples (no Azure CVM/TPM required):
-# Terminal 1: Start destination MigTD in skip RA mode
+# Mock report mode (full attestation with mock data - on any Linux machine)
+./migtdemu.sh --mock-report --role destination --request-id 42
+./migtdemu.sh --mock-report --role source --request-id 42
+./migtdemu.sh --mock-report --both --request-id 42
+
+# Skip RA mode (no attestation - on any Linux machine)
 ./migtdemu.sh --skip-ra --role destination --request-id 42
-
-# Terminal 2: Start source MigTD in skip RA mode
-./migtdemu.sh --skip-ra --role source --request-id 42 --dest-ip 127.0.0.1 --dest-port 8001
-
-# Or run both on same machine with skip RA mode:
+./migtdemu.sh --skip-ra --role source --request-id 42
 ./migtdemu.sh --skip-ra --both --request-id 42
 
-# Debug mode example
+# Debug build examples
 ./migtdemu.sh --debug --role destination --request-id 123
+./migtdemu.sh --debug --mock-report --both
 
-# Or orchestrate both on localhost (destination then source)
-./migtdemu.sh --both --request-id 77
+# Policy v2 example
+./migtdemu.sh --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --both
+
+# With additional features (e.g., SPDM attestation)
+./migtdemu.sh --features spdm_attestation --both
 ```
 
 **Manual execution:**
