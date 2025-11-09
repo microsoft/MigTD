@@ -98,6 +98,7 @@ test_accept_all = [] # Test flag: Skip policy verification
 test_reject_all = [] # Test flag: Force migration status to always report unsupported
 test_get_quote = [] # Test flag: Get the quote and exit.
 spdm_attestation = ["main"]
+igvm-attest = ["attestation/igvm-attest"]
 
 [patch.crates-io]
 sys_time = { path = "src/std-support/sys_time" }

@@ -20,6 +20,9 @@ mod collateral;
 
 pub mod root_ca;
 
+#[cfg(feature = "igvm-attest")]
+mod igvmattest;
+
 pub use attest::*;
 
 /// Supplemental data produced by quote verification, total serialized size is 774 bytes.
