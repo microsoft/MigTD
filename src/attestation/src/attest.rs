@@ -6,6 +6,7 @@
 use crate::binding::verify_quote_integrity_ex;
 
 #[cfg(not(feature = "igvm-attest"))]
+#[cfg(not(feature = "AzCVMEmu"))]
 use crate::binding::get_quote as get_quote_inner;
 
 use crate::{
@@ -16,8 +17,6 @@ use crate::{
 use alloc::{ffi::CString, vec, vec::Vec};
 use core::{alloc::Layout, ffi::c_void, ops::Range};
 
-#[cfg(not(feature = "AzCVMEmu"))]
-use crate::binding::get_quote as get_quote_inner;
 #[cfg(not(feature = "AzCVMEmu"))]
 #[cfg(not(feature = "igvm-attest"))]
 use tdx_tdcall::tdreport::*;
