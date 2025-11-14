@@ -145,14 +145,10 @@ pub async fn spdm_responder_transfer_msk(
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
 
-    let res = with_timeout(SPDM_TIMEOUT, rsp_handle_message(spdm_responder)).await;
+    Box::pin(rsp_handle_message(spdm_responder)).await?;
     spdm_responder.common.app_context_data_buffer.zeroize();
 
-    match res {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(SPDM_STATUS_RECEIVE_FAIL),
-    }
+    Ok(())
 }
 
 pub async fn rsp_handle_message(spdm_responder: &mut ResponderContext) -> Result<(), SpdmStatus> {
@@ -162,7 +158,7 @@ pub async fn rsp_handle_message(spdm_responder: &mut ResponderContext) -> Result
         let mut raw_packet = raw_packet.lock();
         let raw_packet = raw_packet.deref_mut();
         raw_packet.zeroize();
-        let res = spdm_responder.process_message(false, 0, raw_packet).await;
+        let res = Box::pin(spdm_responder.process_message(false, 0, raw_packet)).await;
 
         let session_id = spdm_responder.common.runtime_info.get_last_session_id();
         if session_id.is_some() {
@@ -188,7 +184,8 @@ pub fn handle_exchange_pub_key_req(
     spdm_responder: &mut ResponderContext,
     vdm_request: &VdmMessage,
     reader: &mut Reader<'_>,
-) -> SpdmResult<VendorDefinedRspPayloadStruct> {
+    vendor_defined_rsp_payload: &mut [u8],
+) -> SpdmResult<usize> {
     if spdm_responder
         .common
         .runtime_info
@@ -261,8 +258,7 @@ pub fn handle_exchange_pub_key_req(
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
 
-    let mut payload = [0u8; MAX_SPDM_VENDOR_DEFINED_PAYLOAD_SIZE];
-    let mut writer = Writer::init(&mut payload);
+    let mut writer = Writer::init(vendor_defined_rsp_payload);
     let mut cnt = 0;
 
     let vdm_exchange_pub_key = VdmMessage {
@@ -310,10 +306,7 @@ pub fn handle_exchange_pub_key_req(
     peer_pub_key_prov.data[..peer_pub_key_element.length as usize].copy_from_slice(peer_pub_key);
     spdm_responder.common.provision_info.peer_pub_key = Some(peer_pub_key_prov);
 
-    Ok(VendorDefinedRspPayloadStruct {
-        rsp_length: cnt as u32,
-        vendor_defined_rsp_payload: payload,
-    })
+    Ok(cnt)
 }
 
 pub fn handle_exchange_mig_attest_info_req(
@@ -321,7 +314,8 @@ pub fn handle_exchange_mig_attest_info_req(
     session_id: Option<u32>,
     vdm_request: &VdmMessage,
     reader: &mut Reader<'_>,
-) -> SpdmResult<VendorDefinedRspPayloadStruct> {
+    vendor_defined_rsp_payload: &mut [u8],
+) -> SpdmResult<usize> {
     let session_id = if session_id.is_some() {
         session_id
     } else {
@@ -409,8 +403,12 @@ pub fn handle_exchange_mig_attest_info_req(
     let quote_dst = gen_quote_spdm(&report_data[..report_data_prefix_len + th1_len])
         .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
 
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     let res = attestation::verify_quote(quote_dst.as_slice());
     //  The session MUST be terminated immediately, if the mutual attestation failure
+    #[cfg(feature = "test_disable_ra_and_accept_all")]
+    let res: Result<Vec<u8>, ()> = Ok(vec![]);
+
     if res.is_err() {
         error!("mutual attestation failed, end the session!\n");
         let session = responder_context
@@ -435,7 +433,11 @@ pub fn handle_exchange_mig_attest_info_req(
     let quote_src = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     let res = attestation::verify_quote(quote_src);
+    #[cfg(feature = "test_disable_ra_and_accept_all")]
+    let res: Result<Vec<u8>, ()> = Ok(vec![]);
+
     //  The session MUST be terminated immediately, if the mutual attestation failure
     if res.is_err() {
         error!("mutual attestation failed, end the session!\n");
@@ -467,6 +469,7 @@ pub fn handle_exchange_mig_attest_info_req(
     let event_log_src_vec = event_log_src.to_vec();
 
     #[cfg(not(feature = "policy_v2"))]
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
         let policy_check_result = mig_policy::authenticate_policy(
             false,
@@ -514,26 +517,28 @@ pub fn handle_exchange_mig_attest_info_req(
             return Err(SPDM_STATUS_INVALID_MSG_FIELD);
         }
 
-        let policy_check_result = mig_policy::authenticate_remote(
-            false,
-            quote_src_vec.as_slice(),
-            remote_policy,
-            event_log_src_vec.as_slice(),
-        );
-        if let Err(e) = &policy_check_result {
-            error!("Policy v2 check failed, below is the detail information:\n");
-            error!("{:x?}\n", e);
-            let session = responder_context
-                .common
-                .get_session_via_id(session_id)
-                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            session.teardown();
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+        {
+            let policy_check_result = mig_policy::authenticate_remote(
+                false,
+                quote_src_vec.as_slice(),
+                remote_policy,
+                event_log_src_vec.as_slice(),
+            );
+            if let Err(e) = &policy_check_result {
+                error!("Policy v2 check failed, below is the detail information:\n");
+                error!("{:x?}\n", e);
+                let session = responder_context
+                    .common
+                    .get_session_via_id(session_id)
+                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                session.teardown();
+                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+            }
         }
     }
 
-    let mut payload = [0u8; MAX_SPDM_VENDOR_DEFINED_PAYLOAD_SIZE];
-    let mut writer = Writer::init(&mut payload);
+    let mut writer = Writer::init(vendor_defined_rsp_payload);
     let mut cnt = 0;
 
     let vdm_exchange_attest_info = VdmMessage {
@@ -595,10 +600,7 @@ pub fn handle_exchange_mig_attest_info_req(
         .extend_from_slice(&mig_policy_dst_hash)
         .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
-    Ok(VendorDefinedRspPayloadStruct {
-        rsp_length: cnt as u32,
-        vendor_defined_rsp_payload: payload,
-    })
+    Ok(cnt)
 }
 
 pub fn handle_exchange_mig_info_req(
@@ -606,7 +608,8 @@ pub fn handle_exchange_mig_info_req(
     session_id: Option<u32>,
     vdm_request: &VdmMessage,
     reader: &mut Reader<'_>,
-) -> SpdmResult<VendorDefinedRspPayloadStruct> {
+    vendor_defined_rsp_payload: &mut [u8],
+) -> SpdmResult<usize> {
     // The VDM message for secret migration info exchange MUST be sent after mutual attested session establishment.
     let session_id = if let Some(sid) = session_id {
         sid
@@ -708,8 +711,7 @@ pub fn handle_exchange_mig_info_req(
     let max_import_version = exchange_information.max_ver;
     let mig_session_key = exchange_information.key.as_bytes().to_vec();
 
-    let mut payload = [0u8; MAX_SPDM_VENDOR_DEFINED_PAYLOAD_SIZE];
-    let mut writer = Writer::init(&mut payload);
+    let mut writer = Writer::init(vendor_defined_rsp_payload);
     let mut cnt = 0;
     let vdm_exchange_mig_info = VdmMessage {
         major_version: VDM_MESSAGE_MAJOR_VERSION,
@@ -744,10 +746,7 @@ pub fn handle_exchange_mig_info_req(
         .extend_from_slice(&mig_session_key)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
 
-    Ok(VendorDefinedRspPayloadStruct {
-        rsp_length: cnt as u32,
-        vendor_defined_rsp_payload: payload,
-    })
+    Ok(cnt)
 }
 
 pub static SECRET_ASYM_IMPL_INSTANCE: SpdmSecretAsymSign =

@@ -88,131 +88,34 @@ pub async fn spdm_requester_transfer_msk(
     mig_info: &MigtdMigrationInformation,
     #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
-    let res = with_timeout(SPDM_TIMEOUT, spdm_requester.send_receive_spdm_version()).await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
+    Box::pin(spdm_requester.send_receive_spdm_version()).await?;
+    Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
+    Box::pin(spdm_requester.send_receive_spdm_algorithm()).await?;
 
-    let res = with_timeout(SPDM_TIMEOUT, spdm_requester.send_receive_spdm_capability()).await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
+    Box::pin(send_and_receive_pub_key(spdm_requester)).await?;
+    let session_id = Box::pin(spdm_requester.send_receive_spdm_key_exchange(
+        0xff,
+        SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeNone,
+    ))
+    .await?;
 
-    let res = with_timeout(SPDM_TIMEOUT, spdm_requester.send_receive_spdm_algorithm()).await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
+    Box::pin(send_and_receive_sdm_migration_attest_info(
+        spdm_requester,
+        session_id,
+        #[cfg(feature = "policy_v2")]
+        remote_policy,
+    ))
+    .await?;
 
-    let res = with_timeout(SPDM_TIMEOUT, send_and_receive_pub_key(spdm_requester)).await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
+    Box::pin(spdm_requester.send_receive_spdm_finish(Some(0xff), session_id)).await?;
+    Box::pin(send_and_receive_sdm_exchange_migration_info(
+        spdm_requester,
+        mig_info,
+        Some(session_id),
+    ))
+    .await?;
+    Box::pin(spdm_requester.send_receive_spdm_end_session(session_id)).await?;
 
-    let res = with_timeout(
-        SPDM_TIMEOUT,
-        spdm_requester.send_receive_spdm_key_exchange(
-            0xff,
-            SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeNone,
-        ),
-    )
-    .await;
-    let session_id = match res {
-        Ok(Ok(sid)) => sid,
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
-
-    let res: Result<Result<(), SpdmStatus>, crate::driver::ticks::TimeoutError> = with_timeout(
-        SPDM_TIMEOUT,
-        send_and_receive_sdm_migration_attest_info(
-            spdm_requester,
-            session_id,
-            #[cfg(feature = "policy_v2")]
-            remote_policy,
-        ),
-    )
-    .await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
-    let res = with_timeout(
-        SPDM_TIMEOUT,
-        spdm_requester.send_receive_spdm_finish(Some(0xff), session_id),
-    )
-    .await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
-
-    let res = with_timeout(
-        SPDM_TIMEOUT,
-        send_and_receive_sdm_exchange_migration_info(spdm_requester, mig_info, Some(session_id)),
-    )
-    .await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
-
-    let res = with_timeout(
-        SPDM_TIMEOUT,
-        spdm_requester.send_receive_spdm_end_session(session_id),
-    )
-    .await;
-    match res {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            return Err(e);
-        }
-        Err(_) => {
-            return Err(SPDM_STATUS_RECEIVE_FAIL);
-        }
-    };
     Ok(())
 }
 
@@ -444,8 +347,12 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     //quote src
     let quote_src = gen_quote_spdm(&report_data[..report_data_prefix_len + th1_len])
         .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     let res = attestation::verify_quote(quote_src.as_slice());
     //  The session MUST be terminated immediately, if the mutual attestation failure
+    #[cfg(feature = "test_disable_ra_and_accept_all")]
+    let res: Result<Vec<u8>, ()> = Ok(vec![]);
+
     if res.is_err() {
         error!("mutual attestation failed, end the session!\n");
         let session = spdm_requester
@@ -585,7 +492,11 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     let quote_dst = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     let res = attestation::verify_quote(quote_dst);
+    #[cfg(feature = "test_disable_ra_and_accept_all")]
+    let res: Result<Vec<u8>, ()> = Ok(vec![]);
+
     if res.is_err() {
         error!("mutual attestation failed, end the session!\n");
         let session = spdm_requester
@@ -616,6 +527,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     let event_log_dst_vec = event_log_dst.to_vec();
 
     #[cfg(not(feature = "policy_v2"))]
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
         let policy_check_result = mig_policy::authenticate_policy(
             true,
@@ -659,21 +571,24 @@ pub async fn send_and_receive_sdm_migration_attest_info(
             return Err(SPDM_STATUS_INVALID_MSG_FIELD);
         }
 
-        let policy_check_result = mig_policy::authenticate_remote(
-            true,
-            quote_dst_vec.as_slice(),
-            &remote_policy,
-            event_log_dst_vec.as_slice(),
-        );
-        if let Err(e) = &policy_check_result {
-            error!("Policy v2 check failed, below is the detail information:\n");
-            error!("{:x?}\n", e);
-            let session = spdm_requester
-                .common
-                .get_session_via_id(session_id)
-                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            session.teardown();
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+        {
+            let policy_check_result = mig_policy::authenticate_remote(
+                true,
+                quote_dst_vec.as_slice(),
+                &remote_policy,
+                event_log_dst_vec.as_slice(),
+            );
+            if let Err(e) = &policy_check_result {
+                error!("Policy v2 check failed, below is the detail information:\n");
+                error!("{:x?}\n", e);
+                let session = spdm_requester
+                    .common
+                    .get_session_via_id(session_id)
+                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                session.teardown();
+                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+            }
         }
     }
 

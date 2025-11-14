@@ -4,6 +4,8 @@
 
 #[cfg(feature = "vmcall-raw")]
 use crate::migration::event::VMCALL_MIG_REPORTSTATUS_FLAGS;
+#[cfg(any(feature = "policy_v2", feature = "spdm_attestation"))]
+use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 #[cfg(feature = "policy_v2")]
 use async_io::{AsyncRead, AsyncWrite};
@@ -29,6 +31,7 @@ use zerocopy::AsBytes;
 type Result<T> = core::result::Result<T, MigrationResult>;
 
 use super::{data::*, *};
+use crate::driver::ticks::with_timeout;
 #[cfg(not(feature = "spdm_attestation"))]
 use crate::ratls;
 #[cfg(feature = "spdm_attestation")]
@@ -760,11 +763,10 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
 
     // Exchange policy firstly because of the message size limitation of TLS protocol
     #[cfg(feature = "policy_v2")]
-    let remote_policy = pre_session_data_exchange(&mut transport).await?;
+    let remote_policy = Box::pin(pre_session_data_exchange(&mut transport)).await?;
 
     #[cfg(not(feature = "spdm_attestation"))]
     {
-        use crate::driver::ticks::with_timeout;
         use core::time::Duration;
 
         const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
@@ -851,27 +853,32 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     if info.is_src() {
         let mut spdm_requester =
             spdm::spdm_requester(transport).map_err(|_| MigrationResult::SecureSessionError)?;
-
-        spdm::spdm_requester_transfer_msk(
-            &mut spdm_requester,
-            &info.mig_info,
-            #[cfg(feature = "policy_v2")]
-            remote_policy,
+        with_timeout(
+            spdm::SPDM_TIMEOUT,
+            spdm::spdm_requester_transfer_msk(
+                &mut spdm_requester,
+                &info.mig_info,
+                #[cfg(feature = "policy_v2")]
+                remote_policy,
+            ),
         )
-        .await
+        .await?
         .map_err(|_| MigrationResult::MutualAttestationError)?;
         log::info!("MSK exchange completed\n");
     } else {
         let mut spdm_responder =
             spdm::spdm_responder(transport).map_err(|_| MigrationResult::SecureSessionError)?;
 
-        spdm::spdm_responder_transfer_msk(
-            &mut spdm_responder,
-            &info.mig_info,
-            #[cfg(feature = "policy_v2")]
-            remote_policy,
+        with_timeout(
+            spdm::SPDM_TIMEOUT,
+            spdm::spdm_responder_transfer_msk(
+                &mut spdm_responder,
+                &info.mig_info,
+                #[cfg(feature = "policy_v2")]
+                remote_policy,
+            ),
         )
-        .await
+        .await?
         .map_err(|_| MigrationResult::MutualAttestationError)?;
         log::info!("MSK exchange completed\n");
     }
