@@ -24,6 +24,7 @@ pub static NOTIFIER: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
 pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i32 {
     if tdquote_req_buf.is_null() || len > GET_QUOTE_MAX_SIZE {
+        log::error!("Invalid parameters: tdquote_req_buf.is_null() is {} or len is {}", tdquote_req_buf.is_null(), len);
         return AttestLibError::InvalidParameter as i32;
     }
 
@@ -32,17 +33,23 @@ pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i3
     let mut shared = if let Some(shared) = SharedMemory::new(len as usize / 0x1000) {
         shared
     } else {
+        log::error!("Failed to allocate shared memory of size {}", len);
         return AttestLibError::OutOfMemory as i32;
     };
     shared.as_mut_bytes()[..len as usize].copy_from_slice(input);
 
     let notify_registered = set_vmm_notification();
 
-    if tdvmcall_get_quote(shared.as_mut_bytes()).is_err() {
-        return AttestLibError::QuoteFailure as i32;
+    match tdvmcall_get_quote(shared.as_mut_bytes()) {
+        Ok(_) => {}
+        Err(e) => {
+            log::error!("tdvmcall_get_quote failed: {:?}", e);
+            return AttestLibError::QuoteFailure as i32;
+        }
     }
 
     if let Err(err) = wait_for_quote_completion(notify_registered, shared.as_bytes()) {
+        log::error!("wait_for_quote_completion failed: {:?}", err);
         return err as i32;
     }
     input.copy_from_slice(&shared.as_bytes()[..len as usize]);
@@ -57,13 +64,15 @@ fn vmm_notification(_: &mut InterruptStack) {
 
 fn set_vmm_notification() -> bool {
     // Setup interrupt handler
-    if register_interrupt_callback(
+
+    match register_interrupt_callback(
         NOTIFY_VECTOR as usize,
         InterruptCallback::new(vmm_notification),
-    )
-    .is_err()
-    {
-        panic!("Fail to setup interrupt callback for VMM notify\n");
+    ) {
+    Err(_e) => {
+        log::error!("Fail to setup interrupt callback for VMM notify");
+    }
+    _ => {}
     }
 
     // Setup event notifier
@@ -81,13 +90,17 @@ fn wait_for_quote_completion(notify_registered: bool, buffer: &[u8]) -> Result<(
     while status_code == GET_QUOTE_STATUS_IN_FLIGHT {
         status_code = match buffer.get(GET_QUOTE_STATUS_FIELD) {
             Some(bytes) => u64::from_le_bytes(bytes.try_into().unwrap()),
-            None => return Err(AttestLibError::InvalidParameter),
+            None => {
+                log::error!("Failed to get quote status from buffer");
+                return Err(AttestLibError::InvalidParameter);
+            }
         };
     }
 
     if status_code == GET_QUOTE_STATUS_SUCCESS {
         Ok(())
     } else {
+        log::error!("Quote generation failed with status code: {:#x}", status_code);
         Err(AttestLibError::QuoteFailure)
     }
 }
