@@ -24,7 +24,11 @@ pub static NOTIFIER: AtomicU8 = AtomicU8::new(0);
 #[no_mangle]
 pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i32 {
     if tdquote_req_buf.is_null() || len > GET_QUOTE_MAX_SIZE {
-        log::error!("Invalid parameters: tdquote_req_buf.is_null() is {} or len is {}", tdquote_req_buf.is_null(), len);
+        log::error!(
+            "Invalid parameters: tdquote_req_buf.is_null() is {} or len is {}",
+            tdquote_req_buf.is_null(),
+            len
+        );
         return AttestLibError::InvalidParameter as i32;
     }
 
@@ -65,18 +69,22 @@ fn vmm_notification(_: &mut InterruptStack) {
 fn set_vmm_notification() -> bool {
     // Setup interrupt handler
 
-    match register_interrupt_callback(
+    _ = register_interrupt_callback(
         NOTIFY_VECTOR as usize,
         InterruptCallback::new(vmm_notification),
-    ) {
-    Err(_e) => {
+    )
+    .map_err(|e| {
         log::error!("Fail to setup interrupt callback for VMM notify");
-    }
-    _ => {}
-    }
+        return false;
+    });
 
     // Setup event notifier
-    tdx_tdcall::tdx::tdvmcall_setup_event_notify(NOTIFY_VECTOR as u64).is_ok()
+    _ = tdx_tdcall::tdx::tdvmcall_setup_event_notify(NOTIFY_VECTOR as u64).map_err(|e| {
+        log::error!("Fail to setup event notify for VMM: {:?}", e);
+        return false;
+    });
+
+    true
 }
 
 fn wait_for_quote_completion(notify_registered: bool, buffer: &[u8]) -> Result<(), AttestLibError> {
@@ -100,7 +108,10 @@ fn wait_for_quote_completion(notify_registered: bool, buffer: &[u8]) -> Result<(
     if status_code == GET_QUOTE_STATUS_SUCCESS {
         Ok(())
     } else {
-        log::error!("Quote generation failed with status code: {:#x}", status_code);
+        log::error!(
+            "Quote generation failed with status code: {:#x}",
+            status_code
+        );
         Err(AttestLibError::QuoteFailure)
     }
 }

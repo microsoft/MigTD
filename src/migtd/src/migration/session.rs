@@ -837,6 +837,8 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     {
         use core::time::Duration;
 
+        log::debug!("Using RATLS layer connection\n");
+
         const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
 
         let mut remote_information = ExchangeInformation::default();

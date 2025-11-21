@@ -27,8 +27,20 @@ pub fn server<T: AsyncRead + AsyncWrite + Unpin>(
     stream: T,
     #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
 ) -> Result<SecureChannel<T>> {
-    let signing_key = EcdsaPk::new()?;
-    let (certs, quote) = gen_cert(&signing_key)?;
+    log::debug!(
+        "server with policy_v2 enabled: {}\n",
+        cfg!(feature = "policy_v2")
+    );
+
+    let signing_key = EcdsaPk::new().map_err(|e| {
+        log::error!("Failed to create ECDSA signing key: {:?}", e);
+        e
+    })?;
+
+    let (certs, quote) = gen_cert(&signing_key).map_err(|e| {
+        log::error!("Failed to generate certificate: {:?}", e);
+        e
+    })?;
     let certs = vec![certs];
 
     #[cfg(feature = "policy_v2")]
@@ -36,18 +48,36 @@ pub fn server<T: AsyncRead + AsyncWrite + Unpin>(
 
     // Server verifies certificate of client
     #[cfg(not(feature = "policy_v2"))]
-    let config = TlsConfig::new(certs, signing_key, verify_client_cert, quote)?;
+    let config = TlsConfig::new(certs, signing_key, verify_client_cert, quote).map_err(|e| {
+        log::error!("Failed to create TLS config: {:?}", e);
+        e
+    })?;
+
     #[cfg(feature = "policy_v2")]
-    let config = TlsConfig::new(certs, signing_key, verify_client_cert, remote_policy)?;
-    config.tls_server(stream).map_err(|e| e.into())
+    let config =
+        TlsConfig::new(certs, signing_key, verify_client_cert, remote_policy).map_err(|e| {
+            log::error!("Failed to create TLS config: {:?}", e);
+            e
+        })?;
+    Ok(config.tls_server(stream).map_err(|e| {
+        log::error!("Failed to create TLS server: {:?}", e);
+        e
+    })?)
 }
 
 pub fn client<T: AsyncRead + AsyncWrite + Unpin>(
     stream: T,
     #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
 ) -> Result<SecureChannel<T>> {
+    log::debug!(
+        "client with policy_v2 enabled: {}\n",
+        cfg!(feature = "policy_v2")
+    );
     let signing_key = EcdsaPk::new()?;
-    let (certs, quote) = gen_cert(&signing_key)?;
+    let (certs, quote) = gen_cert(&signing_key).map_err(|e|{
+        log::error!("Failed to generate certificate: {:?}", e);
+        e
+    })?;
     let certs = vec![certs];
 
     #[cfg(feature = "policy_v2")]
@@ -55,10 +85,19 @@ pub fn client<T: AsyncRead + AsyncWrite + Unpin>(
 
     // Client verifies certificate of server
     #[cfg(not(feature = "policy_v2"))]
-    let config = TlsConfig::new(certs, signing_key, verify_server_cert, quote)?;
+    let config = TlsConfig::new(certs, signing_key, verify_server_cert, quote).map_err(|e| {
+        log::error!("Failed to create TLS config: {:?}", e);
+        e
+    })?;
     #[cfg(feature = "policy_v2")]
-    let config = TlsConfig::new(certs, signing_key, verify_server_cert, remote_policy)?;
-    config.tls_client(stream).map_err(|e| e.into())
+    let config = TlsConfig::new(certs, signing_key, verify_server_cert, remote_policy).map_err(|e| {
+        log::error!("Failed to create TLS config: {:?}", e);
+        e
+    })?;
+    Ok(config.tls_client(stream).map_err(|e| {
+        log::error!("Failed to create TLS client: {:?}", e);
+        e
+    })?)
 }
 
 fn gen_cert(signing_key: &EcdsaPk) -> Result<(Vec<u8>, Vec<u8>)> {
