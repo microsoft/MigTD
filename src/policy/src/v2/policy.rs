@@ -97,6 +97,12 @@ pub struct PolicyEvaluationInfo {
 
     /// The date of the MigTD TCB in ISO-8601 format, e.g. "2023-06-19T00:00:00Z"
     pub migtd_tcb_date: Option<String>,
+
+    /// The minimal crl_num of pck_crl
+    pub pck_crl_num: Option<u32>,
+
+    /// The minimal crl_num of root_ca_crl
+    pub root_ca_crl_num: Option<u32>,
 }
 
 pub struct VerifiedPolicy<'a> {
@@ -295,6 +301,7 @@ enum PolicyTypes {
 struct GlobalPolicy {
     tcb: Option<TcbPolicy>,
     platform: Option<PlatformPolicy>,
+    crl: Option<CrlPolicy>,
 }
 
 impl GlobalPolicy {
@@ -309,6 +316,10 @@ impl GlobalPolicy {
 
         if let Some(platform_policy) = &self.platform {
             platform_policy.evaluate(value, relative_reference)?;
+        }
+
+        if let Some(crl_policy) = &self.crl {
+            crl_policy.evaluate(value, relative_reference)?;
         }
 
         Ok(())
@@ -392,6 +403,37 @@ impl PlatformPolicy {
                 .map(|s| bytes_to_hex_string(s));
             if !property.evaluate_string(&bytes_to_hex_string(fmspc), relative.as_deref())? {
                 return Err(PolicyError::TcbEvaluation);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrlPolicy {
+    pck_crl_num: Option<PolicyProperty>,
+    root_ca_crl_num: Option<PolicyProperty>,
+}
+
+impl CrlPolicy {
+    fn evaluate(
+        &self,
+        value: &PolicyEvaluationInfo,
+        relative_reference: &PolicyEvaluationInfo,
+    ) -> Result<(), PolicyError> {
+        if let Some(property) = &self.pck_crl_num {
+            let pck_crl_num = value.pck_crl_num.ok_or(PolicyError::CrlEvaluation)?;
+            if !property.evaluate_integer(pck_crl_num, relative_reference.pck_crl_num)? {
+                return Err(PolicyError::CrlEvaluation);
+            }
+        }
+
+        if let Some(property) = &self.root_ca_crl_num {
+            let root_ca_crl_num = value.root_ca_crl_num.ok_or(PolicyError::CrlEvaluation)?;
+            if !property.evaluate_integer(root_ca_crl_num, relative_reference.root_ca_crl_num)? {
+                return Err(PolicyError::CrlEvaluation);
             }
         }
 
@@ -513,16 +555,19 @@ impl PolicyProperty {
                 _ => return Err(PolicyError::InvalidOperation),
             },
             Reference::String(reference) => {
-                if reference != "self" && reference != "init" {
-                    return Err(PolicyError::InvalidReference);
-                }
-                let relative_reference = relative_reference.ok_or(PolicyError::InvalidReference)?;
-                match self.operation.as_str() {
-                    "equal" => Ok(value == relative_reference),
-                    "greater-or-equal" => Ok(value >= relative_reference),
-                    "in-range" => is_in_range(&value, &reference),
-                    "in-time-range" => is_in_range(&value, &reference),
-                    _ => Err(PolicyError::InvalidOperation),
+                if reference == "self" || reference == "init" {
+                    let relative_reference =
+                        relative_reference.ok_or(PolicyError::InvalidReference)?;
+                    match self.operation.as_str() {
+                        "equal" => Ok(value == relative_reference),
+                        "greater-or-equal" => Ok(value >= relative_reference),
+                        _ => Err(PolicyError::InvalidOperation),
+                    }
+                } else {
+                    match self.operation.as_str() {
+                        "in-range" | "in-time-range" => is_in_range(&value, &reference),
+                        _ => Err(PolicyError::InvalidOperation),
+                    }
                 }
             }
             Reference::IntegerList(items) => match self.operation.as_str() {
@@ -540,6 +585,9 @@ impl PolicyProperty {
         relative_reference: Option<&[u32]>,
     ) -> Result<bool, PolicyError> {
         let integer_list_op = |values: &[u32], reference: &[u32]| {
+            if values.len() != reference.len() {
+                return Ok(false);
+            }
             match self.operation.as_str() {
                 "array-equal" => {
                     for (i, val) in values.iter().enumerate() {
@@ -563,12 +611,7 @@ impl PolicyProperty {
         };
 
         match &self.reference {
-            Reference::IntegerList(reference) => {
-                if values.len() != reference.len() {
-                    return Ok(false);
-                }
-                integer_list_op(values, &reference)
-            }
+            Reference::IntegerList(reference) => integer_list_op(values, &reference),
             Reference::String(reference) => {
                 if reference != "self" && reference != "init" {
                     return Err(PolicyError::InvalidReference);
@@ -691,6 +734,8 @@ mod test {
             migtd_tcb_status: None,
             migtd_tcb_date: None,
             migtd_isvsvn: None,
+            pck_crl_num: None,
+            root_ca_crl_num: None,
         };
         let relative_ref = PolicyEvaluationInfo::default();
         assert!(global_policy.evaluate(&value, &relative_ref).is_ok());
