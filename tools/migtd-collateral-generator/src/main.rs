@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 use clap::Parser;
-use migtd_collateral_generator::generate_collaterals;
+use migtd_collateral_generator::{generate_collaterals, AzureThimConfig, IntelPcsConfig};
 use std::{path::PathBuf, process::exit};
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 struct Config {
     /// Service provider: "intel" (default) or "azure-thim"
     #[clap(long, default_value = "intel")]
@@ -30,10 +30,14 @@ struct Config {
 fn main() {
     let config = Config::parse();
 
-    let pcs_config = match config.provider.to_lowercase().as_str() {
-        "intel" => migtd_collateral_generator::PcsConfig::intel(!config.pre_production),
+    let result = match config.provider.to_lowercase().as_str() {
+        "intel" => {
+            let pcs_config = IntelPcsConfig::new(!config.pre_production);
+            generate_collaterals(&pcs_config, &config.output)
+        }
         "azure-thim" | "azure" | "thim" => {
-            migtd_collateral_generator::PcsConfig::azure_thim(&config.azure_region)
+            let pcs_config = AzureThimConfig::new(&config.azure_region);
+            generate_collaterals(&pcs_config, &config.output)
         }
         _ => {
             eprintln!("Error: Invalid provider: {}", config.provider);
@@ -41,7 +45,7 @@ fn main() {
         }
     };
 
-    if let Err(e) = generate_collaterals(&pcs_config, &config.output) {
+    if let Err(e) = result {
         eprintln!("Error generating collaterals: {}", e);
         exit(1);
     }

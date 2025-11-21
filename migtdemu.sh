@@ -17,7 +17,7 @@ DEFAULT_REQUEST_ID="1"
 DEFAULT_DEST_IP="127.0.0.1"
 DEFAULT_DEST_PORT="8001"
 DEFAULT_BUILD_MODE="release"
-DEFAULT_REQUEST_TYPE="migration"
+DEFAULT_NUM_CPUS="1"
 USE_SUDO=true
 RUN_BOTH=false
 SKIP_RA=false
@@ -48,7 +48,6 @@ show_usage() {
     echo "  -i, --request-id ID          Set migration request ID (default: 1)"
     echo "  -d, --dest-ip IP             Set destination IP address (default: 127.0.0.1)"
     echo "  -p, --dest-port PORT         Set destination port (default: 8001)"
-    echo "  -y, --request-type TYPE      Set request type: 'migration' or 'getreport' (default: migration)"
     echo "  --policy-file FILE           Set policy file path (default: config/policy.json)"
     echo "  --root-ca-file FILE          Set root CA file path (default: config/Intel_SGX_Provisioning_Certification_RootCA.cer)"
     echo "  --policy-issuer-chain-file FILE Set policy issuer chain file path (required when using --policy-v2)"
@@ -62,6 +61,7 @@ show_usage() {
     echo "  --no-sudo                    Run without sudo (useful for local testing)"
     echo "  --features FEATURES          Add extra cargo features (comma-separated, e.g., 'spdm_attestation,feature2')"
     echo "  --log-level LEVEL            Set Rust log level (trace, debug, info, warn, error) (default: debug for debug builds, info for release builds)"
+    echo "  --num-cpus NUM               Set number of CPUs (1 to available count) (default: 1)"
     echo "  -h, --help                   Show this help message"
     echo
     echo "Notes:"
@@ -74,14 +74,18 @@ show_usage() {
     echo "  - Mock report mode (--mock-report) uses the test_mock_report feature to generate mock"
     echo "    TD reports/quotes but still performs the full attestation flow. This is useful for"
     echo "    testing attestation logic without requiring real TDX hardware."
-    echo " - When using --policy-v2, you must explicitly specify a policy file with --policy-file and"
+    echo "  - When using --policy-v2, you must explicitly specify a policy file with --policy-file and"
     echo "    a policy issuer chain file with --policy-issuer-chain-file. You can use the provided"
     echo "    example files in config/AzCVMEmu. Some reference values in those files for the ServTD may become"
     echo "    outdated over time. Use ./sh_script/build_AzCVMEmu_policy_and_test.sh to generate updated policy"
     echo "    and issuer chain files."
+    echo "  - Migration flow automatically includes EnableLogArea and GetReportData requests before"
+    echo "    the actual migration, ensuring logging is enabled and a TD report is generated."
+    echo "  - CPU affinity is controlled via taskset. Use --num-cpus to specify the number of CPUs"
+    echo "    (e.g., 2 means CPUs 0-1, 4 means CPUs 0-3). Default is 1 CPU for single-threaded behavior."
     echo
     echo "Examples:"
-    echo "  # Migration testing (traditional workflow)"
+    echo "  # Migration testing (includes EnableLogArea → GetReportData → StartMigration)"
     echo "  $0                                    # Build release and run as source with defaults"
     echo "  $0 --role destination                # Build release and run as destination"
     echo "  $0 --debug --role source             # Build debug and run as source"
@@ -92,13 +96,12 @@ show_usage() {
     echo "  $0 --mock-report --both              # Run both source and destination with mock report mode"
     echo "  $0 --mock-report --mock-quote-file ./config/AzCVMEmu/az_migtd_quote.blob --both  # Use custom mock quote file"
     echo "  $0 --features spdm_attestation       # Build with extra SPDM attestation feature"
-    echo "  $0 --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --debug --both     # Run both with policy v2 in debug mode"
-    echo "  $0 --log-level debug --role source   # Run with debug log level"
-    echo "  $0 --log-level warn --release        # Run with warn log level in release mode"
-    echo
-    echo "  # GetReportData testing (single-shot TD report generation)"
-    echo "  $0 --request-type getreport --request-id 100                    # Get TD report with default reportdata"
-    echo "  $0 -y getreport -i 200                                          # Short options for getreport"
+    echo "  \$0 --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --debug --both     # Run both with policy v2 in debug mode"
+    echo "  \$0 --log-level debug --role source   # Run with debug log level"
+    echo "  \$0 --log-level warn --release        # Run with warn log level in release mode"
+    echo "  \$0 --num-cpus 2 --both               # Run with 2 CPUs (0-1)"
+    echo "  \$0 --num-cpus 4 --both               # Run with 4 CPUs (0-3)"
+    echo "  \$0 --num-cpus 3 --both               # Run with 3 CPUs (0-2)"
 }
 
 # Function to check if file exists
@@ -191,11 +194,11 @@ ROLE="$DEFAULT_ROLE"
 REQUEST_ID="$DEFAULT_REQUEST_ID"
 DEST_IP="$DEFAULT_DEST_IP"
 DEST_PORT="$DEFAULT_DEST_PORT"
-REQUEST_TYPE="$DEFAULT_REQUEST_TYPE"
 POLICY_FILE="$DEFAULT_POLICY_FILE"
 ROOT_CA_FILE="$DEFAULT_ROOT_CA_FILE"
 POLICY_ISSUER_CHAIN_FILE=""  # No default - mandatory when using --policy-v2
 BUILD_MODE="$DEFAULT_BUILD_MODE"
+NUM_CPUS="$DEFAULT_NUM_CPUS"
 CUSTOM_LOG_LEVEL=""
 
 while [[ $# -gt 0 ]]; do
@@ -214,10 +217,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         -p|--dest-port)
             DEST_PORT="$2"
-            shift 2
-            ;;
-        -y|--request-type)
-            REQUEST_TYPE="$2"
             shift 2
             ;;
         --policy-file)
@@ -272,6 +271,10 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_LOG_LEVEL="$2"
             shift 2
             ;;
+        --num-cpus)
+            NUM_CPUS="$2"
+            shift 2
+            ;;
         --build)
             # Keep for backward compatibility, but it's now always enabled
             shift
@@ -287,12 +290,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# Validate request type
-if [[ "$REQUEST_TYPE" != "migration" && "$REQUEST_TYPE" != "getreport" ]]; then
-    echo -e "${RED}Error: Request type must be 'migration' or 'getreport', got: $REQUEST_TYPE${NC}" >&2
-    exit 1
-fi
 
 # Automatically enable mock-report mode when mock-quote-file is specified
 if [[ -n "$MOCK_QUOTE_FILE" && "$USE_MOCK_REPORT" != true ]]; then
@@ -318,18 +315,30 @@ if [[ "$USE_MOCK_REPORT" == true ]]; then
     USE_SUDO=false
 fi
 
-# Validate role (skip when running both or when doing getreport)
-if [[ "$RUN_BOTH" != true && "$REQUEST_TYPE" == "migration" ]]; then
+# Validate CPU count specification - only accept positive integers
+AVAILABLE_CPUS=$(nproc)
+if ! [[ "$NUM_CPUS" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}Error: --num-cpus must be a positive integer, got: $NUM_CPUS${NC}" >&2
+    exit 1
+fi
+
+if [[ "$NUM_CPUS" -lt 1 ]]; then
+    echo -e "${RED}Error: --num-cpus must be at least 1, got: $NUM_CPUS${NC}" >&2
+    exit 1
+fi
+
+# Check if requested CPUs exceed available
+if [[ "$NUM_CPUS" -gt "$AVAILABLE_CPUS" ]]; then
+    echo -e "${RED}Error: Requested $NUM_CPUS CPUs but only $AVAILABLE_CPUS available${NC}" >&2
+    exit 1
+fi
+
+# Validate role (skip when running both)
+if [[ "$RUN_BOTH" != true ]]; then
     if [[ "$ROLE" != "source" && "$ROLE" != "destination" ]]; then
         echo -e "${RED}Error: Role must be 'source' or 'destination', got: $ROLE${NC}" >&2
         exit 1
     fi
-fi
-
-# For getreport requests, --both makes no sense
-if [[ "$REQUEST_TYPE" == "getreport" && "$RUN_BOTH" == true ]]; then
-    echo -e "${RED}Error: --both option is not compatible with --request-type getreport${NC}" >&2
-    exit 1
 fi
 
 # Validate policy v2 requirements
@@ -393,6 +402,21 @@ fi
 # Evaluate TPM access and elevate if necessary
 maybe_force_sudo_due_to_tpm
 
+# Build taskset command based on NUM_CPUS setting
+build_taskset_cmd() {
+    local cpu_spec="$1"
+
+    # Convert number to range 0-(n-1)
+    if [[ "$cpu_spec" -eq 1 ]]; then
+        echo "taskset -c 0"
+    else
+        local max_cpu=$((cpu_spec - 1))
+        echo "taskset -c 0-${max_cpu}"
+    fi
+}
+
+TASKSET_CMD=$(build_taskset_cmd "$NUM_CPUS")
+
 run_cmd() {
     # Run a command with or without sudo, preserving the provided environment
     # Usage: run_cmd VAR1=... VAR2=... -- <binary> [args...]
@@ -413,9 +437,9 @@ run_cmd() {
         esac
     done
     if $USE_SUDO; then
-        sudo env "${env_kv[@]}" "$@"
+        sudo env "${env_kv[@]}" $TASKSET_CMD "$@"
     else
-        env "${env_kv[@]}" "$@"
+        env "${env_kv[@]}" $TASKSET_CMD "$@"
     fi
 }
 
@@ -453,7 +477,6 @@ echo -e "${BLUE}Setting up environment variables...${NC}"
 # Display configuration
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Build mode: $BUILD_MODE"
-echo "  Request type: $REQUEST_TYPE"
 if [[ "$USE_POLICY_V2" == true ]]; then
     echo "  Policy version: v2"
 else
@@ -466,15 +489,14 @@ elif [[ "$USE_MOCK_REPORT" == true ]]; then
 else
     echo "  Attestation mode: normal (requires TDX/Azure CVM/TPM for real attestation)"
 fi
-if [[ "$REQUEST_TYPE" == "migration" ]]; then
-    if [[ "$RUN_BOTH" == true ]]; then
-        echo "  Mode: both (destination then source)"
-    else
-        echo "  Role: $ROLE"
-    fi
-    echo "  Destination: ${DEST_IP}:${DEST_PORT}"
+if [[ "$RUN_BOTH" == true ]]; then
+    echo "  Mode: both (destination then source)"
+else
+    echo "  Role: $ROLE"
 fi
+echo "  Destination: ${DEST_IP}:${DEST_PORT}"
 echo "  Request ID: $REQUEST_ID"
+echo "  CPU affinity: $NUM_CPUS (using: $TASKSET_CMD)"
 echo "  Policy file: $POLICY_FILE"
 echo "  Root CA file: $ROOT_CA_FILE"
 echo "  Policy Issuer Chain file: $POLICY_ISSUER_CHAIN_FILE"
@@ -505,37 +527,10 @@ if [[ "$SKIP_RA" != true && "$USE_MOCK_REPORT" != true && -e /dev/tpmrm0 ]]; the
     TSS2_TCTI_AUTO="device:/dev/tpmrm0"
 fi
 
-if [[ "$REQUEST_TYPE" == "getreport" ]]; then
-    # GetReportData mode - single shot TD report generation
-    MIGTD_ARGS=(
-        "--request-type" "getreport"
-        "--request-id" "$REQUEST_ID"
-    )
-    echo -e "${BLUE}Starting MigTD in GetReportData mode...${NC}"
-    if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
-    
-    # Build environment variable list
-    ENV_VARS=("MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG")
-    if [[ -n "$TSS2_TCTI_AUTO" ]]; then
-        ENV_VARS+=("TSS2_TCTI=$TSS2_TCTI_AUTO")
-    fi
-    if [[ -n "$MOCK_QUOTE_FILE" ]]; then
-        ENV_VARS+=("MOCK_QUOTE_FILE=$MOCK_QUOTE_FILE")
-    fi
-    
-    # Display command
-    echo -e "${YELLOW}Command: ${SUDO_STR}${ENV_VARS[*]} $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
-    echo
-    
-    # Run command
-    run_cmd "${ENV_VARS[@]}" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
-    EXIT_CODE=$?
-    echo -e "${BLUE}MigTD exit code: $EXIT_CODE${NC}"
-    exit $EXIT_CODE
-elif [[ "$RUN_BOTH" == true ]]; then
+if [[ "$RUN_BOTH" == true ]]; then
     echo -e "${BLUE}Starting destination in background...${NC}"
     DEST_ARGS=("--role" "destination" "--request-id" "$REQUEST_ID")
-    
+
     # Build environment variable list for destination
     DEST_ENV_VARS=("MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG")
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
@@ -544,7 +539,7 @@ elif [[ "$RUN_BOTH" == true ]]; then
     if [[ -n "$MOCK_QUOTE_FILE" ]]; then
         DEST_ENV_VARS+=("MOCK_QUOTE_FILE=$MOCK_QUOTE_FILE")
     fi
-    
+
     # Start destination and redirect output
     (
         set -x
@@ -572,7 +567,7 @@ elif [[ "$RUN_BOTH" == true ]]; then
         "--dest-ip" "$DEST_IP"
         "--dest-port" "$DEST_PORT"
     )
-    
+
     # Build environment variable list for source
     SRC_ENV_VARS=("MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG")
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
@@ -581,12 +576,12 @@ elif [[ "$RUN_BOTH" == true ]]; then
     if [[ -n "$MOCK_QUOTE_FILE" ]]; then
         SRC_ENV_VARS+=("MOCK_QUOTE_FILE=$MOCK_QUOTE_FILE")
     fi
-    
+
     # Display command
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
     echo -e "${YELLOW}Command: ${SUDO_STR}${SRC_ENV_VARS[*]} $MIGTD_BINARY ${SRC_ARGS[*]}${NC}"
     echo
-    
+
     # Run source in foreground; on failure, show last logs and exit non-zero
     run_cmd "${SRC_ENV_VARS[@]}" -- "$MIGTD_BINARY" "${SRC_ARGS[@]}"
     SRC_EXIT_CODE=$?
@@ -620,9 +615,9 @@ else
     if [[ "$ROLE" == "source" ]]; then
         MIGTD_ARGS+=("--dest-ip" "$DEST_IP" "--dest-port" "$DEST_PORT")
     fi
-    
+
     echo -e "${BLUE}Starting MigTD in $ROLE mode...${NC}"
-    
+
     # Build environment variable list
     ENV_VARS=("MIGTD_POLICY_FILE=$POLICY_FILE" "MIGTD_ROOT_CA_FILE=$ROOT_CA_FILE" "MIGTD_POLICY_ISSUER_CHAIN_FILE=$POLICY_ISSUER_CHAIN_FILE" "RUST_BACKTRACE=$RUST_BACKTRACE" "RUST_LOG=$RUST_LOG")
     if [[ -n "$TSS2_TCTI_AUTO" ]]; then
@@ -631,12 +626,12 @@ else
     if [[ -n "$MOCK_QUOTE_FILE" ]]; then
         ENV_VARS+=("MOCK_QUOTE_FILE=$MOCK_QUOTE_FILE")
     fi
-    
+
     # Display command
     if [[ "$USE_SUDO" == true ]]; then SUDO_STR="sudo "; else SUDO_STR=""; fi
     echo -e "${YELLOW}Command: ${SUDO_STR}${ENV_VARS[*]} $MIGTD_BINARY ${MIGTD_ARGS[*]}${NC}"
     echo
-    
+
     # Run command
     run_cmd "${ENV_VARS[@]}" -- "$MIGTD_BINARY" "${MIGTD_ARGS[@]}"
     EXIT_CODE=$?

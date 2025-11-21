@@ -37,12 +37,12 @@ impl PcsRequest {
     }
 }
 
-pub fn fetch_pck_crl(config: &crate::PcsConfig) -> Result<(Vec<u8>, String)> {
+pub fn fetch_pck_crl(config: &dyn crate::PcsConfig) -> Result<(Vec<u8>, String)> {
     let base_url = config.get_base_url_pck_crl();
     let mut req = PcsRequest::new(&base_url, "sgx/certification/v4/pckcrl");
     req.add_param("ca", "platform");
     // Intel returns PEM encoded data by default. THIM only supports DER encoding.
-    // Request DER format for THIM compatibility and conversion is done later if needed.
+    // Request DER format for max compatibility and conversion is done later if needed.
     req.add_param("encoding", "der");
     let mut pcs_response = fetch_data_from_url(req.as_str())?;
     match pcs_response.response_code {
@@ -63,7 +63,7 @@ pub fn fetch_pck_crl(config: &crate::PcsConfig) -> Result<(Vec<u8>, String)> {
     }
 }
 
-pub fn fetch_root_ca(config: &crate::PcsConfig) -> Result<Vec<u8>> {
+pub fn fetch_root_ca(config: &dyn crate::PcsConfig) -> Result<Vec<u8>> {
     let url = config.get_root_ca_url();
 
     let pcs_response = fetch_data_from_url(url)?;
@@ -90,7 +90,7 @@ pub fn fetch_root_ca_crl(root_ca_url: &str) -> Result<Vec<u8>> {
     }
 }
 
-pub fn fetch_qe_identity(config: &crate::PcsConfig) -> Result<(Vec<u8>, String)> {
+pub fn fetch_qe_identity(config: &dyn crate::PcsConfig) -> Result<(Vec<u8>, String)> {
     let base_url = config.get_base_url();
 
     let req = PcsRequest::new(&base_url, "tdx/certification/v4/qe/identity");
@@ -124,7 +124,7 @@ pub struct PlatformTcbRaw {
     pub tcb_issuer_chain: String,
 }
 
-pub fn get_platform_tcb_list(config: &crate::PcsConfig) -> Result<Vec<PlatformTcbRaw>> {
+pub fn get_platform_tcb_list(config: &dyn crate::PcsConfig) -> Result<Vec<PlatformTcbRaw>> {
     // Always fetch FMSPC list from Intel PCS (THIM doesn't cache it)
     let fmspc_list = fetch_fmspc_list(config)?;
 
@@ -142,7 +142,7 @@ pub fn get_platform_tcb_list(config: &crate::PcsConfig) -> Result<Vec<PlatformTc
 }
 
 pub fn fetch_platform_tcb(
-    config: &crate::PcsConfig,
+    config: &dyn crate::PcsConfig,
     fmspc: &str,
 ) -> Result<Option<(Vec<u8>, String)>> {
     let base_url = config.get_base_url();
@@ -236,7 +236,7 @@ fn remove_header_case_insensitive(
     actual_key.and_then(|key| headers.remove(&key))
 }
 
-pub fn fetch_fmspc_list(config: &crate::PcsConfig) -> Result<Vec<Fmspc>> {
+pub fn fetch_fmspc_list(config: &dyn crate::PcsConfig) -> Result<Vec<Fmspc>> {
     let base_url = config.get_base_url_fmspc_list();
     let req = PcsRequest::new(&base_url, "sgx/certification/v4/fmspcs");
     let pcs_response = fetch_data_from_url(req.as_str())?;
@@ -273,7 +273,7 @@ impl Fmspc {
 mod tests {
     use super::*;
 
-    /// Integration test to check what headers Azure THIM actually returns
+    /// Test to check what headers Azure THIM actually returns
     /// This will help us verify the correct header names for THIM vs Intel PCS
     ///
     /// Run with: cargo test test_thim_headers -- --nocapture

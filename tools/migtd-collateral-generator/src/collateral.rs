@@ -83,7 +83,7 @@ impl Collaterals {
     }
 }
 
-pub fn get_collateral(config: &crate::PcsConfig) -> Result<Collaterals> {
+pub fn get_collateral(config: &dyn crate::PcsConfig) -> Result<Collaterals> {
     let (qe_identity, qe_identity_issuer_chain) = fetch_qe_identity(config)?;
     let root_ca_crl_url = get_root_ca_crl_url(qe_identity_issuer_chain.as_str())?;
     let root_ca_crl = fetch_data_from_url(&root_ca_crl_url)?.data;

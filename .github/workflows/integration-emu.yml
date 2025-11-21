@@ -29,7 +29,7 @@ jobs:
     steps:
       # Install first since it's needed to build NASM
       - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@a7a1a882e2d06ebe05d5bb97c3e1f8c984ae96fc # v2.0.7
+        uses: KyleMayes/install-llvm-action@98e68e10c96dffcb7bfed8b2144541a66b49aa02 # v2.0.8
         with:
           version: "10.0"
           directory: ${{ runner.temp }}/llvm
@@ -44,7 +44,7 @@ jobs:
         run: sudo apt-get install build-essential ocaml ocamlbuild automake autoconf libtool wget python-is-python3 libssl-dev git cmake perl libtss2-dev pkg-config
 
       - name: Checkout sources
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           submodules: recursive
 
@@ -147,7 +147,7 @@ jobs:
 
       - name: Upload test artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: migtd-test-logs-${{ github.run_id }}
           path: |
@@ -190,7 +190,7 @@ jobs:
     steps:
       # Install first since it's needed to build NASM
       - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@a7a1a882e2d06ebe05d5bb97c3e1f8c984ae96fc # v2.0.7
+        uses: KyleMayes/install-llvm-action@98e68e10c96dffcb7bfed8b2144541a66b49aa02 # v2.0.8
         with:
           version: "10.0"
           directory: ${{ runner.temp }}/llvm
@@ -205,7 +205,7 @@ jobs:
         run: sudo apt-get install build-essential ocaml ocamlbuild automake autoconf libtool wget python-is-python3 libssl-dev git cmake perl libtss2-dev pkg-config jq -y
 
       - name: Checkout sources
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           submodules: recursive
 
@@ -241,7 +241,7 @@ jobs:
           
           # Run the script with timeout
           set +e
-          timeout 600 ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report
+          timeout 900 ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report
           EXIT_CODE=$?
           set -e
           
@@ -295,7 +295,7 @@ jobs:
 
       - name: Upload test artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: policy-v2-test-logs-${{ github.run_id }}
           path: |
