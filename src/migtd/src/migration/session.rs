@@ -192,6 +192,8 @@ fn process_buffer(buffer: &mut [u8]) -> RequestDataBufferHeader {
             Level::Debug,
             DEFAULT_MIGREQUEST_ID,
         );
+        log::error!("process_buffer: Buffer too small! - buffer.len = {}, length = {}\n",
+                buffer.len(), length);
         return outputbuffer;
     }
     let (header, _payload_buffer) = buffer.split_at_mut(length); // Split at 12th byte
@@ -217,12 +219,16 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
 
     data_buffer[0..reqbufferhdrlen].copy_from_slice(&reqbufferhdr.as_bytes());
 
-    tdx::tdvmcall_migtd_waitforrequest(data_buffer, event::VMCALL_SERVICE_VECTOR)?;
+    tdx::tdvmcall_migtd_waitforrequest(data_buffer, event::VMCALL_SERVICE_VECTOR).map_err(|e| {
+        log::error!("wait_for_request: tdvmcall_migtd_waitforrequest failure {:x}\n", e);
+        e
+    })?;
 
     poll_fn(|_cx| {
         if VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
             VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
         } else {
+            log::trace!("wait_for_request: VMCALL_SERVICE_FLAG not set, returning Pending\n");
             return Poll::Pending;
         }
 
@@ -230,11 +236,13 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
         let data_status = reqbufferhdr.datastatus;
         let data_length = reqbufferhdr.length;
         if (data_status == 0) && (data_length == 0) {
+            log::trace!("wait_for_request: data_status and data_length are both zero, returning Pending\n");
             return Poll::Pending;
         }
         let data_status_bytes = &data_status.to_le_bytes();
         if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
             entrylog(&format!("wait_for_request: data_status byte[0] failure\n").into_bytes(), Level::Error, DEFAULT_MIGREQUEST_ID);
+            log::error!("wait_for_request: data_status byte[0] failure\n");
             return Poll::Pending;
         }
 
@@ -250,6 +258,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
                 } else {
                     entrylog(&format!("wait_for_request: StartMigration operation incorrect data length - expected {:x} actual {:x}\n", expected_datalength, data_length).into_bytes(), Level::Debug, DEFAULT_MIGREQUEST_ID);
                 }
+                log::trace!("wait_for_request: StartMigration operation incorrect data length - expected {} actual {}\n", expected_datalength, data_length);
                 return Poll::Pending;
             }
             let slice = &data_buffer[reqbufferhdrlen..reqbufferhdrlen + data_length as usize];
@@ -1026,7 +1035,14 @@ pub fn exchange_info(
     is_src: bool,
 ) -> Result<ExchangeInformation> {
     let mut exchange_info = ExchangeInformation::default();
-    read_msk(mig_info, &mut exchange_info.key)?;
+    read_msk(mig_info, &mut exchange_info.key).map_err(|e| {
+        log::error!(
+            "exchange_info: read_msk failed with error: {:?} for mig_info.binding_handle = {}",
+            e,
+            mig_info.binding_handle
+        );
+        e
+    })?;
 
     let (field_min, field_max) = if is_src {
         (GSM_FIELD_MIN_EXPORT_VERSION, GSM_FIELD_MAX_EXPORT_VERSION)
@@ -1036,6 +1052,12 @@ pub fn exchange_info(
     let min_version = tdcall_sys_rd(field_min)?.1;
     let max_version = tdcall_sys_rd(field_max)?.1;
     if min_version > u16::MAX as u64 || max_version > u16::MAX as u64 {
+        log::error!(
+            "exchange_info: Migration version out of range. is_src = {}, min_version = {}, max_version = {}",
+            is_src,
+            min_version,
+            max_version
+        );
         return Err(MigrationResult::InvalidParameter);
     }
     exchange_info.min_ver = min_version as u16;
@@ -1050,7 +1072,10 @@ fn read_msk(mig_info: &MigtdMigrationInformation, msk: &mut MigrationSessionKey)
             mig_info.binding_handle,
             TDCS_FIELD_MIG_ENC_KEY + idx as u64,
             &mig_info.target_td_uuid,
-        )?;
+        ).map_err(|e|{
+            log::error!("read_msk: tdcall_servtd_rd failed with error: {:?} for mig_info.binding_handle = {}, idx = {}", e, mig_info.binding_handle, idx);
+            MigrationResult::TdxModuleError
+        })?;
         msk.fields[idx] = ret.content;
     }
     Ok(())
@@ -1064,7 +1089,10 @@ pub fn write_msk(mig_info: &MigtdMigrationInformation, msk: &MigrationSessionKey
             msk.fields[idx],
             &mig_info.target_td_uuid,
         )
-        .map_err(|_| MigrationResult::TdxModuleError)?;
+        .map_err(|e| {
+            log::error!("write_msk: tdcall_servtd_wr failed with error: {:?} for mig_info.binding_handle = {}, idx = {}, value = {}", e, mig_info.binding_handle, idx, msk.fields[idx]);
+            MigrationResult::TdxModuleError
+        })?;
     }
 
     Ok(())
@@ -1085,6 +1113,11 @@ pub fn tdcall_sys_rd(field_identifier: u64) -> core::result::Result<(u64, u64), 
     let ret = td_call(&mut args);
 
     if ret != TDCALL_STATUS_SUCCESS {
+        log::error!(
+            "tdcall_sys_rd failed with error: {:?} for field_identifier = {}",
+            ret,
+            field_identifier
+        );
         return Err(ret.into());
     }
 
@@ -1117,6 +1150,12 @@ pub fn cal_mig_version(
         || max_export < min_import
         || max_import < min_export
     {
+        log::error!(
+            "cal_mig_version: No compatible migration version found. is_src = {}, local_info = {:?}, remote_info = {:?}",
+            is_src,
+            local_info.min_ver..=local_info.max_ver,
+            remote_info.min_ver..=remote_info.max_ver,
+        );
         return Err(MigrationResult::InvalidParameter);
     }
 
@@ -1129,7 +1168,10 @@ pub fn set_mig_version(mig_info: &MigtdMigrationInformation, mig_ver: u16) -> Re
         TDCS_FIELD_MIG_VERSION,
         mig_ver as u64,
         &mig_info.target_td_uuid,
-    )?;
+    ).map_err(|e|{
+        log::error!("set_mig_version: tdcall_servtd_wr failed with error: {:?} for mig_info.binding_handle = {}, mig_ver = {}", e, mig_info.binding_handle, mig_ver);
+        e
+    })?;
     Ok(())
 }
 
