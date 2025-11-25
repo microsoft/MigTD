@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use codec::Codec;
 use codec::Reader;
 use codec::Writer;
-use core::time::Duration;
 use spdmlib::common::SpdmDeviceIo;
 use spdmlib::error::*;
 use spin::Mutex;
@@ -36,8 +35,6 @@ pub use spdm_vdm::*;
 use crate::migration::MigrationResult;
 use crate::migration::MigtdMigrationInformation;
 use crate::spdm::vmcall_msg::VMCALL_SPDM_MESSAGE_HEADER_SIZE;
-
-pub const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
 
 pub struct MigtdTransport<T: AsyncRead + AsyncWrite + Unpin> {
     pub transport: T,
@@ -63,6 +60,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SpdmDeviceIo for MigtdTransport<T> {
         _timeout: usize,
     ) -> Result<usize, usize> {
         let mut buffer = buffer.lock();
+        if buffer.len() < VMCALL_SPDM_MESSAGE_HEADER_SIZE {
+            return Err(0_usize);
+        }
+
         let mut recvd = 0;
         while recvd < VMCALL_SPDM_MESSAGE_HEADER_SIZE {
             let n = self
@@ -78,7 +79,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SpdmDeviceIo for MigtdTransport<T> {
             vmcall_msg::VmCallMessageHeader::read(&mut reader).ok_or(0_usize)?;
         let payload_size = vmcall_msg_header.length as usize;
 
-        if buffer.len() < payload_size + VMCALL_SPDM_MESSAGE_HEADER_SIZE {
+        if payload_size > buffer.len().saturating_sub(VMCALL_SPDM_MESSAGE_HEADER_SIZE) {
             return Err(0_usize);
         }
 

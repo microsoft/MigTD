@@ -305,14 +305,18 @@ fn create_td_report_from_file(quote_file_path: String) -> tdx::TdReport {
         }
     };
 
-    // Parse the quote structure
-    // Quote layout: header (48 bytes) + body (584 bytes) + signature_data_len (4 bytes) + signature_data
+    // Parse the quote structure (v4 or v5 format)
+    // Quote v4 layout: header (48 bytes) + sgx_report2_body_t (584 bytes) + signature_data_len (4 bytes) + signature_data
+    // Quote v5 layout: header (48 bytes) + type (2 bytes) + size (4 bytes) + body (variable) + signature_data_len (4 bytes) + signature_data
     const QUOTE_HEADER_SIZE: usize = 48;
-    const QUOTE_BODY_SIZE: usize = 584;
-    const MIN_QUOTE_SIZE: usize = QUOTE_HEADER_SIZE + QUOTE_BODY_SIZE + 4;
+    const QUOTE_V4_BODY_SIZE: usize = 584;  // sgx_report2_body_t size for TDX 1.0
+    const QUOTE_V5_BODY_SIZE_10: usize = 584;  // TD Report 1.0 (type=2)
+    const QUOTE_V5_BODY_SIZE_15: usize = 648;  // TD Report 1.5 (type=3)
+    const MIN_QUOTE_V4_SIZE: usize = QUOTE_HEADER_SIZE + QUOTE_V4_BODY_SIZE + 4;
+    const MIN_QUOTE_V5_SIZE: usize = QUOTE_HEADER_SIZE + 2 + 4 + QUOTE_V5_BODY_SIZE_10 + 4;
 
-    if quote_data.len() < MIN_QUOTE_SIZE {
-        error!("Quote file too small: {} bytes (expected at least {})", quote_data.len(), MIN_QUOTE_SIZE);
+    if quote_data.len() < QUOTE_HEADER_SIZE + 2 {
+        error!("Quote file too small: {} bytes (expected at least {})", quote_data.len(), QUOTE_HEADER_SIZE + 2);
         panic!("Invalid quote file: too small");
     }
 
@@ -322,58 +326,149 @@ fn create_td_report_from_file(quote_file_path: String) -> tdx::TdReport {
 
     debug!("Quote header - version: {}, tee_type: 0x{:02x}", header_version, tee_type);
 
-    // Parse TD quote body (starts at offset 48)
-    let body_offset = QUOTE_HEADER_SIZE;
+    // Determine quote version and parse accordingly
+    let (body_offset, body_size) = if header_version == 4 {
+        // Quote v4: body starts immediately after header
+        if quote_data.len() < MIN_QUOTE_V4_SIZE {
+            error!("Quote v4 file too small: {} bytes (expected at least {})", quote_data.len(), MIN_QUOTE_V4_SIZE);
+            panic!("Invalid quote v4 file: too small");
+        }
+        debug!("Parsing Quote v4 format");
+        (QUOTE_HEADER_SIZE, QUOTE_V4_BODY_SIZE)
+    } else if header_version == 5 {
+        // Quote v5: has type and size fields after header
+        if quote_data.len() < MIN_QUOTE_V5_SIZE {
+            error!("Quote v5 file too small: {} bytes (expected at least {})", quote_data.len(), MIN_QUOTE_V5_SIZE);
+            panic!("Invalid quote v5 file: too small");
+        }
 
-    // Extract fields from TD quote body
-    let mut tee_tcb_svn = [0u8; 16];
-    tee_tcb_svn.copy_from_slice(&quote_data[body_offset..body_offset + 16]);
+        let body_type = u16::from_le_bytes([quote_data[48], quote_data[49]]);
+        let body_size = u32::from_le_bytes([quote_data[50], quote_data[51], quote_data[52], quote_data[53]]) as usize;
 
-    let mut mrseam = [0u8; 48];
-    mrseam.copy_from_slice(&quote_data[body_offset + 16..body_offset + 64]);
+        debug!("Parsing Quote v5 format - body_type: {}, body_size: {}", body_type, body_size);
 
-    let mut mrsigner_seam = [0u8; 48];
-    mrsigner_seam.copy_from_slice(&quote_data[body_offset + 64..body_offset + 112]);
+        // Body type 2 = TD Report 1.0 (584 bytes), type 3 = TD Report 1.5 (648 bytes)
+        let expected_size = match body_type {
+            2 => QUOTE_V5_BODY_SIZE_10,
+            3 => QUOTE_V5_BODY_SIZE_15,
+            _ => {
+                error!("Unsupported Quote v5 body type: {}", body_type);
+                panic!("Unsupported Quote v5 body type");
+            }
+        };
 
-    let mut seamattributes = [0u8; 8];
-    seamattributes.copy_from_slice(&quote_data[body_offset + 112..body_offset + 120]);
+        if body_size != expected_size {
+            error!("Quote v5 body size mismatch: {} (expected {})", body_size, expected_size);
+            panic!("Invalid Quote v5 body size");
+        }
 
-    let mut tdattributes = [0u8; 8];
-    tdattributes.copy_from_slice(&quote_data[body_offset + 120..body_offset + 128]);
+        (QUOTE_HEADER_SIZE + 6, body_size)
+    } else {
+        error!("Unsupported quote version: {}", header_version);
+        panic!("Unsupported quote version");
+    };
 
-    let mut xfam = [0u8; 8];
-    xfam.copy_from_slice(&quote_data[body_offset + 128..body_offset + 136]);
+    // Quote body structure (sgx_report2_body_t from Intel DCAP):
+    // Offset 0:   tee_tcb_svn       [16 bytes]
+    // Offset 16:  mr_seam           [48 bytes]
+    // Offset 64:  mrsigner_seam     [48 bytes]
+    // Offset 112: seam_attributes   [8 bytes]
+    // Offset 120: td_attributes     [8 bytes]
+    // Offset 128: xfam              [8 bytes]
+    // Offset 136: mr_td             [48 bytes]
+    // Offset 184: mr_config_id      [48 bytes]
+    // Offset 232: mr_owner          [48 bytes]
+    // Offset 280: mr_owner_config   [48 bytes]
+    // Offset 328: rt_mr[4]          [192 bytes = 4 x 48]
+    // Offset 520: report_data       [64 bytes]
+    // [v5 only] Offset 584: tee_tcb_svn2  [16 bytes] (for TD preserving)
+    // [v5 only] Offset 600: mr_servicetd  [48 bytes] (service TD hash)
+    // Total v4/v5.0: 584 bytes, v5.5: 648 bytes
 
-    let mut mrtd = [0u8; 48];
-    mrtd.copy_from_slice(&quote_data[body_offset + 136..body_offset + 184]);
+    #[repr(C, packed)]
+    struct SgxReport2Body {
+        tee_tcb_svn: [u8; 16],
+        mr_seam: [u8; 48],
+        mrsigner_seam: [u8; 48],
+        seam_attributes: [u8; 8],
+        td_attributes: [u8; 8],
+        xfam: [u8; 8],
+        mr_td: [u8; 48],
+        mr_config_id: [u8; 48],
+        mr_owner: [u8; 48],
+        mr_owner_config: [u8; 48],
+        rt_mr: [[u8; 48]; 4],
+        report_data: [u8; 64],
+    }
 
-    let mut mrconfigid = [0u8; 48];
-    mrconfigid.copy_from_slice(&quote_data[body_offset + 184..body_offset + 232]);
+    #[repr(C, packed)]
+    struct SgxReport2BodyV15 {
+        tee_tcb_svn: [u8; 16],
+        mr_seam: [u8; 48],
+        mrsigner_seam: [u8; 48],
+        seam_attributes: [u8; 8],
+        td_attributes: [u8; 8],
+        xfam: [u8; 8],
+        mr_td: [u8; 48],
+        mr_config_id: [u8; 48],
+        mr_owner: [u8; 48],
+        mr_owner_config: [u8; 48],
+        rt_mr: [[u8; 48]; 4],
+        report_data: [u8; 64],
+        tee_tcb_svn2: [u8; 16],
+        mr_servicetd: [u8; 48],
+    }
 
-    let mut mrowner = [0u8; 48];
-    mrowner.copy_from_slice(&quote_data[body_offset + 232..body_offset + 280]);
+    // Get report body from quote
+    let (report_body, servtd_hash) = if body_size == QUOTE_V5_BODY_SIZE_15 {
+        // v5 with TD Report 1.5 (648 bytes) - includes mr_servicetd
+        let report_v15 = unsafe {
+            &*(quote_data[body_offset..body_offset + body_size].as_ptr() as *const SgxReport2BodyV15)
+        };
+        debug!("Successfully parsed TD quote v5.5 body (648 bytes) from file");
 
-    let mut mrownerconfig = [0u8; 48];
-    mrownerconfig.copy_from_slice(&quote_data[body_offset + 280..body_offset + 328]);
+        // Extract the base report body fields
+        let base_body = SgxReport2Body {
+            tee_tcb_svn: report_v15.tee_tcb_svn,
+            mr_seam: report_v15.mr_seam,
+            mrsigner_seam: report_v15.mrsigner_seam,
+            seam_attributes: report_v15.seam_attributes,
+            td_attributes: report_v15.td_attributes,
+            xfam: report_v15.xfam,
+            mr_td: report_v15.mr_td,
+            mr_config_id: report_v15.mr_config_id,
+            mr_owner: report_v15.mr_owner,
+            mr_owner_config: report_v15.mr_owner_config,
+            rt_mr: report_v15.rt_mr,
+            report_data: report_v15.report_data,
+        };
+        (base_body, report_v15.mr_servicetd)
+    } else {
+        // v4 or v5 with TD Report 1.0 (584 bytes)
+        let report = unsafe {
+            &*(quote_data[body_offset..body_offset + body_size].as_ptr() as *const SgxReport2Body)
+        };
+        debug!("Successfully parsed TD quote v{} body (584 bytes) from file", header_version);
 
-    let mut rtmr0 = [0u8; 48];
-    rtmr0.copy_from_slice(&quote_data[body_offset + 328..body_offset + 376]);
+        // Copy the struct to move it out of the unsafe block
+        let base_body = SgxReport2Body {
+            tee_tcb_svn: report.tee_tcb_svn,
+            mr_seam: report.mr_seam,
+            mrsigner_seam: report.mrsigner_seam,
+            seam_attributes: report.seam_attributes,
+            td_attributes: report.td_attributes,
+            xfam: report.xfam,
+            mr_td: report.mr_td,
+            mr_config_id: report.mr_config_id,
+            mr_owner: report.mr_owner,
+            mr_owner_config: report.mr_owner_config,
+            rt_mr: report.rt_mr,
+            report_data: report.report_data,
+        };
+        (base_body, [0u8; 48]) // SERVTD_HASH always zero for MigTD
+    };
 
-    let mut rtmr1 = [0u8; 48];
-    rtmr1.copy_from_slice(&quote_data[body_offset + 376..body_offset + 424]);
-
-    let mut rtmr2 = [0u8; 48];
-    rtmr2.copy_from_slice(&quote_data[body_offset + 424..body_offset + 472]);
-
-    let mut rtmr3 = [0u8; 48];
-    rtmr3.copy_from_slice(&quote_data[body_offset + 472..body_offset + 520]);
-
-    let mut reportdata = [0u8; 64];
-    reportdata.copy_from_slice(&quote_data[body_offset + 520..body_offset + 584]);
-
-    debug!("Successfully parsed TD quote body from file");
-
-    // Create TD report with values from parsed quote
+    // Create TD report with values from parsed quote body
     let td_report = TdxReport {
         report_mac: ReportMac {
             report_type: ReportType {
@@ -383,34 +478,34 @@ fn create_td_report_from_file(quote_file_path: String) -> tdx::TdReport {
                 reserved: 0x00,
             },
             reserved0: [0u8; 12],
-            cpu_svn: tee_tcb_svn,
+            cpu_svn: report_body.tee_tcb_svn,
             tee_tcb_info_hash: [0x42; 48], // Mock hash (not in quote)
             tee_info_hash: [0x43; 48],     // Mock hash (not in quote)
-            report_data: reportdata,
+            report_data: report_body.report_data,
             reserved1: [0u8; 32],
-            mac: [0xBB; 32], // Mock MAC
+            mac: [0xBB; 32], // Mock MAC, not used for policy tests
         },
         tee_tcb_info: TeeTcbInfo {
             valid: [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            tee_tcb_svn: tee_tcb_svn,
-            mrseam: mrseam,
-            mrsigner_seam: mrsigner_seam,
-            attributes: seamattributes,
+            tee_tcb_svn: report_body.tee_tcb_svn,
+            mrseam: report_body.mr_seam,
+            mrsigner_seam: report_body.mrsigner_seam,
+            attributes: report_body.seam_attributes,
             reserved: [0u8; 111],
         },
         reserved: [0u8; 17],
         td_info: TdInfo {
-            attributes: tdattributes,
-            xfam: xfam,
-            mrtd: mrtd,
-            mrconfig_id: mrconfigid,
-            mrowner: mrowner,
-            mrownerconfig: mrownerconfig,
-            rtmr0: rtmr0,
-            rtmr1: rtmr1,
-            rtmr2: rtmr2,
-            rtmr3: rtmr3,
-            servtd_hash: [0x4E; 48], // Mock value (not in quote body)
+            attributes: report_body.td_attributes,
+            xfam: report_body.xfam,
+            mrtd: report_body.mr_td,
+            mrconfig_id: report_body.mr_config_id,
+            mrowner: report_body.mr_owner,
+            mrownerconfig: report_body.mr_owner_config,
+            rtmr0: report_body.rt_mr[0],
+            rtmr1: report_body.rt_mr[1],
+            rtmr2: report_body.rt_mr[2],
+            rtmr3: report_body.rt_mr[3],
+            servtd_hash: servtd_hash,
             reserved: [0u8; 64],
         },
     };
