@@ -2458,6 +2458,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tdx-mock-data"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "tdx-tdcall",
+]
+
+[[package]]
 name = "tdx-tdcall"
 version = "0.2.3"
 dependencies = [
@@ -2480,6 +2488,7 @@ dependencies = [
  "lazy_static",
  "log",
  "spin 0.9.8",
+ "tdx-mock-data",
  "tdx-tdcall",
  "tokio",
  "zerocopy 0.7.32",
