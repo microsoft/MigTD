@@ -18,7 +18,7 @@ use migtd::migration::session::{exchange_msk, report_status};
 use migtd::migration::{MigrationResult, MigtdMigrationInformation};
 
 use tdx_tdcall_emu::tdreport_emu::tdcall_report_emulated;
-use tdx_tdcall_emu::tdx_emu::{set_emulated_get_report_data, set_emulated_start_migration};
+use tdx_tdcall_emu::tdx_emu::set_emulated_start_migration;
 use tdx_tdcall_emu::{init_tcp_emulation_with_mode, start_tcp_server_sync, TcpEmulationMode};
 
 // Import shared functions from main.rs

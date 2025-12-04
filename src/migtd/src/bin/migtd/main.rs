@@ -16,7 +16,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(feature = "vmcall-raw")]
-use log::{debug, error, Level};
+use log::{error, Level};
 use log::{info, LevelFilter};
 use migtd::event_log::*;
 #[cfg(not(feature = "vmcall-raw"))]
