@@ -204,20 +204,6 @@ pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u
                     data.extend_from_slice(&PAGE_SIZE.to_le_bytes());
                 }
             }
-
-            log::info!(
-                "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
-                log_max_level
-            );
-            entrylog(
-                &format!(
-                    "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
-                    log_max_level
-                )
-                .into_bytes(),
-                u8_to_loglevel(log_max_level),
-                request_id,
-            );
         }
         #[cfg(test)]
         {
@@ -243,6 +229,20 @@ pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u
                 data.extend_from_slice(&PAGE_SIZE.to_le_bytes());
             }
         }
+
+        log::debug!(
+            "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
+            log_max_level
+        );
+        entrylog(
+            &format!(
+                "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
+                log_max_level
+            )
+            .into_bytes(),
+            Level::Debug,
+            request_id,
+        );
         Ok(())
     } else {
         entrylog(
@@ -473,7 +473,7 @@ pub fn entrylog(msg: &Vec<u8>, loglevel: Level, request_id: u64) {
                 data_buffer[24..32].copy_from_slice(&currentstartoffset.to_le_bytes());
                 data_buffer[32..40].copy_from_slice(&currentendoffset.to_le_bytes());
                 println!(
-                    "Entry_Log: Message length {:x} start_offset {:x} end_offset {:x} ",
+                    "Entry_Log: Message length {} start_offset {} end_offset {} ",
                     msg.len(),
                     currentstartoffset,
                     currentendoffset
@@ -517,7 +517,7 @@ mod test {
         assert_eq!(u8_to_loglevel(99), None);
 
         let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
-        let vcpuinfo = &mut vcpulogginginfovector[0];      
+        let vcpuinfo = &mut vcpulogginginfovector[0];
         let data_buffer = vcpuinfo.log_area_ptr;
         vcpulogginginfovector.clear();
         unsafe {
@@ -535,7 +535,7 @@ mod test {
         LOGGING_INFORMATION
             .logarea_created
             .store(false, Ordering::SeqCst);
-        
+
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
 
@@ -568,7 +568,8 @@ mod test {
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
 
         let mut data: Vec<u8> = Vec::new();
-        let log_max_level: u8 = 5;
+        let log_max_level: u8 = 3;
+        let migration_request_id: u64 = 0;
 
         let initial_entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
@@ -576,7 +577,7 @@ mod test {
         entrylog(
             &"This should be ignored\n".to_string().into_bytes(),
             Level::Info,
-            u64::MAX,
+            migration_request_id,
         );
 
         // Entry ID should not have changed
@@ -593,8 +594,8 @@ mod test {
         // Add a log entry
         entrylog(
             &"Test message\n".to_string().into_bytes(),
-            Level::Trace,
-            u64::MAX,
+            Level::Info,
+            migration_request_id,
         );
 
         // Validate buffer structure
@@ -630,12 +631,10 @@ mod test {
         let length = entry.length;
 
         assert_eq!(log_entry_id, 1);
-        assert_eq!(mig_request_id, u64::MAX);
-        assert_eq!(loglevel, loglevel_to_u8(Level::Trace));
+        assert_eq!(mig_request_id, migration_request_id);
+        assert_eq!(loglevel, loglevel_to_u8(Level::Info));
         assert_eq!(length, "Test message\n".len() as u32);
 
-        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
-        let vcpuinfo = &mut vcpulogginginfovector[0];        
         vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer_ptr as *mut [u8; PAGE_SIZE]);
@@ -725,7 +724,7 @@ mod test {
         assert!(before_entry_id == after_entry_id);
 
         let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
-        let vcpuinfo = &mut vcpulogginginfovector[0];   
+        let vcpuinfo = &mut vcpulogginginfovector[0];
         let free_data_buffer = vcpuinfo.log_area_ptr;
         vcpulogginginfovector.clear();
         unsafe {
