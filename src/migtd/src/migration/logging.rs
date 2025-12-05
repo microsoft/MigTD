@@ -23,13 +23,20 @@ use zerocopy::{transmute_ref, AsBytes, FromBytes, FromZeroes};
 const PAGE_SIZE: usize = 0x1_000;
 #[cfg(not(test))]
 const TDCALL_STATUS_SUCCESS: u64 = 0;
+const MIGTD_REQUEST_ID_SENTINEL: u64 = 0xFFFFFFFFFFFFFFFF;
 
 type Result<T> = core::result::Result<T, MigrationResult>;
+
+#[derive(Clone, Copy)]
+struct VCPULoggingInformation {
+    log_area_ptr: usize,
+    logarea_initialized: bool,
+    mig_request_id: u64,
+}
 
 struct LoggingInformation {
     num_vcpus: AtomicU32,
     logarea_created: AtomicBool,
-    logarea_initialized: AtomicBool,
     logentry_id: AtomicU64,
     maxloglevel: AtomicU8,
 }
@@ -94,11 +101,10 @@ lazy_static! {
     static ref LOGGING_INFORMATION: LoggingInformation = LoggingInformation {
         num_vcpus: AtomicU32::new(0),
         logarea_created: AtomicBool::new(false),
-        logarea_initialized: AtomicBool::new(false),
         logentry_id: AtomicU64::new(0),
         maxloglevel: AtomicU8::new(0),
     };
-    static ref LOGAREAPTR: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    static ref VCPULOGGINGINFO: Mutex<Vec<VCPULoggingInformation>> = Mutex::new(Vec::new());
 }
 
 pub fn create_logarea() -> Result<()> {
@@ -118,20 +124,28 @@ pub fn create_logarea() -> Result<()> {
 
         num_vcpus = args.r8 as u32;
 
-        let mut logareavector = LOGAREAPTR.lock();
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
         for _index in 0..num_vcpus {
             let data_buffer =
                 unsafe { alloc_shared_pages(1).ok_or(MigrationResult::OutOfResource)? };
-            logareavector.push(data_buffer);
+            vcpulogginginfovector.push(VCPULoggingInformation {
+                log_area_ptr: data_buffer as usize,
+                logarea_initialized: false,
+                mig_request_id: MIGTD_REQUEST_ID_SENTINEL,
+            });
         }
     }
     #[cfg(test)]
     {
         num_vcpus = 1;
-        let mut logareavector = LOGAREAPTR.lock();
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
         let databuffer: Box<[u8; PAGE_SIZE]> = Box::new([0; PAGE_SIZE]);
         let databuffer_ptr = Box::into_raw(databuffer) as *mut u8;
-        logareavector.push(databuffer_ptr as usize);
+        vcpulogginginfovector.push(VCPULoggingInformation {
+            log_area_ptr: databuffer_ptr as usize,
+            logarea_initialized: false,
+            mig_request_id: MIGTD_REQUEST_ID_SENTINEL,
+        });
     }
 
     LOGGING_INFORMATION
@@ -145,13 +159,11 @@ pub fn create_logarea() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
 pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u8>) -> Result<()> {
     let padding: u32 = 0;
     let num_vcpus: u32 = LOGGING_INFORMATION.num_vcpus.load(Ordering::SeqCst);
     let logarea_created: bool = LOGGING_INFORMATION.logarea_created.load(Ordering::SeqCst);
-    let logarea_initialized: bool = LOGGING_INFORMATION
-        .logarea_initialized
-        .load(Ordering::SeqCst);
 
     if !logarea_created {
         data.extend_from_slice(
@@ -167,57 +179,18 @@ pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u
             .store(log_max_level, Ordering::SeqCst);
         data.extend_from_slice(&num_vcpus.to_le_bytes());
         data.extend_from_slice(&padding.to_le_bytes());
-        #[cfg(not(test))]
-        {
-            for index in 0..num_vcpus {
-                let logareavector = LOGAREAPTR.lock();
-                let data_buffer = logareavector[index as usize];
+
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        for index in 0..num_vcpus {
+            let vcpulogginginfo = &mut vcpulogginginfovector[index as usize];
+            if !vcpulogginginfo.logarea_initialized {
+                let data_buffer = vcpulogginginfo.log_area_ptr;
                 let data_buffer =
                     unsafe { core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE) };
                 let data_buffer_as_u64 = data_buffer.as_ptr() as u64;
-                if !logarea_initialized {
-                    let logareabuffheader = LogAreaBufferHeader {
-                        signature: LOGAREA_SIGNATURE,
-                        vcpuindex: index,
-                        reserved: 0,
-                        startoffset: size_of::<LogAreaBufferHeader>() as u64,
-                        endoffset: size_of::<LogAreaBufferHeader>() as u64,
-                    };
-                    let bytes: &[u8] = logareabuffheader.as_bytes();
-                    data_buffer[0..size_of::<LogAreaBufferHeader>()]
-                        .copy_from_slice(&bytes[0..bytes.len()]);
-                    LOGGING_INFORMATION
-                        .logarea_initialized
-                        .store(true, Ordering::SeqCst);
-                }
-                data.extend_from_slice(&data_buffer_as_u64.to_le_bytes());
-                data.extend_from_slice(&PAGE_SIZE.to_le_bytes());
-            }
-
-            log::info!(
-                "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
-                log_max_level
-            );
-            entrylog(
-                &format!(
-                    "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
-                    log_max_level
-                )
-                .into_bytes(),
-                Level::Info,
-                request_id,
-            );
-        }
-        #[cfg(test)]
-        {
-            let logareavector = LOGAREAPTR.lock();
-            let data_buffer = logareavector[0] as *mut u8;
-            let data_buffer = unsafe { core::slice::from_raw_parts_mut(data_buffer, PAGE_SIZE) };
-            let data_buffer_as_u64 = data_buffer.as_ptr() as u64;
-            if !logarea_initialized {
                 let logareabuffheader = LogAreaBufferHeader {
                     signature: LOGAREA_SIGNATURE,
-                    vcpuindex: 0,
+                    vcpuindex: index,
                     reserved: 0,
                     startoffset: size_of::<LogAreaBufferHeader>() as u64,
                     endoffset: size_of::<LogAreaBufferHeader>() as u64,
@@ -225,13 +198,26 @@ pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u
                 let bytes: &[u8] = logareabuffheader.as_bytes();
                 data_buffer[0..size_of::<LogAreaBufferHeader>()]
                     .copy_from_slice(&bytes[0..bytes.len()]);
-                LOGGING_INFORMATION
-                    .logarea_initialized
-                    .store(true, Ordering::SeqCst);
+                vcpulogginginfo.logarea_initialized = true;
+                data.extend_from_slice(&data_buffer_as_u64.to_le_bytes());
+                data.extend_from_slice(&PAGE_SIZE.to_le_bytes());
             }
-            data.extend_from_slice(&data_buffer_as_u64.to_le_bytes());
-            data.extend_from_slice(&PAGE_SIZE.to_le_bytes());
         }
+
+        log::info!(
+            "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
+            log_max_level
+        );
+        entrylog(
+            &format!(
+                "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
+                log_max_level
+            )
+            .into_bytes(),
+            Level::Info,
+            request_id,
+        );
+
         Ok(())
     } else {
         entrylog(
@@ -250,6 +236,68 @@ pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u
     }
 }
 
+#[cfg(test)]
+pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u8>) -> Result<()> {
+    let padding: u32 = 0;
+    let num_vcpus: u32 = LOGGING_INFORMATION.num_vcpus.load(Ordering::SeqCst);
+    let logarea_created: bool = LOGGING_INFORMATION.logarea_created.load(Ordering::SeqCst);
+
+    if !logarea_created {
+        data.extend_from_slice(
+            &format!("Error: LogArea has not been successfuly created by create_logarea()\n")
+                .into_bytes(),
+        );
+        return Err(MigrationResult::UnsupportedOperationError);
+    }
+
+    if let Some(_log_level) = u8_to_loglevel(log_max_level) {
+        LOGGING_INFORMATION
+            .maxloglevel
+            .store(log_max_level, Ordering::SeqCst);
+        data.extend_from_slice(&num_vcpus.to_le_bytes());
+        data.extend_from_slice(&padding.to_le_bytes());
+
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer = vcpuinfo.log_area_ptr;
+        let data_buffer =
+            unsafe { core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE) };
+        let data_buffer_as_u64 = data_buffer.as_ptr() as u64;
+        if !vcpuinfo.logarea_initialized {
+            let logareabuffheader = LogAreaBufferHeader {
+                signature: LOGAREA_SIGNATURE,
+                vcpuindex: 0,
+                reserved: 0,
+                startoffset: size_of::<LogAreaBufferHeader>() as u64,
+                endoffset: size_of::<LogAreaBufferHeader>() as u64,
+            };
+            let bytes: &[u8] = logareabuffheader.as_bytes();
+            data_buffer[0..size_of::<LogAreaBufferHeader>()]
+                .copy_from_slice(&bytes[0..bytes.len()]);
+            vcpuinfo.logarea_initialized = true;
+            data.extend_from_slice(&data_buffer_as_u64.to_le_bytes());
+            data.extend_from_slice(&PAGE_SIZE.to_le_bytes());
+        }
+
+        Ok(())
+    } else {
+        entrylog(
+            &format!("enable_logarea: Invalid MaxLogLevel: {:x}\n", log_max_level).into_bytes(),
+            Level::Error,
+            request_id,
+        );
+        data.extend_from_slice(
+            &format!(
+                "Error: enable_logarea(): Invalid MaxLogLevel: {:x} requested\n",
+                log_max_level
+            )
+            .into_bytes(),
+        );
+        return Err(MigrationResult::InvalidParameter);
+    }
+}
+
+#[cfg(not(test))]
 pub fn entrylog(msg: &Vec<u8>, loglevel: Level, request_id: u64) {
     let logarea_created: bool = LOGGING_INFORMATION.logarea_created.load(Ordering::SeqCst);
     let log_max_level: u8 = LOGGING_INFORMATION.maxloglevel.load(Ordering::SeqCst);
@@ -262,213 +310,321 @@ pub fn entrylog(msg: &Vec<u8>, loglevel: Level, request_id: u64) {
             if msg.len() > PAGE_SIZE - (LOGAREABUFFERHEADERSIZE + LOGENTRYHEADERSIZE) {
                 return;
             }
-            #[cfg(not(test))]
-            {
-                let cpuid = CpuId::new();
-                if let Some(feature_info) = cpuid.get_feature_info() {
-                    let currvcpuindex: u32 = feature_info.initial_local_apic_id().into();
-                    let logareavector = LOGAREAPTR.lock();
-                    let data_buffer = logareavector[currvcpuindex as usize];
-                    let data_buffer = unsafe {
-                        core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE)
-                    };
-                    let vcpuindex: u32 =
-                        u32::from_le_bytes(data_buffer[16..20].try_into().unwrap());
-                    if currvcpuindex == vcpuindex {
-                        LOGGING_INFORMATION
-                            .logentry_id
-                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
-                                Some(if v == u64::MAX { 1 } else { v + 1 })
-                            })
-                            .unwrap();
-                        let start_offset: u64 =
-                            u64::from_le_bytes(data_buffer[24..32].try_into().unwrap());
-                        let end_offset: u64 =
-                            u64::from_le_bytes(data_buffer[32..40].try_into().unwrap());
-                        let mut currentstartoffset: usize = start_offset as usize;
-                        let mut currentendoffset: usize = end_offset as usize;
-                        if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE
-                            || currentendoffset < currentstartoffset
-                        {
-                            if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE {
-                                data_buffer[currentendoffset..PAGE_SIZE].fill(0);
-                                currentendoffset = LOGAREABUFFERHEADERSIZE;
-                            }
-                            if currentendoffset < currentstartoffset {
-                                data_buffer[currentendoffset..currentstartoffset].fill(0);
-                                if currentendoffset + LOGENTRYHEADERSIZE + msg.len()
-                                    > currentstartoffset
-                                {
-                                    let mut reqdatasize = LOGENTRYHEADERSIZE + msg.len();
-                                    reqdatasize = reqdatasize
-                                        .saturating_sub(currentstartoffset - currentendoffset);
-                                    while reqdatasize > 0 {
-                                        if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
-                                            currentstartoffset = LOGAREABUFFERHEADERSIZE;
-                                        }
-                                        let logentrybytes: [u8; LOGENTRYHEADERSIZE] = data_buffer
-                                            [currentstartoffset
-                                                ..currentstartoffset + LOGENTRYHEADERSIZE]
-                                            .try_into()
-                                            .expect("incorrect size");
-                                        let logentryhdr: &LogEntryHeader =
-                                            transmute_ref!(&logentrybytes);
-                                        let totallength: usize =
-                                            logentryhdr.length as usize + LOGENTRYHEADERSIZE;
-                                        data_buffer
-                                            [currentstartoffset..currentstartoffset + totallength]
-                                            .fill(0);
-                                        currentstartoffset += totallength;
-                                        reqdatasize = reqdatasize.saturating_sub(totallength);
+            let cpuid = CpuId::new();
+            if let Some(feature_info) = cpuid.get_feature_info() {
+                let currvcpuindex: u32 = feature_info.initial_local_apic_id().into();
+                let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+                let data_buffer = vcpulogginginfovector[currvcpuindex as usize].log_area_ptr;
+                let data_buffer =
+                    unsafe { core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE) };
+                let vcpuindex: u32 = u32::from_le_bytes(data_buffer[16..20].try_into().unwrap());
+                if currvcpuindex == vcpuindex {
+                    LOGGING_INFORMATION
+                        .logentry_id
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                            Some(if v == u64::MAX { 1 } else { v + 1 })
+                        })
+                        .unwrap();
+                    let start_offset: u64 =
+                        u64::from_le_bytes(data_buffer[24..32].try_into().unwrap());
+                    let end_offset: u64 =
+                        u64::from_le_bytes(data_buffer[32..40].try_into().unwrap());
+                    let mut currentstartoffset: usize = start_offset as usize;
+                    let mut currentendoffset: usize = end_offset as usize;
+                    if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE
+                        || currentendoffset < currentstartoffset
+                    {
+                        if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE {
+                            data_buffer[currentendoffset..PAGE_SIZE].fill(0);
+                            currentendoffset = LOGAREABUFFERHEADERSIZE;
+                        }
+                        if currentendoffset < currentstartoffset {
+                            data_buffer[currentendoffset..currentstartoffset].fill(0);
+                            if currentendoffset + LOGENTRYHEADERSIZE + msg.len()
+                                > currentstartoffset
+                            {
+                                let mut reqdatasize = LOGENTRYHEADERSIZE + msg.len();
+                                reqdatasize = reqdatasize
+                                    .saturating_sub(currentstartoffset - currentendoffset);
+                                while reqdatasize > 0 {
+                                    if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
+                                        currentstartoffset = LOGAREABUFFERHEADERSIZE;
                                     }
+                                    let logentrybytes: [u8; LOGENTRYHEADERSIZE] = data_buffer
+                                        [currentstartoffset
+                                            ..currentstartoffset + LOGENTRYHEADERSIZE]
+                                        .try_into()
+                                        .expect("incorrect size");
+                                    let logentryhdr: &LogEntryHeader =
+                                        transmute_ref!(&logentrybytes);
+                                    let totallength: usize =
+                                        logentryhdr.length as usize + LOGENTRYHEADERSIZE;
+                                    data_buffer
+                                        [currentstartoffset..currentstartoffset + totallength]
+                                        .fill(0);
+                                    currentstartoffset += totallength;
+                                    reqdatasize = reqdatasize.saturating_sub(totallength);
                                 }
                             }
                         }
+                    }
 
-                        // Reset startoffset if no message is available at the end of buffer
-                        if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
-                            data_buffer[currentstartoffset..PAGE_SIZE].fill(0);
+                    // Reset startoffset if no message is available at the end of buffer
+                    if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
+                        data_buffer[currentstartoffset..PAGE_SIZE].fill(0);
+                        currentstartoffset = LOGAREABUFFERHEADERSIZE;
+                    }
+
+                    // Reset startoffset if no valid message is available
+                    if currentstartoffset != LOGAREABUFFERHEADERSIZE {
+                        let logentrybytes: [u8; LOGENTRYHEADERSIZE] = data_buffer
+                            [currentstartoffset..currentstartoffset + LOGENTRYHEADERSIZE]
+                            .try_into()
+                            .expect("incorrect size");
+                        let logentryhdr: &LogEntryHeader = transmute_ref!(&logentrybytes);
+                        if logentryhdr.length == 0 && logentryhdr.log_entry_id == 0 {
                             currentstartoffset = LOGAREABUFFERHEADERSIZE;
                         }
+                    }
 
-                        // Reset startoffset if no valid message is available
-                        if currentstartoffset != LOGAREABUFFERHEADERSIZE {
+                    data_buffer
+                        [currentendoffset..currentendoffset + LOGENTRYHEADERSIZE + msg.len()]
+                        .fill(0);
+                    let logentryhdr = LogEntryHeader {
+                        log_entry_id: LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst),
+                        mig_request_id: request_id,
+                        loglevel: log_level,
+                        reserved: [0, 0, 0],
+                        length: msg.len() as u32,
+                    };
+
+                    let bytes: &[u8] = logentryhdr.as_bytes();
+                    data_buffer[currentendoffset..currentendoffset + LOGENTRYHEADERSIZE]
+                        .copy_from_slice(&bytes[0..bytes.len()]);
+                    currentendoffset += LOGENTRYHEADERSIZE;
+                    data_buffer[currentendoffset..currentendoffset + msg.len()]
+                        .copy_from_slice(&msg[0..msg.len()]);
+                    currentendoffset += msg.len();
+
+                    data_buffer[24..32].copy_from_slice(&currentstartoffset.to_le_bytes());
+                    data_buffer[32..40].copy_from_slice(&currentendoffset.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn entrylog(msg: &Vec<u8>, loglevel: Level, request_id: u64) {
+    let logarea_created: bool = LOGGING_INFORMATION.logarea_created.load(Ordering::SeqCst);
+    let log_max_level: u8 = LOGGING_INFORMATION.maxloglevel.load(Ordering::SeqCst);
+    let log_level = loglevel_to_u8(loglevel);
+
+    if logarea_created {
+        if log_level <= log_max_level {
+            const LOGENTRYHEADERSIZE: usize = size_of::<LogEntryHeader>();
+            const LOGAREABUFFERHEADERSIZE: usize = size_of::<LogAreaBufferHeader>();
+            if msg.len() > PAGE_SIZE - (LOGAREABUFFERHEADERSIZE + LOGENTRYHEADERSIZE) {
+                return;
+            }
+
+            let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+            let vcpulogginginfo = &mut vcpulogginginfovector[0];
+            let data_buffer = vcpulogginginfo.log_area_ptr;
+            let data_buffer =
+                unsafe { core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE) };
+            LOGGING_INFORMATION
+                .logentry_id
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                    Some(if v == u64::MAX { 1 } else { v + 1 })
+                })
+                .unwrap();
+            let start_offset: u64 = u64::from_le_bytes(data_buffer[24..32].try_into().unwrap());
+            let end_offset: u64 = u64::from_le_bytes(data_buffer[32..40].try_into().unwrap());
+            let mut currentstartoffset: usize = start_offset as usize;
+            let mut currentendoffset: usize = end_offset as usize;
+
+            if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE
+                || currentendoffset < currentstartoffset
+            {
+                if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE {
+                    data_buffer[currentendoffset..PAGE_SIZE].fill(0);
+                    currentendoffset = LOGAREABUFFERHEADERSIZE;
+                }
+                if currentendoffset < currentstartoffset {
+                    data_buffer[currentendoffset..currentstartoffset].fill(0);
+                    if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > currentstartoffset {
+                        let mut reqdatasize = LOGENTRYHEADERSIZE + msg.len();
+                        reqdatasize =
+                            reqdatasize.saturating_sub(currentstartoffset - currentendoffset);
+                        while reqdatasize > 0 {
+                            println!(
+                                "Entry_Log: start_offset {:x} end_offset {:x} ",
+                                currentstartoffset, currentendoffset
+                            );
+                            if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
+                                currentstartoffset = LOGAREABUFFERHEADERSIZE;
+                            }
                             let logentrybytes: [u8; LOGENTRYHEADERSIZE] = data_buffer
                                 [currentstartoffset..currentstartoffset + LOGENTRYHEADERSIZE]
                                 .try_into()
                                 .expect("incorrect size");
                             let logentryhdr: &LogEntryHeader = transmute_ref!(&logentrybytes);
-                            if logentryhdr.length == 0 && logentryhdr.log_entry_id == 0 {
-                                currentstartoffset = LOGAREABUFFERHEADERSIZE;
-                            }
+                            let totallength: usize =
+                                logentryhdr.length as usize + LOGENTRYHEADERSIZE;
+                            data_buffer[currentstartoffset..currentstartoffset + totallength]
+                                .fill(0);
+                            currentstartoffset += totallength;
+                            reqdatasize = reqdatasize.saturating_sub(totallength);
                         }
-
-                        data_buffer
-                            [currentendoffset..currentendoffset + LOGENTRYHEADERSIZE + msg.len()]
-                            .fill(0);
-                        let logentryhdr = LogEntryHeader {
-                            log_entry_id: LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst),
-                            mig_request_id: request_id,
-                            loglevel: log_level,
-                            reserved: [0, 0, 0],
-                            length: msg.len() as u32,
-                        };
-
-                        let bytes: &[u8] = logentryhdr.as_bytes();
-                        data_buffer[currentendoffset..currentendoffset + LOGENTRYHEADERSIZE]
-                            .copy_from_slice(&bytes[0..bytes.len()]);
-                        currentendoffset += LOGENTRYHEADERSIZE;
-                        data_buffer[currentendoffset..currentendoffset + msg.len()]
-                            .copy_from_slice(&msg[0..msg.len()]);
-                        currentendoffset += msg.len();
-
-                        data_buffer[24..32].copy_from_slice(&currentstartoffset.to_le_bytes());
-                        data_buffer[32..40].copy_from_slice(&currentendoffset.to_le_bytes());
                     }
                 }
             }
-            #[cfg(test)]
-            {
-                let logareavector = LOGAREAPTR.lock();
-                let data_buffer = logareavector[0];
-                let data_buffer =
-                    unsafe { core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE) };
-                LOGGING_INFORMATION
-                    .logentry_id
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
-                        Some(if v == u64::MAX { 1 } else { v + 1 })
-                    })
-                    .unwrap();
-                let start_offset: u64 = u64::from_le_bytes(data_buffer[24..32].try_into().unwrap());
-                let end_offset: u64 = u64::from_le_bytes(data_buffer[32..40].try_into().unwrap());
-                let mut currentstartoffset: usize = start_offset as usize;
-                let mut currentendoffset: usize = end_offset as usize;
 
-                if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE
-                    || currentendoffset < currentstartoffset
-                {
-                    if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > PAGE_SIZE {
-                        data_buffer[currentendoffset..PAGE_SIZE].fill(0);
-                        currentendoffset = LOGAREABUFFERHEADERSIZE;
-                    }
-                    if currentendoffset < currentstartoffset {
-                        data_buffer[currentendoffset..currentstartoffset].fill(0);
-                        if currentendoffset + LOGENTRYHEADERSIZE + msg.len() > currentstartoffset {
-                            let mut reqdatasize = LOGENTRYHEADERSIZE + msg.len();
-                            reqdatasize =
-                                reqdatasize.saturating_sub(currentstartoffset - currentendoffset);
-                            while reqdatasize > 0 {
-                                println!(
-                                    "Entry_Log: start_offset {:x} end_offset {:x} ",
-                                    currentstartoffset, currentendoffset
-                                );
-                                if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
-                                    currentstartoffset = LOGAREABUFFERHEADERSIZE;
-                                }
-                                let logentrybytes: [u8; LOGENTRYHEADERSIZE] = data_buffer
-                                    [currentstartoffset..currentstartoffset + LOGENTRYHEADERSIZE]
-                                    .try_into()
-                                    .expect("incorrect size");
-                                let logentryhdr: &LogEntryHeader = transmute_ref!(&logentrybytes);
-                                let totallength: usize =
-                                    logentryhdr.length as usize + LOGENTRYHEADERSIZE;
-                                data_buffer[currentstartoffset..currentstartoffset + totallength]
-                                    .fill(0);
-                                currentstartoffset += totallength;
-                                reqdatasize = reqdatasize.saturating_sub(totallength);
-                            }
-                        }
-                    }
-                }
+            // Reset startoffset if no message is available at the end of buffer
+            if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
+                data_buffer[currentstartoffset..PAGE_SIZE].fill(0);
+                currentstartoffset = LOGAREABUFFERHEADERSIZE;
+            }
 
-                // Reset startoffset if no message is available at the end of buffer
-                if currentstartoffset + LOGENTRYHEADERSIZE >= PAGE_SIZE {
-                    data_buffer[currentstartoffset..PAGE_SIZE].fill(0);
+            // Reset startoffset if no valid message is available
+            if currentstartoffset != LOGAREABUFFERHEADERSIZE {
+                let logentrybytes: [u8; LOGENTRYHEADERSIZE] = data_buffer
+                    [currentstartoffset..currentstartoffset + LOGENTRYHEADERSIZE]
+                    .try_into()
+                    .expect("incorrect size");
+                let logentryhdr: &LogEntryHeader = transmute_ref!(&logentrybytes);
+                if logentryhdr.length == 0 && logentryhdr.log_entry_id == 0 {
                     currentstartoffset = LOGAREABUFFERHEADERSIZE;
                 }
-
-                // Reset startoffset if no valid message is available
-                if currentstartoffset != LOGAREABUFFERHEADERSIZE {
-                    let logentrybytes: [u8; LOGENTRYHEADERSIZE] = data_buffer
-                        [currentstartoffset..currentstartoffset + LOGENTRYHEADERSIZE]
-                        .try_into()
-                        .expect("incorrect size");
-                    let logentryhdr: &LogEntryHeader = transmute_ref!(&logentrybytes);
-                    if logentryhdr.length == 0 && logentryhdr.log_entry_id == 0 {
-                        currentstartoffset = LOGAREABUFFERHEADERSIZE;
-                    }
-                }
-
-                data_buffer[currentendoffset..currentendoffset + LOGENTRYHEADERSIZE + msg.len()]
-                    .fill(0);
-
-                let logentryhdr = LogEntryHeader {
-                    log_entry_id: LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst),
-                    mig_request_id: request_id,
-                    loglevel: log_level,
-                    reserved: [0, 0, 0],
-                    length: msg.len() as u32,
-                };
-
-                let bytes: &[u8] = logentryhdr.as_bytes();
-                data_buffer[currentendoffset..currentendoffset + LOGENTRYHEADERSIZE]
-                    .copy_from_slice(&bytes[0..bytes.len()]);
-                currentendoffset += LOGENTRYHEADERSIZE;
-                data_buffer[currentendoffset..currentendoffset + msg.len()]
-                    .copy_from_slice(&msg[0..msg.len()]);
-                currentendoffset += msg.len();
-
-                data_buffer[24..32].copy_from_slice(&currentstartoffset.to_le_bytes());
-                data_buffer[32..40].copy_from_slice(&currentendoffset.to_le_bytes());
-                println!(
-                    "Entry_Log: Message length {:x} start_offset {:x} end_offset {:x} ",
-                    msg.len(),
-                    currentstartoffset,
-                    currentendoffset
-                );
             }
+
+            data_buffer[currentendoffset..currentendoffset + LOGENTRYHEADERSIZE + msg.len()]
+                .fill(0);
+
+            let logentryhdr = LogEntryHeader {
+                log_entry_id: LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst),
+                mig_request_id: request_id,
+                loglevel: log_level,
+                reserved: [0, 0, 0],
+                length: msg.len() as u32,
+            };
+
+            let bytes: &[u8] = logentryhdr.as_bytes();
+            data_buffer[currentendoffset..currentendoffset + LOGENTRYHEADERSIZE]
+                .copy_from_slice(&bytes[0..bytes.len()]);
+            currentendoffset += LOGENTRYHEADERSIZE;
+            data_buffer[currentendoffset..currentendoffset + msg.len()]
+                .copy_from_slice(&msg[0..msg.len()]);
+            currentendoffset += msg.len();
+
+            data_buffer[24..32].copy_from_slice(&currentstartoffset.to_le_bytes());
+            data_buffer[32..40].copy_from_slice(&currentendoffset.to_le_bytes());
+            println!(
+                "Entry_Log: Message length {} start_offset {} end_offset {} ",
+                msg.len(),
+                currentstartoffset,
+                currentendoffset
+            );
         }
     }
+}
+
+#[cfg(not(test))]
+pub fn update_migration_request_id(request_id: u64, data: &mut Vec<u8>) -> Result<()> {
+    let logarea_created: bool = LOGGING_INFORMATION.logarea_created.load(Ordering::SeqCst);
+    if !logarea_created {
+        data.extend_from_slice(
+            &format!("Error: LogArea has not been successfuly created by create_logarea()\n")
+                .into_bytes(),
+        );
+        return Err(MigrationResult::UnsupportedOperationError);
+    }
+
+    let cpuid = CpuId::new();
+    if let Some(feature_info) = cpuid.get_feature_info() {
+        let currvcpuindex: u32 = feature_info.initial_local_apic_id().into();
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpulogginginfo = &mut vcpulogginginfovector[currvcpuindex as usize];
+        let data_buffer = vcpulogginginfo.log_area_ptr;
+        let data_buffer =
+            unsafe { core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE) };
+        let vcpuindex: u32 = u32::from_le_bytes(data_buffer[16..20].try_into().unwrap());
+        if currvcpuindex == vcpuindex {
+            if vcpulogginginfo.logarea_initialized {
+                vcpulogginginfo.mig_request_id = request_id;
+            } else {
+                data.extend_from_slice(
+                    &format!(
+                        "Error: LogArea for VCPU {} has not been initialized\n",
+                        currvcpuindex
+                    )
+                    .into_bytes(),
+                );
+                return Err(MigrationResult::UnsupportedOperationError);
+            }
+        } else {
+            data.extend_from_slice(
+                &format!(
+                    "Error: Unable to find VCPU index for current VCPU {}\n",
+                    currvcpuindex
+                )
+                .into_bytes(),
+            );
+            return Err(MigrationResult::UnsupportedOperationError);
+        }
+    }
+
+    log::info!(
+        "update_migration_request_id: Logging has been enabled with MaxLevel: {}\n",
+        log_max_level
+    );
+    entrylog(
+        &format!(
+            "update_migration_request_id: Logging has been enabled with MaxLevel: {}\n",
+            log_max_level
+        )
+        .into_bytes(),
+        Level::Info,
+        request_id,
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn update_migration_request_id(request_id: u64, data: &mut Vec<u8>) -> Result<()> {
+    let logarea_created: bool = LOGGING_INFORMATION.logarea_created.load(Ordering::SeqCst);
+    if !logarea_created {
+        data.extend_from_slice(
+            &format!("Error: LogArea has not been successfuly created by create_logarea()\n")
+                .into_bytes(),
+        );
+        return Err(MigrationResult::UnsupportedOperationError);
+    }
+
+    let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+    let vcpulogginginfo = &mut vcpulogginginfovector[0];
+    let data_buffer = vcpulogginginfo.log_area_ptr;
+    let data_buffer = unsafe { core::slice::from_raw_parts_mut(data_buffer as *mut u8, PAGE_SIZE) };
+    let vcpuindex: u32 = u32::from_le_bytes(data_buffer[16..20].try_into().unwrap());
+    if 0 == vcpuindex {
+        if vcpulogginginfo.logarea_initialized {
+            vcpulogginginfo.mig_request_id = request_id;
+        } else {
+            data.extend_from_slice(
+                &format!("Error: LogArea for VCPU {} has not been initialized\n", 0).into_bytes(),
+            );
+            return Err(MigrationResult::UnsupportedOperationError);
+        }
+    } else {
+        data.extend_from_slice(
+            &format!("Error: Unable to find VCPU index for current VCPU {}\n", 0).into_bytes(),
+        );
+        return Err(MigrationResult::UnsupportedOperationError);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -482,14 +638,14 @@ mod test {
         LOGGING_INFORMATION
             .logarea_created
             .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
-            .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
 
         let result = create_logarea();
         assert!(result.is_ok());
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        drop(vcpulogginginfovector);
         assert!(matches!(
             LOGGING_INFORMATION.num_vcpus.load(Ordering::SeqCst),
             1
@@ -507,9 +663,10 @@ mod test {
         assert_eq!(u8_to_loglevel(3), Some(Level::Info));
         assert_eq!(u8_to_loglevel(99), None);
 
-        let mut logareavector = LOGAREAPTR.lock();
-        let data_buffer = logareavector[0];
-        logareavector.clear();
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer = vcpuinfo.log_area_ptr;
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer as *mut [u8; PAGE_SIZE]);
         }
@@ -525,24 +682,41 @@ mod test {
         LOGGING_INFORMATION
             .logarea_created
             .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
-            .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
 
         let result = enable_logarea(log_max_level, 0, &mut data).await;
         assert!(!result.is_ok());
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 0);
+        println!(
+            "data after failed enable_logarea = {:?}\n",
+            String::from_utf8_lossy(&data)
+        );
+        assert!(data.len() > 0);
+        assert!(data
+            .starts_with(b"Error: LogArea has not been successfuly created by create_logarea()\n"));
+        drop(vcpulogginginfovector);
 
         let mut result = create_logarea();
         assert!(result.is_ok());
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        drop(vcpulogginginfovector);
 
+        data.clear();
         result = enable_logarea(log_max_level, 0, &mut data).await;
         assert!(result.is_ok());
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        println!(
+            "data after enable_logarea = {:?}\n",
+            String::from_utf8_lossy(&data)
+        );
 
-        let mut logareavector = LOGAREAPTR.lock();
-        let data_buffer = logareavector[0];
-        logareavector.clear();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer = vcpuinfo.log_area_ptr;
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer as *mut [u8; PAGE_SIZE]);
         }
@@ -554,9 +728,6 @@ mod test {
         LOGGING_INFORMATION.num_vcpus.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION
             .logarea_created
-            .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
             .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
@@ -581,8 +752,21 @@ mod test {
         let result = create_logarea();
         assert!(result.is_ok());
 
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        drop(vcpulogginginfovector);
+
         let result = enable_logarea(log_max_level, 0, &mut data).await;
         assert!(result.is_ok());
+
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        assert!(vcpulogginginfovector[0].logarea_initialized == true);
+        assert!(vcpulogginginfovector[0].log_area_ptr != 0);
+        drop(vcpulogginginfovector);
+
+        //[num_vcpus (4 bytes)][padding (4 bytes)][addr1 (8 bytes)][size1 (8 bytes)][addr2 (8 bytes)][size2 (8 bytes)]...
+        println!("data after enable_logarea = {:?}", data);
 
         // Add a log entry
         entrylog(
@@ -592,8 +776,10 @@ mod test {
         );
 
         // Validate buffer structure
-        let mut logareavector = LOGAREAPTR.lock();
-        let data_buffer_ptr = logareavector[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer_ptr = vcpuinfo.log_area_ptr;
         let data_buffer =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr as *const u8, PAGE_SIZE) };
 
@@ -627,7 +813,7 @@ mod test {
         assert_eq!(loglevel, loglevel_to_u8(Level::Trace));
         assert_eq!(length, "Test message\n".len() as u32);
 
-        logareavector.clear();
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer_ptr as *mut [u8; PAGE_SIZE]);
         }
@@ -639,9 +825,6 @@ mod test {
         LOGGING_INFORMATION.num_vcpus.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION
             .logarea_created
-            .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
             .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
@@ -663,8 +846,9 @@ mod test {
         let after_entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure
-        let mut logareavector = LOGAREAPTR.lock();
-        let data_buffer_ptr = logareavector[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer_ptr = vcpuinfo.log_area_ptr;
         let data_buffer =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr as *const u8, PAGE_SIZE) };
 
@@ -684,7 +868,7 @@ mod test {
         assert!(after_entry_id == 1);
         assert!(length as usize == max_size);
 
-        logareavector.clear();
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer_ptr as *mut [u8; PAGE_SIZE]);
         }
@@ -696,9 +880,6 @@ mod test {
         LOGGING_INFORMATION.num_vcpus.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION
             .logarea_created
-            .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
             .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
@@ -721,9 +902,10 @@ mod test {
         assert!(after_entry_id == 0);
         assert!(before_entry_id == after_entry_id);
 
-        let mut logareavector = LOGAREAPTR.lock();
-        let free_data_buffer = logareavector[0];
-        logareavector.clear();
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let free_data_buffer = vcpuinfo.log_area_ptr;
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(free_data_buffer as *mut [u8; PAGE_SIZE]);
         }
@@ -735,9 +917,6 @@ mod test {
         LOGGING_INFORMATION.num_vcpus.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION
             .logarea_created
-            .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
             .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
@@ -761,8 +940,9 @@ mod test {
         let mut entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure
-        let logareavector = LOGAREAPTR.lock();
-        let data_buffer_ptr = logareavector[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer_ptr = vcpuinfo.log_area_ptr;
         let data_buffer =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr as *const u8, PAGE_SIZE) };
 
@@ -783,7 +963,7 @@ mod test {
         assert!(endoffset as usize == PAGE_SIZE - size_of::<LogEntryHeader>());
 
         // Release the lock before calling entrylog to avoid deadlock
-        drop(logareavector);
+        drop(vcpulogginginfovector);
 
         // Fill new message with 1 byte, ideally this should start from beginning of circular buffer
         let newmessage = "Y".repeat(1);
@@ -791,8 +971,9 @@ mod test {
         entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure
-        let mut logareavector_2 = LOGAREAPTR.lock();
-        let data_buffer_ptr_2 = logareavector_2[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo_2 = &mut vcpulogginginfovector[1];
+        let data_buffer_ptr_2 = vcpuinfo_2.log_area_ptr;
         let data_buffer_2 =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr_2 as *const u8, PAGE_SIZE) };
 
@@ -818,7 +999,8 @@ mod test {
                     + size_of::<LogEntryHeader>()
                     + length_2 as usize
         );
-        logareavector_2.clear();
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer_ptr_2 as *mut [u8; PAGE_SIZE]);
         }
@@ -830,9 +1012,6 @@ mod test {
         LOGGING_INFORMATION.num_vcpus.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION
             .logarea_created
-            .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
             .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
@@ -856,8 +1035,9 @@ mod test {
         let mut entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure
-        let logareavector = LOGAREAPTR.lock();
-        let data_buffer_ptr = logareavector[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer_ptr = vcpuinfo.log_area_ptr;
         let data_buffer =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr as *const u8, PAGE_SIZE) };
 
@@ -878,7 +1058,7 @@ mod test {
         assert!(endoffset as usize == PAGE_SIZE - 10);
 
         // Release the lock before calling entrylog to avoid deadlock
-        drop(logareavector);
+        drop(vcpulogginginfovector);
 
         // Fill new message with 1 byte, ideally this should start from beginning of circular buffer
         let newmessage = "Y".repeat(1);
@@ -886,8 +1066,9 @@ mod test {
         entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure
-        let mut logareavector_2 = LOGAREAPTR.lock();
-        let data_buffer_ptr_2 = logareavector_2[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer_ptr_2 = vcpuinfo.log_area_ptr;
         let data_buffer_2 =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr_2 as *const u8, PAGE_SIZE) };
 
@@ -912,7 +1093,7 @@ mod test {
                     + size_of::<LogEntryHeader>()
                     + length_2 as usize
         );
-        logareavector_2.clear();
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer_ptr_2 as *mut [u8; PAGE_SIZE]);
         }
@@ -924,9 +1105,6 @@ mod test {
         LOGGING_INFORMATION.num_vcpus.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION
             .logarea_created
-            .store(false, Ordering::SeqCst);
-        LOGGING_INFORMATION
-            .logarea_initialized
             .store(false, Ordering::SeqCst);
         LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
@@ -950,8 +1128,9 @@ mod test {
         let mut entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure
-        let logareavector = LOGAREAPTR.lock();
-        let data_buffer_ptr = logareavector[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo = &mut vcpulogginginfovector[0];
+        let data_buffer_ptr = vcpuinfo.log_area_ptr;
         let data_buffer =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr as *const u8, PAGE_SIZE) };
 
@@ -972,7 +1151,7 @@ mod test {
         assert!(endoffset as usize == PAGE_SIZE - 50);
 
         // Release the lock before calling entrylog to avoid deadlock
-        drop(logareavector);
+        drop(vcpulogginginfovector);
 
         // Fill new message with 100 byte, ideally this should start from beginning of circular buffer
         let newmessage = "Y".repeat(100);
@@ -980,8 +1159,9 @@ mod test {
         entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure
-        let mut logareavector_2 = LOGAREAPTR.lock();
-        let data_buffer_ptr_2 = logareavector_2[0];
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpuinfo_2 = &mut vcpulogginginfovector[0];
+        let data_buffer_ptr_2 = vcpuinfo_2.log_area_ptr;
         let data_buffer_2 =
             unsafe { core::slice::from_raw_parts(data_buffer_ptr_2 as *const u8, PAGE_SIZE) };
 
@@ -1006,9 +1186,49 @@ mod test {
                     + size_of::<LogEntryHeader>()
                     + length_2 as usize
         );
-        logareavector_2.clear();
+        vcpulogginginfovector.clear();
         unsafe {
             let _ = Box::from_raw(data_buffer_ptr_2 as *mut [u8; PAGE_SIZE]);
         }
+    }
+
+    #[tokio::test]
+    async fn test_update_migration_request_id() {
+        // Reset the global state for testing
+        LOGGING_INFORMATION.num_vcpus.store(0, Ordering::SeqCst);
+        LOGGING_INFORMATION
+            .logarea_created
+            .store(false, Ordering::SeqCst);
+        LOGGING_INFORMATION.logentry_id.store(0, Ordering::SeqCst);
+        LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
+
+        // Create and enable log area
+        let result = create_logarea();
+        assert!(result.is_ok());
+
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        drop(vcpulogginginfovector);
+
+        let log_max_level: u8 = 5;
+        let mut data: Vec<u8> = Vec::new();
+        let result = enable_logarea(log_max_level, 0, &mut data).await;
+        assert!(result.is_ok());
+
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        assert!(vcpulogginginfovector[0].logarea_initialized == true);
+        assert!(vcpulogginginfovector[0].log_area_ptr != 0);
+        assert!(vcpulogginginfovector[0].mig_request_id == MIGTD_REQUEST_ID_SENTINEL);
+        drop(vcpulogginginfovector);
+
+        let mut data: Vec<u8> = Vec::new();
+        let request_id: u64 = 0x1234567890ABCDEF;
+        let result = update_migration_request_id(request_id, &mut data);
+        assert!(result.is_ok());
+        let vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        assert!(vcpulogginginfovector.len() == 1);
+        assert!(vcpulogginginfovector[0].mig_request_id == 0x1234567890ABCDEF);
+        drop(vcpulogginginfovector);
     }
 }
