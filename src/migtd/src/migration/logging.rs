@@ -23,22 +23,27 @@ use zerocopy::{transmute_ref, AsBytes, FromBytes, FromZeroes};
 const PAGE_SIZE: usize = 0x1_000;
 #[cfg(not(test))]
 const TDCALL_STATUS_SUCCESS: u64 = 0;
-const MIGTD_REQUEST_ID_SENTINEL: u64 = 0xFFFFFFFFFFFFFFFF;
+pub const MIGTD_REQUEST_ID_SENTINEL: u64 = 0xFFFFFFFFFFFFFFFF;
 
 type Result<T> = core::result::Result<T, MigrationResult>;
 
+struct MigrationRequestInformation {
+    // vcpuidex: u32,
+    maxloglevel: AtomicU8,
+    mig_request_id: u64,
+}
+
 #[derive(Clone, Copy)]
 struct VCPULoggingInformation {
+    // vcpuidex: u32,
     log_area_ptr: usize,
     logarea_initialized: bool,
-    mig_request_id: u64,
 }
 
 struct LoggingInformation {
     num_vcpus: AtomicU32,
     logarea_created: AtomicBool,
-    logentry_id: AtomicU64,
-    maxloglevel: AtomicU8,
+    logentry_id: AtomicU64,    
 }
 
 pub const LOGAREA_SIGNATURE: [u8; 16] = [
@@ -483,6 +488,46 @@ pub fn entrylog(msg: &Vec<u8>, loglevel: Level, request_id: u64) {
     }
 }
 
+pub fn update_migration_request_id_for_logging(
+    mig_request_id: u64,
+) -> core::result::Result<(), MigrationResult> {
+
+    let logarea_created: bool = LOGGING_INFORMATION.logarea_created.load(Ordering::SeqCst);
+    if !logarea_created {
+        return Err(MigrationResult::UnsupportedOperationError);
+    }
+
+    #[cfg(not(test))]
+    {
+        let cpuid = CpuId::new();
+        if let Some(feature_info) = cpuid.get_feature_info() {
+            let currvcpuindex: u32 = feature_info.initial_local_apic_id().into();
+            let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+            let vcpulogginginfo = &mut vcpulogginginfovector[currvcpuindex as usize];
+            if !vcpulogginginfo.logarea_initialized {
+                return Err(MigrationResult::UnsupportedOperationError);
+            }
+
+            if vcpulogginginfo.cpuidindex != currvcpuindex {
+                return Err(MigrationResult::UnsupportedOperationError);
+            }
+
+            vcpulogginginfo.mig_request_id = mig_request_id;
+            return Ok(());
+        }
+    }
+    #[cfg(test)]
+    {
+        let mut vcpulogginginfovector = VCPULOGGINGINFO.lock();
+        let vcpulogginginfo = &mut vcpulogginginfovector[0];
+        if !vcpulogginginfo.logarea_initialized {
+            return Err(MigrationResult::UnsupportedOperationError);
+        }
+        vcpulogginginfo.mig_request_id = mig_request_id;
+        return Ok(());
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -652,19 +697,20 @@ mod test {
         LOGGING_INFORMATION.maxloglevel.store(0, Ordering::SeqCst);
 
         let mut data: Vec<u8> = Vec::new();
-        let log_max_level: u8 = 5;
+        let log_max_level: u8 = 3;
         let max_size = PAGE_SIZE - (size_of::<LogAreaBufferHeader>() + size_of::<LogEntryHeader>());
+        let migration_request_id: u64 = 1;
 
         // Create and enable log area
         let result = create_logarea();
         assert!(result.is_ok());
 
-        let result = enable_logarea(log_max_level, 0, &mut data).await;
+        let result = enable_logarea(log_max_level, migration_request_id, &mut data).await;
         assert!(result.is_ok());
 
         let max_message = "A".repeat(max_size);
 
-        entrylog(&max_message.into_bytes(), Level::Info, 1);
+        entrylog(&max_message.into_bytes(), Level::Info, migration_request_id);
         let after_entry_id = LOGGING_INFORMATION.logentry_id.load(Ordering::SeqCst);
 
         // Validate buffer structure

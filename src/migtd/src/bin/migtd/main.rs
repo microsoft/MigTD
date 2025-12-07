@@ -105,7 +105,10 @@ pub fn runtime_main() {
     // Create LogArea per vCPU
     #[cfg(feature = "vmcall-raw")]
     {
-        let _ = create_logarea();
+        match create_logarea() {
+            Ok(_) => log::info!("LogArea created successfully\n"),
+            Err(e) => log::error!("Failed to create logarea: {}\n", e as u8),
+        }
     }
 
     // Dump basic information of MigTD
@@ -458,7 +461,7 @@ fn handle_pre_mig() {
                                 wfr_info.mig_info.mig_request_id,
                             );
                             log::trace!("ReportStatus for key exchange completed for wfr_info.mig_info.mig_request_id = {}\n", wfr_info.mig_info.mig_request_id);
-                            REQUESTS.lock().remove(&wfr_info.mig_info.mig_request_id);
+                            end_migration_request(&wfr_info.mig_info.mig_request_id);
                         }
                         WaitForRequestResponse::GetTdReport(wfr_info) => {
                             let status = get_tdreport(
@@ -496,7 +499,7 @@ fn handle_pre_mig() {
                                 wfr_info.mig_request_id,
                             );
                             log::trace!("ReportStatus for get TDREPORT completed for wfr_info.mig_request_id = {}\n", wfr_info.mig_request_id);
-                            REQUESTS.lock().remove(&wfr_info.mig_request_id);
+                            end_migration_request(&wfr_info.mig_request_id);
                         }
                         WaitForRequestResponse::EnableLogArea(wfr_info) => {
                             let status = enable_logarea(
@@ -544,7 +547,7 @@ fn handle_pre_mig() {
                                 wfr_info.mig_request_id,
                             );
                             log::trace!("ReportStatus for Enable LogArea completed for wfr_info.mig_request_id = {}\n", wfr_info.mig_request_id);
-                            REQUESTS.lock().remove(&wfr_info.mig_request_id);
+                            end_migration_request(&wfr_info.mig_request_id);
                         }
                     }
                 }

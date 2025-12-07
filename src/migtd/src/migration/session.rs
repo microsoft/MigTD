@@ -238,6 +238,19 @@ fn process_buffer(buffer: &mut [u8]) -> RequestDataBufferHeader {
 }
 
 #[cfg(feature = "vmcall-raw")]
+pub fn begin_migration_request(&mig_request_id: u64) {
+    REQUESTS.lock().insert(mig_request_id);
+    update_migration_request_id_for_logging(mig_request_id);
+    upda
+}
+
+#[cfg(feature = "vmcall-raw")]
+pub fn end_migration_request(&mig_request_id: u64) {
+    REQUESTS.lock().remove(mig_request_id);
+    update_migration_request_id_for_logging(MIGTD_REQUEST_ID_SENTINEL);
+}
+
+#[cfg(feature = "vmcall-raw")]
 pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
     let mut reqbufferhdr = RequestDataBufferHeader {
         datastatus: 0,
@@ -316,7 +329,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
             if REQUESTS.lock().contains(&mig_request_id) {
                 Poll::Pending
             } else {
-                REQUESTS.lock().insert(mig_request_id);
+                begin_migration_request(mig_request_id);
                 Poll::Ready(Ok(WaitForRequestResponse::StartMigration(wfr_info)))
             }
         } else if operation == DataStatusOperation::GetReportData as u8 {
@@ -357,7 +370,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
             if REQUESTS.lock().contains(&mig_request_id) {
                 Poll::Pending
             } else {
-                REQUESTS.lock().insert(mig_request_id);
+                begin_migration_request(mig_request_id);
                 Poll::Ready(Ok(WaitForRequestResponse::GetTdReport(wfr_info)))
             }
         } else if operation == DataStatusOperation::EnableLogArea as u8 {
@@ -390,7 +403,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
             if REQUESTS.lock().contains(&mig_request_id) {
                 Poll::Pending
             } else {
-                REQUESTS.lock().insert(mig_request_id);
+                begin_migration_request(mig_request_id);
                 Poll::Ready(Ok(WaitForRequestResponse::EnableLogArea(wfr_info)))
             }
         } else {
