@@ -16,7 +16,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(feature = "vmcall-raw")]
-use log::{debug, Level};
+use log::{debug, error, Level};
 use log::{info, LevelFilter};
 use migtd::event_log::*;
 #[cfg(not(feature = "vmcall-raw"))]
@@ -60,21 +60,21 @@ fn dump_td_info_and_hash() {
         {
             Ok(report) => report,
             Err(e) => {
-                debug!("Failed to get TD report: {:?}\n", e);
+                error!("Failed to get TD report: {:?}\n", e);
                 return;
             }
         };
-    debug!(
+    info!(
         "td_report length in bytes: {}\n",
         td_report.as_bytes().len()
     );
 
-    debug!("td_info: {:?}\n", td_report.td_info);
+    info!("td_info: {:?}\n", td_report.td_info);
     let mut hasher = Sha384::new();
     hasher.update(td_report.td_info.as_bytes());
 
     let hash = hasher.finalize();
-    debug!("TD Info Hash: {:x}\n", hash);
+    info!("TD Info Hash: {:x}\n", hash);
 }
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -127,7 +127,7 @@ pub fn runtime_main() {
     #[cfg(feature = "vmcall-raw")]
     {
         info!("log::max_level() = {}\n", log::max_level());
-        if log::max_level() >= Level::Debug {
+        if log::max_level() >= Level::Info {
             dump_td_info_and_hash();
         }
     }
