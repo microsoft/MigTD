@@ -104,7 +104,7 @@ build-igvm-mock-quote: pre-build generate-policy-mock-quote
 	 --image-format igvm \
 	 --no-default-features \
 	 --features vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,use-mock-quote \
-	 --log-level debug \
+	 --log-level $(LOG_LEVEL) \
 	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
 	 --policy config/Azure/policy_v2_signed.json \
 	 --output $(IGVM_FILE)
