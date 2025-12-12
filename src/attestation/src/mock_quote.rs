@@ -6,8 +6,8 @@
 
 use alloc::vec::Vec;
 use log::debug;
-use tdx_tdcall::tdreport::TdxReport;
 use tdx_mock_data::QUOTE;
+use tdx_tdcall::tdreport::TdxReport;
 
 pub fn create_mock_td_report() -> TdxReport {
     tdx_mock_data::create_mock_td_report(QUOTE.as_ref())
