@@ -26,7 +26,7 @@ help:
 	@echo "  build-igvm-accept-all           - Build IGVM with disabled RA and accept all policy with TLS"
 	@echo "  build-igvm-reject               - Build IGVM with v1 policy which will be rejected because on empty quote generation."
 	@echo "  build-igvm-reject-all           - Build IGVM with v1 policy which will be rejected because on empty quote generation."
-	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy which will call getquote durining initialization."
+	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy which will call getquote during initialization."
 
 pre-build:
 	@if ! command -v rustc >/dev/null 2>&1 || ! rustc --version | grep -q "1.88.0"; then \
@@ -65,7 +65,7 @@ generate-hash:
 
 build-igvm:
 	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
-	 --image-format igvm --output $(IGVM_FILE)
+	 --image-format igvm --output $(IGVM_FILE) --debug
 
 build-igvm-all: pre-build build-igvm generate-hash
 
