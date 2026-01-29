@@ -30,9 +30,9 @@ pub enum QuoteError {
 
 /// Get a quote with retry logic to handle potential security updates
 ///
-/// On quote failure, fetches a new TD REPORT and retries with exponential backoff.
-/// If the new report differs from the previous one, continues retrying.
-/// If the reports are identical and retry fails, returns fatal error.
+/// On quote failure, fetches a new TD REPORT. If the new report differs from
+/// the previous one (indicating a security update), applies exponential backoff
+/// and retries. If reports are identical, returns fatal error immediately.
 ///
 /// # Arguments
 /// * `additional_data` - The 64-byte additional data to include in the TD REPORT
