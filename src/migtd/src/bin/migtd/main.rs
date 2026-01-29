@@ -133,7 +133,7 @@ pub fn runtime_main() {
     #[cfg(feature = "vmcall-raw")]
     {
         log::info!("log::max_level() = {}\n", log::max_level());
-        if log::max_level() >= Level::Debug {
+        if log::max_level() >= Level::Info {
             dump_td_info_and_hash();
         }
     }
