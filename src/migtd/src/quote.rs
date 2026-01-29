@@ -26,8 +26,12 @@ const INITIAL_DELAY_MS: u64 = 1000;
 /// Maximum retry delay in milliseconds (60 seconds)
 const MAX_DELAY_MS: u64 = 60000;
 
-/// Static flag to simulate a bad report on first attempt for testing
-/// This is only used when the `use-mock-quote` feature is enabled
+/// Static flag to simulate a bad report on first attempt for testing.
+/// This is only used when the `use-mock-quote` feature is enabled.
+///
+/// Note: This flag is intended for single-threaded testing only. Concurrent
+/// access from multiple threads may result in race conditions where only
+/// one thread observes the simulated failure.
 #[cfg(feature = "use-mock-quote")]
 static FIRST_ATTEMPT_BAD_REPORT: AtomicBool = AtomicBool::new(false);
 
@@ -57,8 +61,6 @@ pub enum QuoteError {
     ReportGenerationFailed,
     /// Failed to get quote (fatal - reports were identical)
     QuoteFailed,
-    /// Hash computation failed
-    HashFailed,
 }
 
 /// Get a quote with retry logic to handle potential security updates
@@ -68,6 +70,10 @@ pub enum QuoteError {
 /// 2. If it fails, get a new TD REPORT and retry
 /// 3. If the second attempt fails and reports are identical, return fatal error
 /// 4. If reports differ, keep retrying with exponential backoff
+///
+/// The retry loop continues indefinitely when reports differ (indicating ongoing
+/// security updates), as per the design requirement to handle continuous updates.
+/// The exponential backoff (1s to 60s) helps avoid overwhelming the system.
 ///
 /// # Arguments
 /// * `additional_data` - The 64-byte additional data to include in the TD REPORT
@@ -196,10 +202,10 @@ fn delay_milliseconds(ms: u64) {
         use core::pin::Pin;
         use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
         use core::time::Duration;
+        use td_payload::arch::apic::{disable, enable_and_hlt};
 
         // Create a simple blocking delay using the Timer
-        let timer = Timer::after(Duration::from_millis(ms));
-        let mut timer = timer;
+        let mut timer = Timer::after(Duration::from_millis(ms));
 
         // Create a no-op waker for polling
         fn noop_clone(_: *const ()) -> RawWaker {
@@ -212,18 +218,14 @@ fn delay_milliseconds(ms: u64) {
         let waker = unsafe { Waker::from_raw(raw_waker) };
         let mut cx = Context::from_waker(&waker);
 
-        // Busy-poll the timer until it's ready
+        // Poll the timer, yielding CPU between polls to allow timer interrupts
         loop {
             if let Poll::Ready(()) = Pin::new(&mut timer).poll(&mut cx) {
                 break;
             }
-            // Yield to allow timer interrupts
-            #[cfg(not(feature = "AzCVMEmu"))]
-            {
-                use td_payload::arch::apic::{disable, enable_and_hlt};
-                enable_and_hlt();
-                disable();
-            }
+            // Yield to allow timer interrupts (HLT instruction)
+            enable_and_hlt();
+            disable();
         }
     }
 }
@@ -239,8 +241,5 @@ mod tests {
 
         let err = QuoteError::QuoteFailed;
         assert!(format!("{:?}", err).contains("QuoteFailed"));
-
-        let err = QuoteError::HashFailed;
-        assert!(format!("{:?}", err).contains("HashFailed"));
     }
 }
