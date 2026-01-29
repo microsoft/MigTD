@@ -106,11 +106,15 @@ pub fn gen_quote_spdm(report_data: &[u8]) -> Result<Vec<u8>, MigrationResult> {
     // Generate the TD Report that contains the public key hash as nonce
     let mut additional_data = [0u8; 64];
     additional_data[..hash.len()].copy_from_slice(hash.as_ref());
-    let td_report = tdx_tdcall::tdreport::tdcall_report(&additional_data)?;
 
-    let res =
-        attestation::get_quote(td_report.as_bytes()).map_err(|_| MigrationResult::Unsupported)?;
-    Ok(res)
+    // Use retry logic to handle potential security updates during quote generation
+    let (quote, _report) = crate::quote::get_quote_with_retry(&additional_data)
+        .map_err(|e| {
+            log::error!("get_quote_with_retry failed: {:?}\n", e);
+            MigrationResult::Unsupported
+        })?;
+
+    Ok(quote)
 }
 
 const ECDSA_P384_SHA384_PRIVATE_KEY_LENGTH: usize = 0xb9;
