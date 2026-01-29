@@ -96,7 +96,6 @@ mod v2 {
         LOCAL_TCB_INFO
             .try_call_once(|| {
                 let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
-                // Use retry logic to handle potential security updates during quote generation
                 let (quote, _report) = crate::quote::get_quote_with_retry(&[0u8; 64])
                     .map_err(|_| PolicyError::QuoteGeneration)?;
                 let (fmspc, suppl_data) = verify_quote(&quote, policy.get_collaterals())?;
