@@ -17,6 +17,7 @@ IGVM_MANIFEST ?= config/Azure/servtd_info.json
 .PHONY: build-igvm-reject build-igvm-reject-all
 .PHONY: generate-hash-verbose generate-hash-accept-verbose
 .PHONY: build-igvm-get-quote build-igvm-get-quote-all generate-hash-get-quote
+.PHONY: build-igvm-mock-quote generate-policy-mock-quote
 
 .DEFAULT_GOAL := build-igvm-all
 
@@ -27,6 +28,7 @@ help:
 	@echo "  build-igvm-reject               - Build IGVM with v1 policy which will be rejected because on empty quote generation."
 	@echo "  build-igvm-reject-all           - Build IGVM with v1 policy which will be rejected because on empty quote generation."
 	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy which will call getquote durining initialization."
+	@echo "  build-igvm-mock-quote           - Build IGVM with v2 policy using mock quote data for testing."
 
 pre-build:
 	@if ! command -v rustc >/dev/null 2>&1 || ! rustc --version | grep -q "1.88.0"; then \
@@ -65,7 +67,7 @@ generate-hash:
 
 build-igvm:
 	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
-	 --image-format igvm --output $(IGVM_FILE) --debug
+	 --image-format igvm --output $(IGVM_FILE)
 
 build-igvm-all: pre-build build-igvm generate-hash
 
@@ -89,3 +91,22 @@ generate-hash-get-quote:
 	cd ../../ && cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST) --policy-v2
 
 build-igvm-get-quote-all: pre-build build-igvm-get-quote generate-hash-get-quote
+
+generate-policy-mock-quote:
+	chmod +x ./build_azure_mock_test.sh
+	./build_azure_mock_test.sh
+	@if [ $$? -ne 0 ]; then \
+		echo "Failed to generate policy with mock report"; \
+		exit 1; \
+	fi
+
+build-igvm-mock-quote: pre-build generate-policy-mock-quote
+	cd ../../ && cargo image --policy-v2 --debug \
+	 --image-format igvm \
+	 --no-default-features \
+	 --features vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,use-mock-quote \
+	 --log-level $(LOG_LEVEL) \
+	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
+	 --policy config/Azure/policy_v2_signed.json \
+	 --output $(IGVM_FILE)
+
