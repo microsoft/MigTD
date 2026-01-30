@@ -24,22 +24,18 @@ const MAX_DELAY_MS: u64 = 60000;
 pub enum QuoteError {
     /// Failed to generate TD report
     ReportGenerationFailed,
-    /// Failed to get quote after retries
-    QuoteFailed,
 }
 
 /// Get a quote with retry logic to handle potential security updates
 ///
-/// On quote failure, fetches a new TD REPORT. If the new report differs from
-/// the previous one (indicating a security update), applies exponential backoff
-/// and retries. If reports are identical, returns fatal error immediately.
+/// On quote failure, fetches a new TD REPORT and retries with exponential backoff.
 ///
 /// # Arguments
 /// * `additional_data` - The 64-byte additional data to include in the TD REPORT
 ///
 /// # Returns
 /// * `Ok((quote, report))` - The generated quote and the TD REPORT used
-/// * `Err(QuoteError)` - If quote generation fails after all retries
+/// * `Err(QuoteError)` - If TD report generation fails
 pub fn get_quote_with_retry(
     additional_data: &[u8; 64],
 ) -> Result<(Vec<u8>, Vec<u8>), QuoteError> {
@@ -47,13 +43,13 @@ pub fn get_quote_with_retry(
 
     let mut delay_ms = INITIAL_DELAY_MS;
 
-    // Get initial TD REPORT
-    let mut current_report = tdcall_report(additional_data).map_err(|e| {
-        log::error!("Failed to get TD report: {:?}\n", e);
-        QuoteError::ReportGenerationFailed
-    })?;
-
     loop {
+        // Get TD REPORT
+        let current_report = tdcall_report(additional_data).map_err(|e| {
+            log::error!("Failed to get TD report: {:?}\n", e);
+            QuoteError::ReportGenerationFailed
+        })?;
+
         let report_bytes = current_report.as_bytes();
 
         // Attempt to get quote
@@ -63,31 +59,9 @@ pub fn get_quote_with_retry(
                 return Ok((quote, report_bytes.to_vec()));
             }
             Err(e) => {
-                log::warn!("GetQuote failed: {:?}, retrying...\n", e);
-
-                // Get a new TD REPORT
-                let new_report = tdcall_report(additional_data).map_err(|e| {
-                    log::error!("Failed to get TD report for retry: {:?}\n", e);
-                    QuoteError::ReportGenerationFailed
-                })?;
-
-                let new_report_bytes = new_report.as_bytes();
-
-                if new_report_bytes == report_bytes {
-                    // Reports identical - fatal error
-                    log::error!("GetQuote failed with identical reports - fatal error\n");
-                    return Err(QuoteError::QuoteFailed);
-                }
-
-                // Reports differ - apply backoff and retry
-                log::info!(
-                    "TD REPORT changed, retrying with delay of {}ms\n",
-                    delay_ms
-                );
-
+                log::warn!("GetQuote failed: {:?}, retrying with delay of {}ms\n", e, delay_ms);
                 delay_milliseconds(delay_ms);
                 delay_ms = core::cmp::min(delay_ms * 2, MAX_DELAY_MS);
-                current_report = new_report;
             }
         }
     }
@@ -104,9 +78,6 @@ mod mock_quote_support;
 
 #[cfg(feature = "use-mock-quote")]
 use mock_quote_support::get_quote_impl;
-
-#[cfg(feature = "use-mock-quote")]
-pub use mock_quote_support::enable_first_attempt_bad_report;
 
 /// Delay for the specified number of milliseconds
 #[cfg(feature = "AzCVMEmu")]
@@ -140,19 +111,5 @@ fn delay_milliseconds(ms: u64) {
         }
         enable_and_hlt();
         disable();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_quote_error_debug() {
-        let err = QuoteError::ReportGenerationFailed;
-        assert!(format!("{:?}", err).contains("ReportGenerationFailed"));
-
-        let err = QuoteError::QuoteFailed;
-        assert!(format!("{:?}", err).contains("QuoteFailed"));
     }
 }
