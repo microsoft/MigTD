@@ -130,8 +130,8 @@ fn main() -> Result<()> {
     log::info!("==================================");
 
     if args.mock_report {
-        log::info!("🧪 MOCK MODE: Generating test data for skip-ra-and-accept-all");
-        log::info!("    This data is suitable for testing MigTD with disabled remote attestation");
+        log::info!("🧪 MOCK MODE: Generating mock report");
+        log::info!("    This data is suitable for testing MigTD with get-quote bypassed");
     }
 
     let report_data = if let Some(ref hex_str) = args.report_data {
