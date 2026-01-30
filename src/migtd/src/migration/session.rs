@@ -5,10 +5,13 @@
 #[cfg(feature = "vmcall-raw")]
 use crate::migration::event::VMCALL_MIG_REPORTSTATUS_FLAGS;
 #[cfg(feature = "policy_v2")]
+use crate::migration::pre_session_data::pre_session_data_exchange;
+use crate::migration::transport::setup_transport;
+use crate::migration::transport::shutdown_transport;
+use crate::migration::transport::TransportType;
+#[cfg(feature = "policy_v2")]
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
-#[cfg(feature = "policy_v2")]
-use async_io::{AsyncRead, AsyncWrite};
 #[cfg(feature = "vmcall-raw")]
 use core::sync::atomic::AtomicBool;
 #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
@@ -18,8 +21,6 @@ use core::{future::poll_fn, mem::size_of, task::Poll};
 #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
 use event::VMCALL_SERVICE_FLAG;
 use lazy_static::lazy_static;
-#[cfg(feature = "vmcall-raw")]
-use log::Level;
 use spin::Mutex;
 use td_payload::mm::shared::SharedMemory;
 use tdx_tdcall::{
@@ -32,8 +33,6 @@ use tdx_tdcall::{tdreport::TdxReport, tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE};
 use zerocopy::AsBytes;
 type Result<T> = core::result::Result<T, MigrationResult>;
 
-#[cfg(feature = "vmcall-raw")]
-use super::logging::entrylog;
 use super::{data::*, *};
 use crate::driver::ticks::with_timeout;
 #[cfg(not(feature = "spdm_attestation"))]
@@ -62,9 +61,6 @@ struct TdxReportBuf(TdxReport);
 #[cfg(feature = "vmcall-raw")]
 #[repr(C, align(64))]
 struct AdditionalDataBuf([u8; TD_REPORT_ADDITIONAL_DATA_SIZE]);
-
-#[cfg(feature = "vmcall-raw")]
-const DEFAULT_MIGREQUEST_ID: u64 = u64::MAX;
 
 #[cfg(feature = "vmcall-raw")]
 const TDX_VMCALL_VMM_SUCCESS: u8 = 1;
@@ -211,15 +207,6 @@ fn process_buffer(buffer: &mut [u8]) -> RequestDataBufferHeader {
         length: 0,
     };
     if buffer.len() < length {
-        entrylog(
-            &format!(
-                "process_buffer: Buffer too small! - len = {:x}\n",
-                buffer.len()
-            )
-            .into_bytes(),
-            Level::Debug,
-            DEFAULT_MIGREQUEST_ID,
-        );
         log::debug!(
             "process_buffer: Buffer too small! - buffer.len = {}, length = {}\n",
             buffer.len(),
@@ -276,7 +263,6 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
         }
         let data_status_bytes = &data_status.to_le_bytes();
         if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
-            entrylog(&format!("wait_for_request: data_status byte[0] failure\n").into_bytes(), Level::Error, DEFAULT_MIGREQUEST_ID);
             log::error!("wait_for_request: data_status byte[0] failure\n");
             return Poll::Pending;
         }
@@ -289,11 +275,10 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
                 if data_length >= size_of::<u64>() as u32 {
                     let slice = &data_buffer[reqbufferhdrlen..reqbufferhdrlen + data_length as usize];
                     let mig_request_id = u64::from_le_bytes(slice[0..8].try_into().unwrap());
-                    entrylog(&format!("wait_for_request: StartMigration operation incorrect data length - expected {:x} actual {:x}\n", expected_datalength, data_length).into_bytes(), Level::Debug, mig_request_id);
+                    log::error!(migration_request_id = mig_request_id; "wait_for_request: StartMigration operation incorrect data length - expected {} actual {}\n", expected_datalength, data_length);
                 } else {
-                    entrylog(&format!("wait_for_request: StartMigration operation incorrect data length - expected {:x} actual {:x}\n", expected_datalength, data_length).into_bytes(), Level::Debug, DEFAULT_MIGREQUEST_ID);
+                    log::error!("wait_for_request: StartMigration operation incorrect data length - expected {} actual {}\n", expected_datalength, data_length);
                 }
-                log::debug!("wait_for_request: StartMigration operation incorrect data length - expected {} actual {}\n", expected_datalength, data_length);
                 return Poll::Pending;
             }
             let slice = &data_buffer[reqbufferhdrlen..reqbufferhdrlen + data_length as usize];
@@ -330,11 +315,10 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
                 if data_length >= size_of::<u64>() as u32 {
                     let slice = &data_buffer[reqbufferhdrlen..reqbufferhdrlen + data_length as usize];
                     let mig_request_id = u64::from_le_bytes(slice[0..8].try_into().unwrap());
-                    entrylog(&format!("wait_for_request: StartMigration operation incorrect data length - expected {:x} or {:x} actual {:x}\n", size_of_val(&mig_request_id), size_of::<ReportInfo>(), data_length).into_bytes(), Level::Debug, mig_request_id);
+                    log::error!(migration_request_id = mig_request_id; "wait_for_request: StartMigration operation incorrect data length - expected {} actual {}\n", size_of::<ReportInfo>(), data_length);
                 } else {
-                    entrylog(&format!("wait_for_request: StartMigration operation incorrect data length - expected {:x} or {:x} actual {:x}\n", size_of_val(&mig_request_id), size_of::<ReportInfo>(), data_length).into_bytes(), Level::Debug, DEFAULT_MIGREQUEST_ID);
+                    log::error!("wait_for_request: StartMigration operation incorrect data length - expected {} actual {}\n", size_of::<ReportInfo>(), data_length);
                 }
-                log::debug!("wait_for_request: StartMigration operation incorrect data length - expected {} or {} actual {}\n", size_of_val(&mig_request_id), size_of::<ReportInfo>(), data_length);
                 return Poll::Pending;
             }
             let slice = &data_buffer[reqbufferhdrlen..reqbufferhdrlen + data_length as usize];
@@ -366,11 +350,10 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
                 if data_length >= size_of::<u64>() as u32 {
                     let slice = &data_buffer[reqbufferhdrlen..reqbufferhdrlen + data_length as usize];
                     let mig_request_id = u64::from_le_bytes(slice[0..8].try_into().unwrap());
-                    entrylog(&format!("wait_for_request: EnableLogArea operation incorrect data length - expected {:x} actual {:x}\n", expected_datalength, data_length).into_bytes(), Level::Debug, mig_request_id);
+                    log::error!(migration_request_id = mig_request_id; "wait_for_request: EnableLogArea operation incorrect data length - expected {} actual {}\n", expected_datalength, data_length);
                 } else {
-                    entrylog(&format!("wait_for_request: EnableLogArea operation incorrect data length - expected {:x} actual {:x}\n", expected_datalength, data_length).into_bytes(), Level::Debug, DEFAULT_MIGREQUEST_ID);
+                    log::error!("wait_for_request: EnableLogArea operation incorrect data length - expected {} actual {}\n", expected_datalength, data_length);
                 }
-                log::debug!("wait_for_request: EnableLogArea operation incorrect data length - expected {} actual {}\n", expected_datalength, data_length);
                 return Poll::Pending;
             }
 
@@ -539,36 +522,13 @@ pub async fn get_tdreport(
 
     let ret = td_call(&mut args);
     if ret != TDCALL_STATUS_SUCCESS {
-        entrylog(
-            &format!("get_tdreport: TDG.MR.REPORT failure {:x}\n", ret).into_bytes(),
-            Level::Debug,
-            request_id,
-        );
-        data.extend_from_slice(
-            &format!("Error: get_tdreport(): TDG.MR.REPORT failure {:x}\n", ret).into_bytes(),
-        );
-        log::error!("get_tdreport: TDG.MR.REPORT failure {:x}\n", ret);
+        log::error!(migration_request_id = request_id; "get_tdreport: TDG.MR.REPORT failure {:x}\n", ret);
         return Err(MigrationResult::TdxModuleError);
     }
 
     data.extend_from_slice(report_buf.0.as_bytes());
     if data.len() != tdreportsize {
-        entrylog(
-            &format!(
-                "get_tdreport: tdreport incorrect data length - expected {:x} actual {:x}\n",
-                tdreportsize,
-                data.len()
-            )
-            .into_bytes(),
-            Level::Debug,
-            request_id,
-        );
-        data.extend_from_slice(&format!(
-                "Error: get_tdreport(): tdreport incorrect data length - expected {:x} actual {:x}\n",
-                tdreportsize,
-                data.len()
-            ).into_bytes());
-        log::error!(
+        log::error!( migration_request_id = request_id;
             "get_tdreport: tdreport incorrect data length - expected {} actual {}\n",
             tdreportsize,
             data.len()
@@ -590,7 +550,7 @@ pub async fn report_status(status: u8, request_id: u64, data: &Vec<u8>) -> Resul
     };
     let reqbufferhdrlen = size_of::<RequestDataBufferHeader>();
     let mut data_buffer = SharedMemory::new(1).ok_or_else(|| {
-        log::error!("report_status: Failed to allocate shared memory for data buffer\n");
+        log::error!(migration_request_id = request_id; "report_status: Failed to allocate shared memory for data buffer\n");
         MigrationResult::OutOfResource
     })?;
 
@@ -601,16 +561,7 @@ pub async fn report_status(status: u8, request_id: u64, data: &Vec<u8>) -> Resul
                 .with_error_code(status);
         }
     } else {
-        entrylog(
-            &format!(
-                "report_status: Invalid Migration Status code: {:x}\n",
-                status
-            )
-            .into_bytes(),
-            Level::Error,
-            request_id,
-        );
-        log::error!(
+        log::error!( migration_request_id = request_id;
             "report_status: Invalid Migration Status code: {:x}\n",
             status
         );
@@ -635,7 +586,7 @@ pub async fn report_status(status: u8, request_id: u64, data: &Vec<u8>) -> Resul
         event::VMCALL_SERVICE_VECTOR,
     )
     .map_err(|e| {
-        log::error!(
+        log::error!(migration_request_id = request_id;
             "report_status: tdvmcall_migtd_reportstatus failure {:?}\n",
             e
         );
@@ -656,12 +607,7 @@ pub async fn report_status(status: u8, request_id: u64, data: &Vec<u8>) -> Resul
         reqbufferhdr = process_buffer(data_buffer);
         let data_status_bytes = &reqbufferhdr.datastatus.to_le_bytes();
         if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
-            log::error!("report_status: data_status byte[0] failure\n");
-            entrylog(
-                &format!("report_status: data_status byte[0] failure\n").into_bytes(),
-                Level::Error,
-                request_id,
-            );
+            log::error!(migration_request_id = request_id; "report_status: data_status byte[0] failure\n");            
             return Poll::Pending;
         }
 
@@ -720,742 +666,308 @@ pub fn report_status(status: u8, request_id: u64) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "policy_v2")]
-#[repr(C)]
-struct PreSessionMessage {
-    pub r#type: u8,
-    pub reserved: [u8; 3],
-    pub length: u32, // Length in bytes of the message payload
-}
-
-#[cfg(feature = "policy_v2")]
-impl PreSessionMessage {
-    const PRE_SESSION_DATA_TYPE: u8 = 1;
-    const START_SESSION_TYPE: u8 = 2;
-    const HELLO_PACKET_TYPE: u8 = 0xff;
-
-    pub fn as_bytes(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
-    }
-
-    pub fn read_from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < size_of::<Self>() {
-            log::error!(
-                "PreSessionMessage: Insufficient bytes to read header bytes.len() = {}\n",
-                bytes.len()
-            );
-            return None;
-        }
-        let header = PreSessionMessage {
-            r#type: bytes[0],
-            reserved: bytes[1..4].try_into().unwrap(),
-            length: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-        };
-        Some(header)
-    }
-}
-
-#[cfg(feature = "policy_v2")]
-struct HelloPacketPayload {
-    magic_word: [u8; 4],
-    lowest_supported_version: u16,
-    highest_supported_version: u16,
-}
-
-#[cfg(feature = "policy_v2")]
-impl HelloPacketPayload {
-    const HELLO_PACKET_PAYLOAD_SIZE: usize = 8;
-    const HELLO_PACKET_MAGIC_WORD: [u8; 4] = [b'M', b'G', b'T', b'D'];
-    const LOWEST_VERSION: u16 = 0x0100;
-    const HIGHEST_VERSION: u16 = 0x0100;
-
-    pub const fn new() -> Self {
-        Self {
-            magic_word: Self::HELLO_PACKET_MAGIC_WORD,
-            lowest_supported_version: Self::LOWEST_VERSION,
-            highest_supported_version: Self::HIGHEST_VERSION,
-        }
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
-    }
-
-    pub fn read_from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < size_of::<Self>() {
-            log::error!(
-                "HelloPacketPayload: Insufficient bytes to read header bytes.len() = {}\n",
-                bytes.len()
-            );
-            return None;
-        }
-        let payload = HelloPacketPayload {
-            magic_word: bytes[..4].try_into().unwrap(),
-            lowest_supported_version: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
-            highest_supported_version: u16::from_le_bytes(bytes[6..8].try_into().unwrap()),
-        };
-
-        if payload.magic_word != HelloPacketPayload::HELLO_PACKET_MAGIC_WORD {
-            log::error!("HelloPacketPayload: Invalid magic word in hello packet\n");
-            return None;
-        }
-        Some(payload)
-    }
-
-    fn negotiate_supported_version(&self) -> Option<u16> {
-        let low = core::cmp::max(Self::LOWEST_VERSION, self.lowest_supported_version);
-        let high = core::cmp::min(Self::HIGHEST_VERSION, self.highest_supported_version);
-        if low > high {
-            None
-        } else {
-            Some(high)
-        }
-    }
-}
-
-#[cfg(feature = "policy_v2")]
-async fn send_pre_session_data<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-    data: &[u8],
+#[cfg(not(feature = "spdm_attestation"))]
+async fn migration_src_exchange_msk(
+    transport: TransportType,
+    info: &MigrationInformation,
+    exchange_information: &ExchangeInformation,
+    remote_information: &mut ExchangeInformation,
+    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
 ) -> Result<()> {
-    let mut sent = 0;
-    while sent < data.len() {
-        let n = transport.write(&data[sent..]).await.map_err(|e| {
-            log::error!("send_pre_session_data: Network error: {:?}\n", e);
-            MigrationResult::NetworkError
-        })?;
-        sent += n;
+    const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
+
+    // TLS client
+    let mut ratls_client = ratls::client(
+        transport,
+        #[cfg(feature = "policy_v2")]
+        remote_policy,
+    )
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk(): Failed in ratls client setup. Error: {:?}\n", e
+        );
+        MigrationResult::SecureSessionError
+    })?;
+
+    // MigTD-S send Migration Session Forward key to peer
+    with_timeout(
+        TLS_TIMEOUT,
+        ratls_client.write(exchange_information.as_bytes()),
+    )
+    .await
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_client.write timeout error: {:?}\n", e);
+        e
+    })?
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_client.write error: {:?}\n", e);
+        e
+    })?;
+    let size = with_timeout(
+        TLS_TIMEOUT,
+        ratls_client.read(remote_information.as_bytes_mut()),
+    )
+    .await
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_client.read timeout error: {:?}\n", e);
+        e
+    })?
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_client.read error: {:?}\n", e);
+        e
+    })?;
+    if size < size_of::<ExchangeInformation>() {
+        log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk(): Incorrect ExchangeInformation size Size - Expected: {} Actual: {}\n", size_of::<ExchangeInformation>(), size);
+        return Err(MigrationResult::NetworkError);
     }
+    shutdown_transport(ratls_client.transport_mut(), info).await?;
     Ok(())
 }
 
-#[cfg(feature = "policy_v2")]
-async fn receive_pre_session_data<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-    data: &mut [u8],
+#[cfg(not(feature = "spdm_attestation"))]
+async fn migration_dst_exchange_msk(
+    transport: TransportType,
+    info: &MigrationInformation,
+    exchange_information: &ExchangeInformation,
+    remote_information: &mut ExchangeInformation,
+    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
 ) -> Result<()> {
-    let mut recvd = 0;
-    while recvd < data.len() {
-        let n = transport.read(&mut data[recvd..]).await.map_err(|e| {
-            log::error!("receive_pre_session_data: Network error: {:?}\n", e);
-            MigrationResult::NetworkError
-        })?;
-        recvd += n;
+    const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
+
+    // TLS server
+    let mut ratls_server = ratls::server(
+        transport,
+        #[cfg(feature = "policy_v2")]
+        remote_policy,
+    )
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk(): Failed in ratls server setup. Error: {:?}\n", e
+        );
+        MigrationResult::SecureSessionError
+    })?;
+
+    with_timeout(
+        TLS_TIMEOUT,
+        ratls_server.write(exchange_information.as_bytes()),
+    )
+    .await
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_server.write timeout error: {:?}\n", e);
+        e
+    })?
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_server.write error: {:?}\n", e);
+        e
+    })?;
+    let size = with_timeout(
+        TLS_TIMEOUT,
+        ratls_server.read(remote_information.as_bytes_mut()),
+    )
+    .await
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_server.read timeout error: {:?}\n", e);
+        e
+    })?
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id;
+            "exchange_msk: ratls_server.read error: {:?}\n", e);
+        e
+    })?;
+    if size < size_of::<ExchangeInformation>() {
+        log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk(): Incorrect ExchangeInformation size. Size - Expected: {} Actual: {}\n", size_of::<ExchangeInformation>(), size);
+        return Err(MigrationResult::NetworkError);
     }
+    shutdown_transport(ratls_server.transport_mut(), info).await?;
     Ok(())
 }
 
-#[cfg(feature = "policy_v2")]
-async fn send_pre_session_data_packet<T: AsyncRead + AsyncWrite + Unpin>(
-    pre_session_data: &[u8],
-    transport: &mut T,
+#[cfg(feature = "spdm_attestation")]
+async fn migration_src_exchange_msk(
+    transport: TransportType,
+    info: &MigrationInformation,
+    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
 ) -> Result<()> {
-    let header = PreSessionMessage {
-        r#type: PreSessionMessage::PRE_SESSION_DATA_TYPE,
-        reserved: [0u8; 3],
-        length: pre_session_data.len() as u32,
-    };
-
-    send_pre_session_data(transport, header.as_bytes())
-        .await
-        .map_err(|e| {
-            log::error!("send_pre_session_data header: Network error: {:?}\n", e);
-            e
-        })?;
-    send_pre_session_data(transport, pre_session_data)
-        .await
-        .map_err(|e| {
-            log::error!(
-                "send_pre_session_data pre_session_data: Network error: {:?}\n",
-                e
-            );
-            e
-        })
-}
-
-#[cfg(feature = "policy_v2")]
-async fn receive_pre_session_data_packet<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-) -> Result<Vec<u8>> {
-    let mut header_buffer = [0u8; size_of::<PreSessionMessage>()];
-    receive_pre_session_data(transport, &mut header_buffer)
-        .await
-        .map_err(|e| {
-            log::error!("receive_pre_session_data header: Network error: {:?}\n", e);
-            e
-        })?;
-
-    let header = PreSessionMessage::read_from_bytes(&header_buffer).ok_or_else(|| {
-        log::error!("receive_pre_session_data_packet: Failed to read PreSessionMessage header\n");
-        MigrationResult::InvalidParameter
-    })?;
-    if header.r#type != PreSessionMessage::PRE_SESSION_DATA_TYPE {
-        log::error!("PreSessionMessage: Invalid type in pre-session data packet\n");
-        return Err(MigrationResult::InvalidParameter);
-    }
-
-    let pre_session_data_payload_size = header.length as usize;
-    let mut pre_session_data_payload = vec![0u8; pre_session_data_payload_size];
-    receive_pre_session_data(transport, &mut pre_session_data_payload)
-        .await
-        .map_err(|e| {
-            log::error!("receive_pre_session_data payload: Network error: {:?}\n", e);
-            e
-        })?;
-
-    Ok(pre_session_data_payload)
-}
-
-#[cfg(feature = "policy_v2")]
-async fn send_start_session_packet<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-) -> Result<()> {
-    let header = PreSessionMessage {
-        r#type: PreSessionMessage::START_SESSION_TYPE,
-        reserved: [0u8; 3],
-        length: 0,
-    };
-
-    send_pre_session_data(transport, header.as_bytes())
-        .await
-        .map_err(|e| {
-            log::error!("send_start_session_packet: Network error: {:?}\n", e);
-            e
-        })
-}
-
-#[cfg(feature = "policy_v2")]
-async fn receive_start_session_packet<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-) -> Result<()> {
-    let mut header_buffer = [0u8; size_of::<PreSessionMessage>()];
-    receive_pre_session_data(transport, &mut header_buffer)
-        .await
-        .map_err(|e| {
-            log::error!("receive_start_session_packet: Network error: {:?}\n", e);
-            e
-        })?;
-
-    let packet = PreSessionMessage::read_from_bytes(&header_buffer).ok_or_else(|| {
-        log::error!("receive_start_session_packet: Failed to read PreSessionMessage header\n");
-        MigrationResult::InvalidParameter
-    })?;
-
-    // Sanity checks
-    if packet.r#type != PreSessionMessage::START_SESSION_TYPE {
-        log::error!("PreSessionMessage: Invalid type in start session packet\n");
-        return Err(MigrationResult::InvalidParameter);
-    }
-    if packet.length != 0 {
-        log::error!("PreSessionMessage: Invalid length in start session packet\n");
-        return Err(MigrationResult::InvalidParameter);
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "policy_v2")]
-async fn send_hello_packet<T: AsyncRead + AsyncWrite + Unpin>(transport: &mut T) -> Result<()> {
-    let header = PreSessionMessage {
-        r#type: PreSessionMessage::HELLO_PACKET_TYPE,
-        reserved: [0u8; 3],
-        length: 8,
-    };
-    send_pre_session_data(transport, header.as_bytes())
-        .await
-        .map_err(|e| {
-            log::error!("send_hello_packet: Network error: {:?}\n", e);
-            e
-        })?;
-
-    let payload = HelloPacketPayload::new();
-    send_pre_session_data(transport, payload.as_bytes())
-        .await
-        .map_err(|e| {
-            log::error!("send_hello_packet: Network error: {:?}\n", e);
-            e
-        })
-}
-
-#[cfg(feature = "policy_v2")]
-async fn receive_hello_packet<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-) -> Result<HelloPacketPayload> {
-    let mut header_buffer = [0u8; size_of::<PreSessionMessage>()];
-    receive_pre_session_data(transport, &mut header_buffer)
-        .await
-        .map_err(|e| {
-            log::error!("receive_hello_packet: Network error: {:?}\n", e);
-            e
-        })?;
-
-    let header = PreSessionMessage::read_from_bytes(&header_buffer).ok_or_else(|| {
-        log::error!("receive_hello_packet: Failed to read PreSessionMessage header\n");
-        MigrationResult::InvalidParameter
-    })?;
-
-    // Sanity checks
-    if header.r#type != PreSessionMessage::HELLO_PACKET_TYPE {
-        log::error!("PreSessionMessage: Invalid type in hello packet\n");
-        return Err(MigrationResult::InvalidParameter);
-    }
-    if header.length as usize != HelloPacketPayload::HELLO_PACKET_PAYLOAD_SIZE {
-        log::error!("PreSessionMessage: Invalid length in hello packet\n");
-        return Err(MigrationResult::InvalidParameter);
-    }
-
-    // Receive hello packet payload
-    let mut hello_payload = vec![0u8; HelloPacketPayload::HELLO_PACKET_PAYLOAD_SIZE];
-    receive_pre_session_data(transport, &mut hello_payload)
-        .await
-        .map_err(|e| {
-            log::error!("receive_hello_packet payload: Network error: {:?}\n", e);
-            e
-        })?;
-
-    HelloPacketPayload::read_from_bytes(&hello_payload)
-        .ok_or(MigrationResult::InvalidParameter)
-        .map_err(|_| {
-            log::error!("receive_hello_packet: Failed to read HelloPacketPayload\n");
-            MigrationResult::InvalidParameter
-        })
-}
-
-// Exchange hello packet and negotiate a pre-session message version
-#[cfg(feature = "policy_v2")]
-async fn exchange_hello_packet<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-) -> Result<u16> {
-    send_hello_packet(transport).await.map_err(|e| {
-        log::error!("exchange_hello_packet: send_hello_packet error: {:?}\n", e);
-        e
-    })?;
-    let remote = receive_hello_packet(transport).await.map_err(|e| {
+    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
+    let mut spdm_requester = spdm::spdm_requester(transport).map_err(|_e| {
         log::error!(
-            "exchange_hello_packet: receive_hello_packet error: {:?}\n",
-            e
+            "exchange_msk(): Failed in spdm_requester transport. Migration ID: {}\n",
+            info.mig_info.mig_request_id
         );
-        e
+        MigrationResult::SecureSessionError
     })?;
-
-    remote
-        .negotiate_supported_version()
-        .ok_or(MigrationResult::InvalidParameter)
-}
-
-#[cfg(feature = "policy_v2")]
-async fn pre_session_data_exchange<T: AsyncRead + AsyncWrite + Unpin>(
-    transport: &mut T,
-) -> Result<Vec<u8>> {
-    use crate::config;
-
-    let version = exchange_hello_packet(transport).await.map_err(|e| {
-        log::error!(
-            "pre_session_data_exchange: exchange_hello_packet error: {:?}\n",
-            e
-        );
-        e
-    })?;
-    log::info!("Pre-Session-Message Version: 0x{:04x}\n", version);
-
-    let policy = config::get_policy()
-        .ok_or(MigrationResult::InvalidParameter)
-        .map_err(|e| {
-            log::error!("pre_session_data_exchange: get_policy error: {:?}\n", e);
-            e
-        })?;
-    send_pre_session_data_packet(policy, transport)
-        .await
-        .map_err(|e| {
-            log::error!(
-                "pre_session_data_exchange: send_pre_session_data_packet error: {:?}\n",
-                e
-            );
-            e
-        })?;
-    let remote_policy = receive_pre_session_data_packet(transport)
-        .await
-        .map_err(|e| {
-            log::error!(
-                "pre_session_data_exchange: receive_pre_session_data_packet error: {:?}\n",
-                e
-            );
-            e
-        })?;
-
-    send_start_session_packet(transport).await.map_err(|e| {
-        log::error!(
-            "pre_session_data_exchange: send_start_session_packet error: {:?}\n",
-            e
-        );
-        e
-    })?;
-    receive_start_session_packet(transport).await.map_err(|e| {
-        log::error!(
-            "pre_session_data_exchange: receive_start_session_packet error: {:?}\n",
-            e
-        );
-        e
-    })?;
-
-    Ok(remote_policy)
-}
-
-#[cfg(feature = "main")]
-pub async fn exchange_msk(info: &MigrationInformation, data: &mut Vec<u8>) -> Result<()> {
-    #[cfg(not(feature = "vmcall-raw"))]
-    let _ = data;
-    #[cfg(feature = "policy_v2")]
-    let mut transport;
-    #[cfg(not(feature = "policy_v2"))]
-    let transport;
-
-    #[cfg(feature = "vmcall-raw")]
-    {
-        use vmcall_raw::stream::VmcallRaw;
-        let mut vmcall_raw_instance = VmcallRaw::new_with_mid(info.mig_info.mig_request_id)
-            .map_err(|e| {
-                data.extend_from_slice(&format!("Error: exchange_msk(): Failed to create vmcall_raw_instance with Migration ID: {:x} errorcode: {}\n", info.mig_info.mig_request_id, e).into_bytes());
-                log::error!("exchange_msk: Failed to create vmcall_raw_instance with Migration ID: {} errorcode: {:?}\n", info.mig_info.mig_request_id, e);
-                MigrationResult::InvalidParameter
-        })?;
-
-        vmcall_raw_instance
-            .connect()
-            .await
-            .map_err(|e| {
-                data.extend_from_slice(&format!("Error: exchange_msk(): Failed to connect vmcall_raw_instance with Migration ID: {:x} errorcode: {}\n", info.mig_info.mig_request_id, e).into_bytes());
-                log::error!("exchange_msk: Failed to connect vmcall_raw_instance with Migration ID: {} errorcode: {:?}\n", info.mig_info.mig_request_id, e);
-                MigrationResult::InvalidParameter
-            })?;
-        transport = vmcall_raw_instance;
-    }
-
-    #[cfg(feature = "virtio-serial")]
-    {
-        use virtio_serial::VirtioSerialPort;
-        const VIRTIO_SERIAL_PORT_ID: u32 = 1;
-
-        let port = VirtioSerialPort::new(VIRTIO_SERIAL_PORT_ID);
-        port.open()?;
-        transport = port;
-    };
-
-    #[cfg(not(feature = "virtio-serial"))]
-    #[cfg(not(feature = "vmcall-raw"))]
-    {
-        use vsock::{stream::VsockStream, VsockAddr};
-
-        #[cfg(feature = "virtio-vsock")]
-        let mut vsock = VsockStream::new()?;
-
-        #[cfg(feature = "vmcall-vsock")]
-        let mut vsock = VsockStream::new_with_cid(
-            info.mig_socket_info.mig_td_cid,
-            info.mig_info.mig_request_id,
-        )?;
-
-        // Establish the vsock connection with host
-        vsock
-            .connect(&VsockAddr::new(
-                info.mig_socket_info.mig_td_cid as u32,
-                info.mig_socket_info.mig_channel_port,
-            ))
-            .await?;
-        transport = vsock;
-    };
-
-    // Exchange policy firstly because of the message size limitation of TLS protocol
-    #[cfg(feature = "policy_v2")]
-    const PRE_SESSION_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-    #[cfg(feature = "policy_v2")]
-    let remote_policy = Box::pin(with_timeout(
-        PRE_SESSION_TIMEOUT,
-        pre_session_data_exchange(&mut transport),
-    ))
+    with_timeout(
+        SPDM_TIMEOUT,
+        spdm::spdm_requester_transfer_msk(
+            &mut spdm_requester,
+            &info.mig_info,
+            #[cfg(feature = "policy_v2")]
+            remote_policy,
+        ),
+    )
     .await
     .map_err(|e| {
         log::error!(
-            "exchange_msk: pre_session_data_exchange timeout error: {:?}\n",
+            "exchange_msk: spdm_requester_transfer_msk timeout error: {:?}\n",
             e
         );
         e
     })?
     .map_err(|e| {
-        log::error!("exchange_msk: pre_session_data_exchange error: {:?}\n", e);
+        log::error!("exchange_msk: spdm_requester_transfer_msk error: {:?}\n", e);
+        e
+    })?;
+    log::info!("MSK exchange completed\n");
+    Ok(())
+}
+
+#[cfg(feature = "spdm_attestation")]
+async fn migration_dst_exchange_msk(
+    transport: TransportType,
+    info: &MigrationInformation,
+    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
+) -> Result<()> {
+    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
+    let mut spdm_responder = spdm::spdm_responder(transport).map_err(|_e| {
+        log::error!(
+            "exchange_msk(): Failed in spdm_responder transport. Migration ID: {}\n",
+            info.mig_info.mig_request_id
+        );
+        MigrationResult::SecureSessionError
+    })?;
+
+    with_timeout(
+        SPDM_TIMEOUT,
+        spdm::spdm_responder_transfer_msk(
+            &mut spdm_responder,
+            &info.mig_info,
+            #[cfg(feature = "policy_v2")]
+            remote_policy,
+        ),
+    )
+    .await
+    .map_err(|e| {
+        log::error!(
+            "exchange_msk: spdm_responder_transfer_msk timeout error: {:?}\n",
+            e
+        );
+        e
+    })?
+    .map_err(|e| {
+        log::error!("exchange_msk: spdm_responder_transfer_msk error: {:?}\n", e);
+        e
+    })?;
+    log::info!("MSK exchange completed\n");
+    Ok(())
+}
+
+#[cfg(feature = "main")]
+pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
+    let mut transport = setup_transport(info).await?;
+
+    // Exchange policy firstly because of the message size limitation of TLS protocol
+    #[cfg(feature = "policy_v2")]
+    const PRE_SESSION_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
+    #[cfg(feature = "policy_v2")]
+    let policy = crate::config::get_policy()
+        .ok_or(MigrationResult::InvalidParameter)
+        .map_err(|e| {
+            log::error!("pre_session_data_exchange: get_policy error: {:?}\n", e);
+            e
+        })?;
+    #[cfg(feature = "policy_v2")]
+    let remote_policy = Box::pin(with_timeout(
+        PRE_SESSION_TIMEOUT,
+        pre_session_data_exchange(&mut transport, policy),
+    ))
+    .await
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: pre_session_data_exchange timeout error: {:?}\n",
+            e
+        );
+        e
+    })?
+    .map_err(|e| {
+        log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: pre_session_data_exchange error: {:?}\n", e);
         e
     })?;
 
     #[cfg(not(feature = "spdm_attestation"))]
     {
-        const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-
         let mut remote_information = ExchangeInformation::default();
         let mut exchange_information =
             exchange_info(&info.mig_info, info.is_src()).map_err(|e| {
-                log::error!("exchange_msk: exchange_info error: {:?}\n", e);
+                log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: exchange_info error: {:?}\n", e);
                 e
             })?;
 
         // Establish TLS layer connection and negotiate the MSK
         if info.is_src() {
-            // TLS client
-            let mut ratls_client = ratls::client(
+            migration_src_exchange_msk(
                 transport,
+                info,
+                &exchange_information,
+                &mut remote_information,
                 #[cfg(feature = "policy_v2")]
                 remote_policy,
-                #[cfg(feature = "vmcall-raw")]
-                data,
             )
-            .map_err(|_| {
-                #[cfg(feature = "vmcall-raw")]
-                data.extend_from_slice(
-                    &format!(
-                        "Error: exchange_msk(): Failed in ratls transport. Migration ID: {:x}\n",
-                        info.mig_info.mig_request_id
-                    )
-                    .into_bytes(),
-                );
-                log::error!(
-                    "exchange_msk(): Failed in ratls transport. Migration ID: {}\n",
-                    info.mig_info.mig_request_id
-                );
-                MigrationResult::SecureSessionError
-            })?;
-
-            // MigTD-S send Migration Session Forward key to peer
-            with_timeout(
-                TLS_TIMEOUT,
-                ratls_client.write(exchange_information.as_bytes()),
-            )
-            .await
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_client.write timeout error: {:?}\n", e);
-                e
-            })?
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_client.write error: {:?}\n", e);
-                e
-            })?;
-            let size = with_timeout(
-                TLS_TIMEOUT,
-                ratls_client.read(remote_information.as_bytes_mut()),
-            )
-            .await
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_client.read timeout error: {:?}\n", e);
-                e
-            })?
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_client.read error: {:?}\n", e);
-                e
-            })?;
-            if size < size_of::<ExchangeInformation>() {
-                #[cfg(feature = "vmcall-raw")]
-                data.extend_from_slice(
-                    &format!(
-                        "Error: exchange_msk(): Incorrect ExchangeInformation size Migration ID: {:x}. Size - Expected: {:x} Actual: {:x}\n",
-                        info.mig_info.mig_request_id,
-                        size_of::<ExchangeInformation>(),
-                        size
-                    )
-                    .into_bytes(),
-                );
-                log::error!("exchange_msk(): Incorrect ExchangeInformation size Migration ID: {}. Size - Expected: {} Actual: {}\n", info.mig_info.mig_request_id, size_of::<ExchangeInformation>(), size);
-                return Err(MigrationResult::NetworkError);
-            }
-            #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-            ratls_client.transport_mut().shutdown().await.map_err(|e| {
-                log::error!(
-                    "exchange_msk: ratls_client.transport_mut().shutdown() error: {:?}\n",
-                    e
-                );
-                e
-            })?;
-
-            #[cfg(feature = "vmcall-raw")]
-            ratls_client
-                .transport_mut()
-                .shutdown()
-                .await
-                .map_err(|e| {
-                    data.extend_from_slice(
-                        &format!(
-                            "Error: exchange_msk(): Failed to transport in vmcall_raw_instance with Migration ID: {:x} errorcode: {}\n",
-                            info.mig_info.mig_request_id,
-                            e
-                        )
-                        .into_bytes(),
-                    );
-                    log::error!(
-                        "exchange_msk: Failed to transport in vmcall_raw_instance with Migration ID: {} errorcode: {}",
-                        info.mig_info.mig_request_id,
-                        e
-                    );
-                    MigrationResult::InvalidParameter
-                })?;
+            .await?;
         } else {
-            // TLS server
-            let mut ratls_server = ratls::server(
+            migration_dst_exchange_msk(
                 transport,
+                info,
+                &exchange_information,
+                &mut remote_information,
                 #[cfg(feature = "policy_v2")]
                 remote_policy,
             )
-            .map_err(|_| {
-                #[cfg(feature = "vmcall-raw")]
-                data.extend_from_slice(
-                    &format!(
-                        "Error: exchange_msk(): Failed in ratls transport. Migration ID: {:x}\n",
-                        info.mig_info.mig_request_id
-                    )
-                    .into_bytes(),
-                );
-                log::error!(
-                    "exchange_msk(): Failed in ratls transport. Migration ID: {}\n",
-                    info.mig_info.mig_request_id
-                );
-                MigrationResult::SecureSessionError
-            })?;
-
-            with_timeout(
-                TLS_TIMEOUT,
-                ratls_server.write(exchange_information.as_bytes()),
-            )
-            .await
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_server.write timeout error: {:?}\n", e);
-                e
-            })?
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_server.write error: {:?}\n", e);
-                e
-            })?;
-            let size = with_timeout(
-                TLS_TIMEOUT,
-                ratls_server.read(remote_information.as_bytes_mut()),
-            )
-            .await
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_server.read timeout error: {:?}\n", e);
-                e
-            })?
-            .map_err(|e| {
-                log::error!("exchange_msk: ratls_server.read error: {:?}\n", e);
-                e
-            })?;
-            if size < size_of::<ExchangeInformation>() {
-                #[cfg(feature = "vmcall-raw")]
-                data.extend_from_slice(&format!("Error: exchange_msk(): Incorrect ExchangeInformation size Migration ID: {:x}. Size - Expected: {:x} Actual: {:x}\n", info.mig_info.mig_request_id, size_of::<ExchangeInformation>(), size).into_bytes());
-                log::error!("exchange_msk(): Incorrect ExchangeInformation size Migration ID: {}. Size - Expected: {} Actual: {}\n", info.mig_info.mig_request_id, size_of::<ExchangeInformation>(), size);
-                return Err(MigrationResult::NetworkError);
-            }
-            #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-            ratls_server.transport_mut().shutdown().await?;
-
-            #[cfg(feature = "vmcall-raw")]
-            ratls_server
-                .transport_mut()
-                .shutdown()
-                .await
-                .map_err(|e| {
-                    data.extend_from_slice(&format!("Error: exchange_msk(): Failed to transport in vmcall_raw_instance with Migration ID: {:x} errorcode: {}\n", info.mig_info.mig_request_id, e).into_bytes());
-                    log::error!("exchange_msk: Failed to transport in vmcall_raw_instance with Migration ID: {} errorcode: {}\n", info.mig_info.mig_request_id, e);
-                    MigrationResult::InvalidParameter
-                })?;
+            .await?;
         }
 
         let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)
             .map_err(|e| {
-                log::error!("exchange_msk: cal_mig_version error: {:?}\n", e);
+                log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: cal_mig_version error: {:?}\n", e);
                 e
             })?;
         set_mig_version(&info.mig_info, mig_ver).map_err(|e| {
-            log::error!("exchange_msk: set_mig_version error: {:?}\n", e);
+            log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: set_mig_version error: {:?}\n", e);
             e
         })?;
         write_msk(&info.mig_info, &remote_information.key).map_err(|e| {
-            log::error!("exchange_msk: write_msk error: {:?}\n", e);
+            log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: write_msk error: {:?}\n", e);
             e
         })?;
 
-        log::info!("Set MSK and report status\n");
-        #[cfg(feature = "vmcall-raw")]
-        {
-            entrylog(
-                &format!("Set MSK and report status\n").into_bytes(),
-                Level::Info,
-                info.mig_info.mig_request_id,
-            );
-            log::info!("Set MSK and report status\n");
-        }
+        log::info!(migration_request_id = info.mig_info.mig_request_id; "Set MSK and report status\n");
         exchange_information.key.clear();
         remote_information.key.clear();
     }
 
     #[cfg(feature = "spdm_attestation")]
     {
-        const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
         if info.is_src() {
-            let mut spdm_requester = spdm::spdm_requester(transport).map_err(|_e| {
-                log::error!(
-                    "exchange_msk(): Failed in spdm_requester transport. Migration ID: {}\n",
-                    info.mig_info.mig_request_id
-                );
-                MigrationResult::SecureSessionError
-            })?;
-            with_timeout(
-                SPDM_TIMEOUT,
-                spdm::spdm_requester_transfer_msk(
-                    &mut spdm_requester,
-                    &info.mig_info,
-                    #[cfg(feature = "policy_v2")]
-                    remote_policy,
-                ),
+            migration_src_exchange_msk(
+                transport,
+                info,
+                #[cfg(feature = "policy_v2")]
+                remote_policy,
             )
-            .await
-            .map_err(|e| {
-                log::error!(
-                    "exchange_msk: spdm_requester_transfer_msk timeout error: {:?}\n",
-                    e
-                );
-                e
-            })?
-            .map_err(|e| {
-                log::error!("exchange_msk: spdm_requester_transfer_msk error: {:?}\n", e);
-                e
-            })?;
-            log::info!("MSK exchange completed\n");
+            .await?;
         } else {
-            let mut spdm_responder = spdm::spdm_responder(transport).map_err(|_e| {
-                log::error!(
-                    "exchange_msk(): Failed in spdm_responder transport. Migration ID: {}\n",
-                    info.mig_info.mig_request_id
-                );
-                MigrationResult::SecureSessionError
-            })?;
-
-            with_timeout(
-                SPDM_TIMEOUT,
-                spdm::spdm_responder_transfer_msk(
-                    &mut spdm_responder,
-                    &info.mig_info,
-                    #[cfg(feature = "policy_v2")]
-                    remote_policy,
-                ),
+            migration_dst_exchange_msk(
+                transport,
+                info,
+                #[cfg(feature = "policy_v2")]
+                remote_policy,
             )
-            .await
-            .map_err(|e| {
-                log::error!(
-                    "exchange_msk: spdm_responder_transfer_msk timeout error: {:?}\n",
-                    e
-                );
-                e
-            })?
-            .map_err(|e| {
-                log::error!("exchange_msk: spdm_responder_transfer_msk error: {:?}\n", e);
-                e
-            })?;
-            log::info!("MSK exchange completed\n");
+            .await?;
         }
     }
 
@@ -1468,11 +980,7 @@ pub fn exchange_info(
 ) -> Result<ExchangeInformation> {
     let mut exchange_info = ExchangeInformation::default();
     read_msk(mig_info, &mut exchange_info.key).map_err(|e| {
-        log::error!(
-            "exchange_info: read_msk failed with error: {:?} for mig_info.binding_handle = {}\n",
-            e,
-            mig_info.binding_handle
-        );
+        log::error!(migration_request_id = mig_info.mig_request_id; "exchange_info: read_msk failed with error: {:?} for mig_info.binding_handle = {}\n", e, mig_info.binding_handle);
         e
     })?;
 
@@ -1483,31 +991,18 @@ pub fn exchange_info(
     };
     let min_version = tdcall_sys_rd(field_min)
         .map_err(|e| {
-            log::error!(
-                "exchange_info: tdcall_sys_rd failed with error: {:?} for field_min = {}\n",
-                e,
-                field_min
-            );
+            log::error!(migration_request_id = mig_info.mig_request_id; "exchange_info: tdcall_sys_rd failed with error: {:?} for field_min = {}\n", e, field_min);
             e
         })?
         .1;
     let max_version = tdcall_sys_rd(field_max)
         .map_err(|e| {
-            log::error!(
-                "exchange_info: tdcall_sys_rd failed with error: {:?} for field_max = {}\n",
-                e,
-                field_max
-            );
+            log::error!(migration_request_id = mig_info.mig_request_id; "exchange_info: tdcall_sys_rd failed with error: {:?} for field_max = {}\n", e, field_max);
             e
         })?
         .1;
     if min_version > u16::MAX as u64 || max_version > u16::MAX as u64 {
-        log::error!(
-            "exchange_info: Migration version out of range. is_src = {}, min_version = {}, max_version = {}\n",
-            is_src,
-            min_version,
-            max_version
-        );
+        log::error!(migration_request_id = mig_info.mig_request_id; "exchange_info: Migration version out of range. is_src = {}, min_version = {}, max_version = {}\n", is_src, min_version, max_version);
         return Err(MigrationResult::InvalidParameter);
     }
     exchange_info.min_ver = min_version as u16;
@@ -1523,7 +1018,7 @@ fn read_msk(mig_info: &MigtdMigrationInformation, msk: &mut MigrationSessionKey)
             TDCS_FIELD_MIG_ENC_KEY + idx as u64,
             &mig_info.target_td_uuid,
         ).map_err(|e|{
-            log::error!("read_msk: tdcall_servtd_rd failed with error: {:?} for mig_info.binding_handle = {}, idx = {}\n", e, mig_info.binding_handle, idx);
+            log::error!(migration_request_id = mig_info.mig_request_id; "read_msk: tdcall_servtd_rd failed with error: {:?} for mig_info.binding_handle = {}, idx = {}\n", e, mig_info.binding_handle, idx);
             e
         })?;
         msk.fields[idx] = ret.content;
@@ -1540,7 +1035,7 @@ pub fn write_msk(mig_info: &MigtdMigrationInformation, msk: &MigrationSessionKey
             &mig_info.target_td_uuid,
         )
         .map_err(|e| {
-            log::error!("write_msk: tdcall_servtd_wr failed with error: {:?} for mig_info.binding_handle = {}, idx = {}, value = {}\n", e, mig_info.binding_handle, idx, msk.fields[idx]);
+            log::error!(migration_request_id = mig_info.mig_request_id; "write_msk: tdcall_servtd_wr failed with error: {:?} for mig_info.binding_handle = {}, idx = {}, value = {}\n", e, mig_info.binding_handle, idx, msk.fields[idx]);
             MigrationResult::TdxModuleError
         })?;
     }
@@ -1619,7 +1114,7 @@ pub fn set_mig_version(mig_info: &MigtdMigrationInformation, mig_ver: u16) -> Re
         mig_ver as u64,
         &mig_info.target_td_uuid,
     ).map_err(|e|{
-        log::error!("set_mig_version: tdcall_servtd_wr failed with error: {:?} for mig_info.binding_handle = {}, mig_ver = {}\n", e, mig_info.binding_handle, mig_ver);
+        log::error!(migration_request_id = mig_info.mig_request_id; "set_mig_version: tdcall_servtd_wr failed with error: {:?} for mig_info.binding_handle = {}, mig_ver = {}\n", e, mig_info.binding_handle, mig_ver);
         e
     })?;
     Ok(())
