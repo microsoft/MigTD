@@ -21,10 +21,26 @@ use td_payload::mm::shared::alloc_shared_pages;
 #[cfg(not(test))]
 use tdx_tdcall::{td_call, TdcallArgs};
 use zerocopy::{transmute_ref, AsBytes, FromBytes, FromZeroes};
+
+// Use td-logger-emu for AzCVMEmu mode (console output), td-logger for real td-shim
+#[cfg(feature = "AzCVMEmu")]
+use td_logger_emu as td_logger;
+
 const PAGE_SIZE: usize = 0x1_000;
 #[cfg(not(test))]
 const TDCALL_STATUS_SUCCESS: u64 = 0;
 const MIGRATION_REQUEST_ID_SENTINEL: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+
+pub fn u8_to_levelfilter(value: u8) -> LevelFilter {
+    match value {
+        0 => LevelFilter::Off,
+        1 => LevelFilter::Error,
+        2 => LevelFilter::Warn,
+        3 => LevelFilter::Info,
+        4 => LevelFilter::Debug,
+        5 | _ => LevelFilter::Trace,
+    }
+}
 
 type Result<T> = core::result::Result<T, MigrationResult>;
 
@@ -196,18 +212,9 @@ pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u
                 data.extend_from_slice(&PAGE_SIZE.to_le_bytes());
             }
 
-            log::info!(
+            log::info!( migration_request_id = request_id;
                 "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
                 log_max_level
-            );
-            entrylog(
-                &format!(
-                    "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
-                    log_max_level
-                )
-                .into_bytes(),
-                Level::Info,
-                request_id,
             );
         }
         #[cfg(test)]
@@ -236,10 +243,9 @@ pub async fn enable_logarea(log_max_level: u8, request_id: u64, data: &mut Vec<u
         }
         Ok(())
     } else {
-        entrylog(
-            &format!("enable_logarea: Invalid MaxLogLevel: {:x}\n", log_max_level).into_bytes(),
-            Level::Error,
-            request_id,
+        log::error!( migration_request_id = request_id;
+            "enable_logarea: Logging has been enabled with MaxLevel: {}\n",
+            log_max_level
         );
         data.extend_from_slice(
             &format!(
@@ -492,10 +498,18 @@ pub struct VmmLoggerBackend;
 
 impl log::Log for VmmLoggerBackend {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        let log_max_level = LOGGING_INFORMATION.maxloglevel.load(Ordering::SeqCst);
-        let log_level = loglevel_to_u8(metadata.level());
-
         // Enable if logging is configured and level is appropriate
+        let mut log_max_level = log::max_level();
+
+        let logarea_initialized = LOGGING_INFORMATION
+            .logarea_initialized
+            .load(Ordering::SeqCst);
+        if logarea_initialized {
+            log_max_level =
+                u8_to_levelfilter(LOGGING_INFORMATION.maxloglevel.load(Ordering::SeqCst));
+        }
+
+        let log_level = metadata.level();
         log_level <= log_max_level
     }
 
@@ -515,14 +529,22 @@ impl log::Log for VmmLoggerBackend {
             entrylog(&msg.into_bytes(), record.level(), mig_request_id);
 
             // Also output to debug console for development (skip in test mode to avoid issues)
-            #[cfg(not(test))]
-            if mig_request_id != MIGRATION_REQUEST_ID_SENTINEL {
-                td_logger::dbg_write_string(&format!(
-                    "{} - [req_id: {}] {}\n",
-                    record.level(),
-                    mig_request_id,
-                    record.args()
-                ));
+            #[cfg(all(not(test), debug_assertions))]
+            {
+                if mig_request_id != MIGRATION_REQUEST_ID_SENTINEL {
+                    td_logger::dbg_write_string(&format!(
+                        "{} - [req_id: {}] {}\n",
+                        record.level(),
+                        mig_request_id,
+                        record.args()
+                    ));
+                } else {
+                    td_logger::dbg_write_string(&format!(
+                        "{} - {}\n",
+                        record.level(),
+                        record.args()
+                    ));
+                }
             }
         }
     }
