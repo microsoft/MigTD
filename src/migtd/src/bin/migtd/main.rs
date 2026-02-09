@@ -14,7 +14,6 @@ use core::task::Poll;
 use alloc::string::String;
 use alloc::vec::Vec;
 use log::info;
-use log::info;
 #[cfg(feature = "vmcall-raw")]
 use log::{debug, error, Level};
 use migtd::event_log::*;
