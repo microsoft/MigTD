@@ -32,9 +32,10 @@ use crate::{
 
 pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>(
     stream: T,
-) -> Result<RequesterContext, SpdmStatus> {
+) -> Result<(RequesterContext, SpdmDeviceIoArc<T>), SpdmStatus> {
     let transport = MigtdTransport { transport: stream };
     let device_io = Arc::new(Mutex::new(transport));
+    let device_io_ref = device_io.clone();
 
     let req_capabilities = SpdmRequestCapabilityFlags::ENCRYPT_CAP
         | SpdmRequestCapabilityFlags::MAC_CAP
@@ -79,7 +80,7 @@ pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>
 
     spdmlib::secret::asym_sign::register(SECRET_ASYM_IMPL_INSTANCE.clone());
 
-    Ok(requester_context)
+    Ok((requester_context, device_io_ref))
 }
 
 pub async fn spdm_requester_transfer_msk(
@@ -772,8 +773,6 @@ async fn send_and_receive_sdm_exchange_migration_info(
     set_mig_version(mig_info, mig_ver)?;
     write_msk(mig_info, &remote_information.key)?;
     log::info!("Set MSK and report status\n");
-    exchange_information.key.clear();
-    remote_information.key.clear();
 
     Ok(())
 }

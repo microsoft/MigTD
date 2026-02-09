@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+use crate::migration::rebinding::RebindingInfo;
+
 use super::*;
 #[cfg(feature = "vmcall-raw")]
 use bitfield_struct::bitfield;
@@ -14,6 +17,7 @@ use td_shim_interface::td_uefi_pi::{
     pi::hob::{GuidExtension, Header, HOB_TYPE_END_OF_HOB_LIST, HOB_TYPE_GUID_EXTENSION},
 };
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const QUERY_COMMAND: u8 = 0;
 pub const MIG_COMMAND_SHUT_DOWN: u8 = 0;
@@ -202,6 +206,7 @@ pub struct ServiceMigReportStatusResponse {
     pub reserved: [u8; 2],
 }
 
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MigrationSessionKey {
     pub fields: [u64; 4],
 }
@@ -217,10 +222,6 @@ impl MigrationSessionKey {
 
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         unsafe { from_raw_parts_mut(self as *mut Self as *mut u8, size_of::<Self>()) }
-    }
-
-    pub fn clear(&mut self) {
-        self.fields.fill(0);
     }
 }
 
@@ -256,8 +257,12 @@ pub struct RequestDataBuffer<'a> {
 #[cfg(feature = "vmcall-raw")]
 pub enum WaitForRequestResponse {
     StartMigration(MigrationInformation),
+    #[cfg(feature = "policy_v2")]
+    StartRebinding(RebindingInfo),
     GetTdReport(ReportInfo),
     EnableLogArea(EnableLogAreaInfo),
+    #[cfg(feature = "policy_v2")]
+    GetMigtdData(MigtdDataInfo),
 }
 
 pub struct MigrationInformation {
