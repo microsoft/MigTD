@@ -28,9 +28,9 @@ use spdmlib::{
 };
 use spin::Mutex;
 extern crate alloc;
-use crate::{
-    config::get_policy, event_log::get_event_log, migration::session::ExchangeInformation,
-};
+#[cfg(feature = "policy_v2")]
+use crate::migration::pre_session_data::local_peer_data;
+use crate::{event_log::get_event_log, migration::session::ExchangeInformation};
 use alloc::sync::Arc;
 use log::error;
 
@@ -90,7 +90,7 @@ pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>
 pub async fn spdm_requester_transfer_msk(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
-    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
+    #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
     Box::pin(spdm_requester.send_receive_spdm_version()).await?;
     Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
@@ -108,7 +108,7 @@ pub async fn spdm_requester_transfer_msk(
         mig_info,
         session_id,
         #[cfg(feature = "policy_v2")]
-        remote_policy,
+        peer_data,
     ))
     .await?;
 
@@ -296,7 +296,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
     session_id: u32,
-    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
+    #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> SpdmResult {
     if spdm_requester.common.provision_info.my_pub_key.is_none()
         || spdm_requester.common.provision_info.peer_pub_key.is_none()
@@ -379,9 +379,16 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
     //mig policy src
-    let mig_policy_src = get_policy().ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-    let mig_policy_src_hash =
-        digest_sha384(mig_policy_src).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
+    #[cfg(feature = "policy_v2")]
+    let mig_policy_src_hash = {
+        let blob = local_peer_data().ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        digest_sha384(&blob).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?
+    };
+    #[cfg(not(feature = "policy_v2"))]
+    let mig_policy_src_hash = {
+        let mig_policy_src = crate::config::get_policy().ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        digest_sha384(mig_policy_src).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?
+    };
 
     let mig_policy_element = VdmMessageElement {
         element_type: VdmMessageElementType::MigPolicyMy,
@@ -559,7 +566,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         &quote_dst_vec,
         &event_log_dst_vec,
         mig_policy_hash_dst,
-        &remote_policy,
+        &peer_data,
         &th1,
         spdm_requester,
         session_id,
@@ -649,15 +656,15 @@ fn verify_peer_attestation_v2(
     quote_peer: &[u8],
     event_log_peer: &[u8],
     mig_policy_hash_peer: &[u8],
-    remote_policy: &[u8],
+    peer_data: &[u8],
     th1: &SpdmDigestStruct,
     spdm_requester: &mut RequesterContext,
     session_id: u32,
 ) -> SpdmResult {
-    // 1. Verify remote policy hash
-    let remote_policy_hash = digest_sha384(remote_policy).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
-    if mig_policy_hash_peer != remote_policy_hash.as_slice() {
-        error!("The received mig policy hash does not match the expected remote policy hash!\n");
+    // 1. Verify peer-data hash matches the value bound in the certificate
+    let peer_data_hash = digest_sha384(peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
+    if mig_policy_hash_peer != peer_data_hash.as_slice() {
+        error!("The received mig policy hash does not match the expected peer_data hash!\n");
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
@@ -665,7 +672,7 @@ fn verify_peer_attestation_v2(
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
         let policy_check_result =
-            mig_policy::authenticate_remote(true, quote_peer, remote_policy, event_log_peer);
+            mig_policy::authenticate_remote(true, quote_peer, peer_data, event_log_peer);
         if let Err(e) = &policy_check_result {
             error!("Policy v2 check failed, below is the detail information:\n");
             error!("{:x?}\n", e);
@@ -884,7 +891,7 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
     spdm_requester: &mut RequesterContext,
     rebind_info: &RebindingInfo,
     session_id: u32,
-    remote_policy: Vec<u8>,
+    peer_data: Vec<u8>,
 ) -> SpdmResult {
     use crate::{migration::servtd_ext::read_servtd_ext, ratls::gen_tdreport};
 
@@ -965,9 +972,10 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
         .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
     //mig policy src
-    let mig_policy_src = get_policy().ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-    let mig_policy_src_hash =
-        digest_sha384(mig_policy_src).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
+    let mig_policy_src_hash = {
+        let blob = local_peer_data().ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        digest_sha384(&blob).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?
+    };
 
     let mig_policy_element = VdmMessageElement {
         element_type: VdmMessageElementType::MigPolicyMy,
@@ -1158,19 +1166,16 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
 
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
-        let remote_policy_hash =
-            digest_sha384(&remote_policy).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
-        if mig_policy_hash_dst != remote_policy_hash.as_slice() {
-            error!(
-                "The received mig policy hash does not match the expected remote policy hash!\n"
-            );
+        let peer_data_hash = digest_sha384(&peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
+        if mig_policy_hash_dst != peer_data_hash.as_slice() {
+            error!("The received mig policy hash does not match the expected peer_data hash!\n");
             return Err(SPDM_STATUS_INVALID_MSG_FIELD);
         }
 
         let policy_check_result = mig_policy::authenticate_rebinding_new(
             &td_report_dst_vec,
             &event_log_dst_vec,
-            &remote_policy,
+            &peer_data,
         );
 
         if let Err(e) = &policy_check_result {
