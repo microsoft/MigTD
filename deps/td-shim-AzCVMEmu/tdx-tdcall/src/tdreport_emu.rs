@@ -26,6 +26,13 @@ pub enum QuoteError {
     ConversionError,
 }
 
+/// Emulated TD Report Verification
+#[cfg(feature = "test_mock_report")]
+pub fn tdcall_verify_report(report_mac: &[u8]) -> Result<(), TdCallError> {
+    info!("Using mock TD report verification for test_mock_report feature");
+    Ok(())
+}
+
 /// Emulated TD report generation using mock report
 #[cfg(feature = "test_mock_report")]
 pub fn tdcall_report_emulated(_additional_data: &[u8; 64]) -> Result<tdx::TdReport, TdCallError> {

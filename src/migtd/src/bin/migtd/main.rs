@@ -13,9 +13,9 @@ use core::task::Poll;
 #[cfg(feature = "policy_v2")]
 use alloc::string::String;
 use alloc::vec::Vec;
+use log::info;
 #[cfg(feature = "vmcall-raw")]
-use log::{error, Level};
-use log::{info, LevelFilter};
+use log::{debug, Level};
 use migtd::event_log::*;
 #[cfg(not(feature = "vmcall-raw"))]
 use migtd::migration::data::MigrationInformation;
@@ -59,21 +59,21 @@ fn dump_td_info_and_hash() {
         {
             Ok(report) => report,
             Err(e) => {
-                error!("Failed to get TD report: {:?}\n", e);
+                debug!("Failed to get TD report: {:?}\n", e);
                 return;
             }
         };
-    info!(
+    debug!(
         "td_report length in bytes: {}\n",
         td_report.as_bytes().len()
     );
 
-    info!("td_info: {:?}\n", td_report.td_info);
+    debug!("td_info: {:?}\n", td_report.td_info);
     let mut hasher = Sha384::new();
     hasher.update(td_report.td_info.as_bytes());
 
     let hash = hasher.finalize();
-    info!("TD Info Hash: {:x}\n", hash);
+    debug!("TD Info Hash: {:x}\n", hash);
 }
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -101,7 +101,7 @@ pub fn runtime_main() {
     {
         // Initialize logging with level filter. The actual log level is determined by
         // compile-time feature flags.
-        let _ = td_logger::init(LevelFilter::Trace);
+        let _ = td_logger::init(log::LevelFilter::Trace);
     }
 
     // Create LogArea per vCPU
@@ -446,6 +446,39 @@ fn handle_pre_mig() {
                             log::trace!(migration_request_id = wfr_info.mig_info.mig_request_id; "ReportStatus for key exchange completed\n");
                             REQUESTS.lock().remove(&wfr_info.mig_info.mig_request_id);
                         }
+                        #[cfg(feature = "policy_v2")]
+                        WaitForRequestResponse::StartRebinding(rebinding_info) => {
+                            use migtd::migration::rebinding::start_rebinding;
+
+                            let status = start_rebinding(&rebinding_info, &mut data)
+                                .await
+                                .map(|_| MigrationResult::Success)
+                                .unwrap_or_else(|e| e);
+                            if status == MigrationResult::Success {
+                                log::trace!("Successfully completed key exchange\n");
+                                log::trace!(
+                                    migration_request_id = rebinding_info.mig_request_id; "Successfully completed rebinding\n",
+                                );
+                            } else {
+                                log::error!(
+                                    migration_request_id = rebinding_info.mig_request_id; "Failure during rebinding status code: {:x}\n", status.clone() as u8);
+                            }
+                            let _ =
+                                report_status(status as u8, rebinding_info.mig_request_id, &data)
+                                    .await
+                                    .map_err(|e| {
+                                        log::error!(
+                                            migration_request_id = rebinding_info.mig_request_id;
+                                            "Failed to report status for StartRebinding: {:?}\n",
+                                            e
+                                        );
+                                    });
+                            log::trace!(
+                                migration_request_id = rebinding_info.mig_request_id;
+                                "ReportStatus for rebinding completed\n"
+                            );
+                            REQUESTS.lock().remove(&rebinding_info.mig_request_id);
+                        }
                         WaitForRequestResponse::GetTdReport(wfr_info) => {
                             let status = get_tdreport(
                                 &wfr_info.reportdata,
@@ -495,6 +528,26 @@ fn handle_pre_mig() {
                                     );
                                 });
                             log::trace!(migration_request_id = wfr_info.mig_request_id; "ReportStatus for Enable LogArea completed\n");
+                            REQUESTS.lock().remove(&wfr_info.mig_request_id);
+                        }
+                        #[cfg(feature = "policy_v2")]
+                        WaitForRequestResponse::GetMigtdData(wfr_info) => {
+                            let status = get_migtd_data(
+                                &wfr_info.reportdata,
+                                &mut data,
+                                wfr_info.mig_request_id,
+                            )
+                            .await
+                            .map(|_| MigrationResult::Success)
+                            .unwrap_or_else(|e| e);
+                            if status == MigrationResult::Success {
+                                log::trace!(migration_request_id = wfr_info.mig_request_id; "Successfully completed get migtd data\n");
+                            } else {
+                                log::error!(migration_request_id = wfr_info.mig_request_id; "Failure during get migtd data status code: {:x}\n", status.clone() as u8);
+                            }
+                            let _ =
+                                report_status(status as u8, wfr_info.mig_request_id, &data).await;
+                            log::trace!(migration_request_id = wfr_info.mig_request_id; "ReportStatus for get migtd data completed.\n");
                             REQUESTS.lock().remove(&wfr_info.mig_request_id);
                         }
                     }
