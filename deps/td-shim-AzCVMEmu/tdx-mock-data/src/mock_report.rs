@@ -302,7 +302,8 @@ pub fn create_mock_td_report(quote_data: &[u8]) -> TdxReport {
             mrseam: report_body.mr_seam,
             mrsigner_seam: report_body.mrsigner_seam,
             attributes: report_body.seam_attributes,
-            reserved: [0u8; 111],
+            tee_tcb_svn2: [0u8; 16],
+            reserved: [0u8; 95],
         },
         reserved: [0u8; 17],
         td_info: TdInfo {
