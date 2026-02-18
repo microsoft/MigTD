@@ -84,6 +84,7 @@ TOOLS_DIR="$PROJECT_ROOT/target/release"
 
 # Input Files
 POLICY_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_data_raw.json"
+POLICY_ALLOW_ALL_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_allow_all_data_raw.json"
 TD_IDENTITY_TEMPLATE="$SOURCE_MATERIAL_DIR/td_identity.json"
 TCB_MAPPING_TEMPLATE="$SOURCE_MATERIAL_DIR/tcb_mapping.json"
 COLLATERALS_FILE="$SOURCE_MATERIAL_DIR/collateral_thim.json"
@@ -205,6 +206,7 @@ USE_MOCK_REPORT=false
 MOCK_QUOTE_FILE=""
 FETCH_COLLATERALS=false
 AZURE_REGION="useast"
+ALLOW_ALL=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -216,6 +218,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-test)
             SKIP_TEST=true
+            shift
+            ;;
+        --allow-all)
+            ALLOW_ALL=true
             shift
             ;;
         --fetch-collaterals)
@@ -231,6 +237,7 @@ while [[ $# -gt 0 ]]; do
             echo
             echo "Options:"
             echo "  --output-dir DIR             Output directory for generated files (default: config/Azure)"
+            echo "  --allow-all                  Use allow-all policy rules (no TCB/platform/servtd checks)"
             echo "  --skip-test                  Skip running the MigTD test at the end"
             echo "  --fetch-collaterals          Fetch fresh collaterals from Azure THIM before generating policy"
             echo "  --azure-region REGION        Azure region for THIM (useast, westus, northeurope)"
@@ -259,6 +266,7 @@ echo "  Project root: $PROJECT_ROOT"
 echo "  Source material: $SOURCE_MATERIAL_DIR"
 echo "  Output directory: $OUTPUT_DIR"
 echo "  Temp directory: $TEMP_DIR"
+echo "  Allow-all policy: $ALLOW_ALL"
 echo "  Fetch collaterals: $FETCH_COLLATERALS"
 if [ "$FETCH_COLLATERALS" = true ]; then
     echo "  Azure region: $AZURE_REGION"
@@ -269,8 +277,16 @@ echo
 mkdir -p "$OUTPUT_DIR"
 mkdir -p "$CERT_DIR"
 
+# Select which policy data file to use
+if [ "$ALLOW_ALL" = true ]; then
+    ACTIVE_POLICY_DATA_RAW="$POLICY_ALLOW_ALL_DATA_RAW"
+    echo -e "${YELLOW}Using allow-all policy rules (no TCB/platform/servtd checks)${NC}"
+else
+    ACTIVE_POLICY_DATA_RAW="$POLICY_DATA_RAW"
+fi
+
 # Verify input files exist
-for file in "$POLICY_DATA_RAW" "$TD_IDENTITY_TEMPLATE" "$TCB_MAPPING_TEMPLATE"; do
+for file in "$ACTIVE_POLICY_DATA_RAW" "$TD_IDENTITY_TEMPLATE" "$TCB_MAPPING_TEMPLATE"; do
     if [ ! -f "$file" ]; then
         echo -e "${RED}Error: Required input file not found: $file${NC}" >&2
         exit 1
@@ -504,7 +520,7 @@ echo
 #
 echo -e "${BLUE}=== Step 9: Merging Policy Data ===${NC}"
 "$TOOLS_DIR/migtd-policy-generator" v2 \
-    --policy-data "$POLICY_DATA_RAW" \
+    --policy-data "$ACTIVE_POLICY_DATA_RAW" \
     --collaterals "$COLLATERALS_FILE" \
     --servtd-collateral "$SERVTD_COLLATERAL" \
     --output "$POLICY_DATA_MERGED"
