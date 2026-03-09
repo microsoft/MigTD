@@ -91,7 +91,7 @@ pub async fn spdm_requester_transfer_msk(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
     #[cfg(feature = "policy_v2")] init_migtd_data: Option<&crate::migration::init_data::InitData>,
-    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
+    #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
     Box::pin(spdm_requester.send_receive_spdm_version()).await?;
     Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
@@ -111,7 +111,7 @@ pub async fn spdm_requester_transfer_msk(
         #[cfg(feature = "policy_v2")]
         init_migtd_data,
         #[cfg(feature = "policy_v2")]
-        remote_policy,
+        peer_data,
     ))
     .await?;
 
@@ -300,7 +300,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     mig_info: &MigtdMigrationInformation,
     session_id: u32,
     #[cfg(feature = "policy_v2")] init_migtd_data: Option<&crate::migration::init_data::InitData>,
-    #[cfg(feature = "policy_v2")] remote_policy: Vec<u8>,
+    #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> SpdmResult {
     if spdm_requester.common.provision_info.my_pub_key.is_none()
         || spdm_requester.common.provision_info.peer_pub_key.is_none()

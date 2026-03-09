@@ -993,7 +993,7 @@ async fn migration_src_exchange_msk(
             #[cfg(feature = "policy_v2")]
             info.init_migtd_data.as_ref(),
             #[cfg(feature = "policy_v2")]
-            remote_policy,
+            peer_data,
         ),
     )
     .await
