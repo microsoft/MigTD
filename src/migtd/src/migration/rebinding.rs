@@ -17,7 +17,11 @@ use crate::migration::transport::*;
 #[cfg(feature = "spdm_attestation")]
 use crate::spdm;
 
-use crate::migration::pre_session_data::{pre_session_data_exchange, LogErr};
+use crate::config;
+use crate::migration::pre_session_data::{
+    exchange_hello_packet, pre_session_data_exchange, receive_pre_session_data_packet,
+    receive_start_session_packet, send_pre_session_data_packet, send_start_session_packet, LogErr,
+};
 
 use crate::{
     driver::ticks::with_timeout,
@@ -119,9 +123,6 @@ impl RebindingInfo {
         })
     }
 }
-
-pub use super::init_data::{InitData, MigtdDataEntry};
-pub(crate) use super::init_data::{MIGTD_DATA_SIGNATURE, MIGTD_DATA_TYPE_TDINFO};
 
 pub(super) async fn rebinding_old_pre_session_data_exchange(
     transport: &mut TransportType,
