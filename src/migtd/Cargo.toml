@@ -87,6 +87,7 @@ spdm_attestation = ["main"]
 test_mock_report = ["AzCVMEmu", "tdx-tdcall-emu/test_mock_report"]  # Use mock TD report in AzCVMEmu mode
 igvm-attest = ["attestation/igvm-attest"]
 use-mock-quote = ["attestation/use-mock-quote"]  # Use mock quote and mock TD report for non-AzCVMEmu testing
+mock_quote_retry = ["AzCVMEmu", "tdx-tdcall-emu/mock_quote_retry"]
 AzCVMEmu = [
 	"main",                     # Include main feature by default
 	"attestation/AzCVMEmu",
