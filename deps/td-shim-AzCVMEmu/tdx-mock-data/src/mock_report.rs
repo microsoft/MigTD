@@ -6,6 +6,7 @@
 //! It includes quote parsing utilities for TD quotes in both v4 and v5 formats.
 
 use log::{debug, error};
+use sha2::{Digest, Sha384};
 use tdx_tdcall::tdreport::{ReportMac, ReportType, TdInfo, TdxReport, TeeTcbInfo};
 
 /// Quote header size (48 bytes)
@@ -280,6 +281,35 @@ pub fn create_mock_td_report(quote_data: &[u8]) -> TdxReport {
         };
 
     // Create TD report with values from parsed quote body
+    let tee_tcb_info = TeeTcbInfo {
+        valid: [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        tee_tcb_svn: report_body.tee_tcb_svn,
+        mrseam: report_body.mr_seam,
+        mrsigner_seam: report_body.mrsigner_seam,
+        attributes: report_body.seam_attributes,
+        tee_tcb_svn2: [0u8; 16],
+        reserved: [0u8; 95],
+    };
+
+    let td_info = TdInfo {
+        attributes: report_body.td_attributes,
+        xfam: report_body.xfam,
+        mrtd: report_body.mr_td,
+        mrconfig_id: report_body.mr_config_id,
+        mrowner: report_body.mr_owner,
+        mrownerconfig: report_body.mr_owner_config,
+        rtmr0: report_body.rt_mr[0],
+        rtmr1: report_body.rt_mr[1],
+        rtmr2: report_body.rt_mr[2],
+        rtmr3: report_body.rt_mr[3],
+        servtd_hash: servtd_hash,
+        reserved: [0u8; 64],
+    };
+
+    // Compute SHA384 hashes of td_info and tee_tcb_info for report_mac integrity
+    let tee_tcb_info_hash: [u8; 48] = Sha384::digest(tee_tcb_info.as_bytes()).into();
+    let tee_info_hash: [u8; 48] = Sha384::digest(td_info.as_bytes()).into();
+
     let td_report = TdxReport {
         report_mac: ReportMac {
             report_type: ReportType {
@@ -290,36 +320,15 @@ pub fn create_mock_td_report(quote_data: &[u8]) -> TdxReport {
             },
             reserved0: [0u8; 12],
             cpu_svn: report_body.tee_tcb_svn,
-            tee_tcb_info_hash: [0x42; 48], // Mock hash (not in quote)
-            tee_info_hash: [0x43; 48],     // Mock hash (not in quote)
+            tee_tcb_info_hash,
+            tee_info_hash,
             report_data: report_body.report_data,
             reserved1: [0u8; 32],
             mac: [0xBB; 32], // Mock MAC, not used for policy tests
         },
-        tee_tcb_info: TeeTcbInfo {
-            valid: [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            tee_tcb_svn: report_body.tee_tcb_svn,
-            mrseam: report_body.mr_seam,
-            mrsigner_seam: report_body.mrsigner_seam,
-            attributes: report_body.seam_attributes,
-            tee_tcb_svn2: [0u8; 16],
-            reserved: [0u8; 95],
-        },
+        tee_tcb_info,
         reserved: [0u8; 17],
-        td_info: TdInfo {
-            attributes: report_body.td_attributes,
-            xfam: report_body.xfam,
-            mrtd: report_body.mr_td,
-            mrconfig_id: report_body.mr_config_id,
-            mrowner: report_body.mr_owner,
-            mrownerconfig: report_body.mr_owner_config,
-            rtmr0: report_body.rt_mr[0],
-            rtmr1: report_body.rt_mr[1],
-            rtmr2: report_body.rt_mr[2],
-            rtmr3: report_body.rt_mr[3],
-            servtd_hash: servtd_hash,
-            reserved: [0u8; 64],
-        },
+        td_info,
     };
 
     debug!("Mock TD report created successfully from quote file");
