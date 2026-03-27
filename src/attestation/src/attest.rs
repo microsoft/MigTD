@@ -104,7 +104,10 @@ pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
             );
             if result != AttestLibError::Success {
                 log::error!("get_quote_inner failed with error: {:?}\n", result);
-                return Err(Error::GetQuote);
+                return Err(match result {
+                    AttestLibError::Busy => Error::Busy,
+                    _ => Error::GetQuote,
+                });
             }
         }
         quote.truncate(quote_size as usize);
