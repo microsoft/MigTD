@@ -10,7 +10,10 @@ use crate::{
         session::{cal_mig_version, exchange_info, set_mig_version, write_msk},
         MigtdMigrationInformation,
     },
-    spdm::{spdm_rsp::SECRET_ASYM_IMPL_INSTANCE, vmcall_msg::VmCallTransportEncap, *},
+    spdm::{
+        build_report_data, gen_quote_spdm, spdm_rsp::SECRET_ASYM_IMPL_INSTANCE, spdm_verify_quote,
+        verify_report_data_binding, vmcall_msg::VmCallTransportEncap, *,
+    },
 };
 use async_io::{AsyncRead, AsyncWrite};
 use codec::{Codec, Reader, Writer};
@@ -184,7 +187,11 @@ pub async fn send_and_receive_pub_key(spdm_requester: &mut RequesterContext) -> 
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
     let response = spdm_requester
-        .send_spdm_vendor_defined_request_ex(None, &send_buffer[..used], &mut receive_buffer)
+        .send_receive_spdm_vendor_defined_request_ex(
+            None,
+            &send_buffer[..used],
+            &mut receive_buffer,
+        )
         .await?;
 
     // Format checks and save the received public key
@@ -322,40 +329,27 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
     };
 
-    let report_data_prefix = "MigTDReq".as_bytes();
-    let report_data_prefix_len = report_data_prefix.len();
-    // Build concatenated slice: "MigTDReq" || th1
-    let th1_len = th1.data_size as usize;
-    // th1 for SHA-384 should be 48 bytes; 8 (prefix) + 48 digest = 56 bytes needed.
-    if th1_len > SPDM_MAX_HASH_SIZE {
-        error!("th1 length is too large: {}\n", th1_len);
-        return Err(SPDM_STATUS_BUFFER_FULL);
-    }
-    let mut report_data = [0u8; "MigTDReq".len() + SPDM_MAX_HASH_SIZE];
-    // Copy prefix
-    report_data[..report_data_prefix_len].copy_from_slice(report_data_prefix);
-    report_data[report_data_prefix_len..report_data_prefix_len + th1_len]
-        .copy_from_slice(&th1.data[..th1_len]);
+    let report_data = build_report_data(b"MigTDReq", &th1)?;
 
     //quote src
-    let quote_src = gen_quote_spdm(&report_data[..report_data_prefix_len + th1_len])?;
-    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
-    let res = attestation::verify_quote(quote_src.as_slice());
-    //  The session MUST be terminated immediately, if the mutual attestation failure
-    #[cfg(feature = "test_disable_ra_and_accept_all")]
-    let res: Result<Vec<u8>, ()> = Ok(vec![]);
-
-    if res.is_err() {
-        error!("mutual attestation failed, end the session!\n");
-        let session = spdm_requester
-            .common
-            .get_session_via_id(session_id)
-            .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-        session.teardown();
-        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-    }
+    let quote_src = gen_quote_spdm(&report_data)?;
+    // Self-quote verification is only needed for policy v1, which uses
+    // verified_report_local in authenticate_policy(). Policy v2 re-verifies
+    // the quote internally via authenticate_remote().
     #[cfg(not(feature = "policy_v2"))]
-    let verified_report_local = res.unwrap();
+    let verified_report_local = {
+        let res = spdm_verify_quote(quote_src.as_slice());
+        if res.is_err() {
+            error!("mutual attestation failed, end the session!\n");
+            let session = spdm_requester
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
+        res.unwrap()
+    };
 
     //quote src
     let quote_element = VdmMessageElement {
@@ -423,7 +417,11 @@ pub async fn send_and_receive_sdm_migration_attest_info(
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
     let response = spdm_requester
-        .send_spdm_vendor_defined_request_ex(None, &send_buffer[..send_used], &mut receive_buffer)
+        .send_receive_spdm_vendor_defined_request_ex(
+            None,
+            &send_buffer[..send_used],
+            &mut receive_buffer,
+        )
         .await?;
 
     //Format checks
@@ -474,23 +472,6 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     let quote_dst = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
-    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
-    let res = attestation::verify_quote(quote_dst);
-    #[cfg(feature = "test_disable_ra_and_accept_all")]
-    let res: Result<Vec<u8>, ()> = Ok(vec![]);
-
-    if res.is_err() {
-        error!("mutual attestation failed, end the session!\n");
-        let session = spdm_requester
-            .common
-            .get_session_via_id(session_id)
-            .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-        session.teardown();
-        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-    }
-    #[cfg(not(feature = "policy_v2"))]
-    let verified_report_peer = res.unwrap();
-    #[cfg(feature = "policy_v2")]
     let quote_dst_vec = quote_dst.to_vec();
 
     //event log dst
@@ -505,24 +486,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     let event_log_dst = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
-    #[cfg(feature = "policy_v2")]
     let event_log_dst_vec = event_log_dst.to_vec();
-
-    #[cfg(not(feature = "policy_v2"))]
-    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
-    {
-        let policy_check_result = mig_policy::authenticate_policy(
-            true,
-            verified_report_local.as_slice(),
-            verified_report_peer.as_slice(),
-            event_log_dst,
-        );
-        if let Err(e) = &policy_check_result {
-            error!("Policy check failed, below is the detail information:\n");
-            error!("{:x?}\n", e);
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-        }
-    }
 
     //mig policy dst
     let vdm_element = VdmMessageElement::read(reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
@@ -542,37 +506,27 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
 
-    #[cfg(feature = "policy_v2")]
-    {
-        let remote_policy_hash =
-            digest_sha384(&remote_policy).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
-        if mig_policy_hash_dst != remote_policy_hash.as_slice() {
-            error!(
-                "The received mig policy hash does not match the expected remote policy hash!\n"
-            );
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-        }
+    // Policy-specific verification
+    #[cfg(not(feature = "policy_v2"))]
+    verify_peer_attestation_v1(
+        &verified_report_local,
+        &quote_dst_vec,
+        &event_log_dst_vec,
+        &th1,
+        spdm_requester,
+        session_id,
+    )?;
 
-        #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
-        {
-            let policy_check_result = mig_policy::authenticate_remote(
-                true,
-                quote_dst_vec.as_slice(),
-                &remote_policy,
-                event_log_dst_vec.as_slice(),
-            );
-            if let Err(e) = &policy_check_result {
-                error!("Policy v2 check failed, below is the detail information:\n");
-                error!("{:x?}\n", e);
-                let session = spdm_requester
-                    .common
-                    .get_session_via_id(session_id)
-                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-                session.teardown();
-                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-            }
-        }
-    }
+    #[cfg(feature = "policy_v2")]
+    verify_peer_attestation_v2(
+        &quote_dst_vec,
+        &event_log_dst_vec,
+        mig_policy_hash_dst,
+        &remote_policy,
+        &th1,
+        spdm_requester,
+        session_id,
+    )?;
 
     let vdm_attest_info_src_hash =
         digest_sha384(&send_buffer[..send_used]).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
@@ -589,6 +543,116 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     } else {
         error!("Cannot get session id. Attestation failed.\n");
         return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "policy_v2"))]
+#[allow(unused_variables)]
+fn verify_peer_attestation_v1(
+    verified_report_local: &[u8],
+    quote_peer: &[u8],
+    event_log_peer: &[u8],
+    th1: &SpdmDigestStruct,
+    spdm_requester: &mut RequesterContext,
+    session_id: u32,
+) -> SpdmResult {
+    // 1. Verify peer's quote
+    let res = spdm_verify_quote(quote_peer);
+    if res.is_err() {
+        error!("mutual attestation failed, end the session!\n");
+        let session = spdm_requester
+            .common
+            .get_session_via_id(session_id)
+            .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        session.teardown();
+        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+    }
+    let verified_report_peer = res.unwrap();
+
+    // 2. Verify REPORTDATA binding
+    #[cfg(not(any(
+        feature = "AzCVMEmu",
+        feature = "test_disable_ra_and_accept_all",
+        feature = "test_mock_report"
+    )))]
+    if verify_report_data_binding(&verified_report_peer, b"MigTDRsp", th1).is_err() {
+        error!("Peer REPORTDATA does not match expected TH1 binding!\n");
+        let session = spdm_requester
+            .common
+            .get_session_via_id(session_id)
+            .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        session.teardown();
+        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+    }
+
+    // 3. Authenticate policy
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+    {
+        let policy_check_result = mig_policy::authenticate_policy(
+            true,
+            verified_report_local,
+            verified_report_peer.as_slice(),
+            event_log_peer,
+        );
+        if let Err(e) = &policy_check_result {
+            error!("Policy check failed, below is the detail information:\n");
+            error!("{:x?}\n", e);
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "policy_v2")]
+fn verify_peer_attestation_v2(
+    quote_peer: &[u8],
+    event_log_peer: &[u8],
+    mig_policy_hash_peer: &[u8],
+    remote_policy: &[u8],
+    th1: &SpdmDigestStruct,
+    spdm_requester: &mut RequesterContext,
+    session_id: u32,
+) -> SpdmResult {
+    // 1. Verify remote policy hash
+    let remote_policy_hash = digest_sha384(remote_policy).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
+    if mig_policy_hash_peer != remote_policy_hash.as_slice() {
+        error!("The received mig policy hash does not match the expected remote policy hash!\n");
+        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+    }
+
+    // 2. Authenticate remote (includes quote verification internally)
+    #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+    {
+        let policy_check_result =
+            mig_policy::authenticate_remote(true, quote_peer, remote_policy, event_log_peer);
+        if let Err(e) = &policy_check_result {
+            error!("Policy v2 check failed, below is the detail information:\n");
+            error!("{:x?}\n", e);
+            let session = spdm_requester
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
+
+        // 3. Verify REPORTDATA binding using supplemental data from authenticate_remote
+        #[cfg(not(any(feature = "AzCVMEmu", feature = "test_mock_report")))]
+        {
+            let verified_report_peer = policy_check_result.unwrap();
+            if verify_report_data_binding(&verified_report_peer, b"MigTDRsp", th1).is_err() {
+                error!("Peer REPORTDATA does not match expected TH1 binding!\n");
+                let session = spdm_requester
+                    .common
+                    .get_session_via_id(session_id)
+                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                session.teardown();
+                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+            }
+        }
     }
 
     Ok(())
@@ -677,7 +741,7 @@ async fn send_and_receive_sdm_exchange_migration_info(
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
     let response = spdm_requester
-        .send_spdm_vendor_defined_request_ex(
+        .send_receive_spdm_vendor_defined_request_ex(
             session_id,
             &send_buffer[..send_used],
             &mut receive_buffer,
@@ -877,11 +941,9 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
     //SERVTD_EXT
     let binding_handle = rebind_info.binding_handle;
     let target_td_uuid = &rebind_info.target_td_uuid;
-    if rebind_info.init_migtd_data.is_none() {
-        error!("RebindingInfo.init_migtd_data is None!\n");
-        return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
-    }
-    let init_migtd_data = rebind_info.init_migtd_data.as_ref().unwrap();
+    let local_data = crate::migration::rebinding::InitData::get_from_local(&[0u8; 64])
+        .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+    let init_migtd_data = rebind_info.init_migtd_data.as_ref().unwrap_or(&local_data);
 
     let servtd_ext = read_servtd_ext(binding_handle, target_td_uuid)
         .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
@@ -963,7 +1025,11 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
     let response = spdm_requester
-        .send_spdm_vendor_defined_request_ex(None, &send_buffer[..send_used], &mut receive_buffer)
+        .send_receive_spdm_vendor_defined_request_ex(
+            None,
+            &send_buffer[..send_used],
+            &mut receive_buffer,
+        )
         .await?;
 
     //Format checks
@@ -1165,7 +1231,7 @@ pub async fn send_and_receive_sdm_rebind_info(
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
     let response = spdm_requester
-        .send_spdm_vendor_defined_request_ex(
+        .send_receive_spdm_vendor_defined_request_ex(
             session_id,
             &send_buffer[..send_used],
             &mut receive_buffer,

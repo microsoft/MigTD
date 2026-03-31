@@ -66,7 +66,10 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-fn get_td_report_from_vtpm(report_data: Option<&[u8; 48]>, use_mock: bool) -> Result<tdx::TdReport> {
+fn get_td_report_from_vtpm(
+    report_data: Option<&[u8; 48]>,
+    use_mock: bool,
+) -> Result<tdx::TdReport> {
     if use_mock {
         // Use the existing create_mock_td_report function from tdx-tdcall-emu
         use tdx_tdcall_emu::tdreport_emu::create_mock_td_report;
