@@ -102,5 +102,3 @@ AzCVMEmu = [
 	"tokio",
 ]
 
-[patch.crates-io]
-sys_time = { path = "src/std-support/sys_time" }
