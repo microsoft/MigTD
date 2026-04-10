@@ -123,9 +123,7 @@ async fn vmcall_service_migtd_send(
 
     poll_fn(|_cx| -> Poll<Result<usize, VmcallRawError>> {
         if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-            if flag.load(Ordering::SeqCst) {
-                flag.store(false, Ordering::SeqCst);
-            } else {
+            if !flag.load(Ordering::SeqCst) {
                 return Poll::Pending;
             }
         } else {
@@ -137,6 +135,11 @@ async fn vmcall_service_migtd_send(
 
         if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
             return Poll::Pending;
+        }
+
+        // Only consume the flag after confirming success
+        if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
+            flag.store(false, Ordering::SeqCst);
         }
 
         Poll::Ready(Ok(data_length as usize))
@@ -165,9 +168,7 @@ async fn vmcall_service_migtd_receive(
     poll_fn(|_cx| -> Poll<Result<Vec<u8>, VmcallRawError>> {
         let mig_request_id = stream.addr.transport_context();
         if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-            if flag.load(Ordering::SeqCst) {
-                flag.store(false, Ordering::SeqCst);
-            } else {
+            if !flag.load(Ordering::SeqCst) {
                 return Poll::Pending;
             }
         } else {
@@ -179,6 +180,11 @@ async fn vmcall_service_migtd_receive(
 
         if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
             return Poll::Pending;
+        }
+
+        // Only consume the flag after confirming success
+        if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
+            flag.store(false, Ordering::SeqCst);
         }
 
         recv_packet(&response_buf, data_length as usize, stream)?;
