@@ -285,6 +285,18 @@ else
     ACTIVE_POLICY_DATA_RAW="$POLICY_DATA_RAW"
 fi
 
+# Generate default template files if they don't exist (these are overwritten by the build)
+if [ ! -f "$TD_IDENTITY_TEMPLATE" ]; then
+    echo -e "${YELLOW}Generating default td_identity.json template${NC}"
+    printf '{"id":"A0998F0F-B2F3-4872-8138-FBC2B853E8C6","version":1,"issueDate":"2025-01-01T00:00:00Z","nextUpdate":"2026-01-01T00:00:00Z","tcbEvaluationNumber":1,"xfam":"0000000000000000","attributes":"0000000000000000","mrConfigId":"%s","mrOwner":"%s","mrOwnerConfig":"%s","mrsigner":"%s","isvProdId":0,"tcbLevels":[{"tcb":{"isvsvn":1},"tcbDate":"2025-01-01T00:00:00Z","tcbStatus":"UpToDate"}]}' \
+        "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" > "$TD_IDENTITY_TEMPLATE"
+fi
+if [ ! -f "$TCB_MAPPING_TEMPLATE" ]; then
+    echo -e "${YELLOW}Generating default tcb_mapping.json template${NC}"
+    printf '{"id":"BB9668CA-4EE8-4523-941A-B3B03BE46E03","version":1,"issueDate":"2025-01-01T00:00:00Z","nextUpdate":"2026-01-01T00:00:00Z","mrSigner":"%s","isvProdId":1,"svnMappings":[{"tdMeasurements":{"mrtd":"%s","rtmr0":"%s","rtmr1":"%s"},"isvsvn":1}]}' \
+        "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" > "$TCB_MAPPING_TEMPLATE"
+fi
+
 # Verify input files exist
 for file in "$ACTIVE_POLICY_DATA_RAW" "$TD_IDENTITY_TEMPLATE" "$TCB_MAPPING_TEMPLATE"; do
     if [ ! -f "$file" ]; then
