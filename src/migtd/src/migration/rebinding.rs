@@ -97,10 +97,15 @@ pub struct RebindingInfo {
 }
 
 impl RebindingInfo {
-    pub fn read_from_bytes(b: &[u8]) -> Option<Self> {
+    pub fn read_from_bytes(
+        data_length: u32,
+        payload: &[u8],
+    ) -> core::result::Result<Self, crate::migration::MigrationResult> {
+        use crate::migration::MigrationResult;
+        let b = payload;
         // Check the length of input and the reserved fields
-        if b.len() < 56 || b[11..16] != [0; 5] {
-            return None;
+        if b.len() < 56 || (data_length as usize) < 56 || b[11..16] != [0; 5] {
+            return Err(MigrationResult::InvalidParameter);
         }
         let mig_request_id = u64::from_le_bytes(b[..8].try_into().unwrap());
         let rebinding_src = b[8];
@@ -115,11 +120,11 @@ impl RebindingInfo {
 
         let mut init_migtd_data = None;
         if has_init_data == 1 {
-            // Returns None if `has_init_data` is set but reading initialization data from the input buffer fails.
-            init_migtd_data = Some(InitData::read_from_bytes(&b[56..])?);
+            init_migtd_data =
+                Some(InitData::read_from_bytes(&b[56..]).ok_or(MigrationResult::InvalidParameter)?);
         }
 
-        Some(Self {
+        Ok(Self {
             mig_request_id,
             rebinding_src,
             has_init_data,
