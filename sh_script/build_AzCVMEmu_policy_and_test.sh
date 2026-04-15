@@ -86,6 +86,69 @@ SOURCE_MATERIAL_DIR="$PROJECT_ROOT/config/AzCVMEmu"
 OUTPUT_DIR="$PROJECT_ROOT/config/AzCVMEmu"
 TEMP_DIR=$(mktemp -d)
 TOOLS_DIR="$PROJECT_ROOT/target/release"
+AZCVM_EXTRACT_REPORT_LOCAL_BIN="$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report"
+AZCVM_EXTRACT_REPORT_WORKSPACE_BIN="$TOOLS_DIR/azcvm-extract-report"
+AZCVM_EXTRACT_REPORT_BIN=""
+
+# Ensure cargo is available (try loading rustup env first).
+if ! command -v cargo >/dev/null 2>&1; then
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck source=/dev/null
+        . "$HOME/.cargo/env"
+    fi
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo -e "${RED}Error: cargo not found in PATH.${NC}" >&2
+    echo -e "${YELLOW}Install Rust toolchain and reload your shell:${NC}" >&2
+    echo "  sudo apt install -y rustup" >&2
+    echo "  rustup default stable" >&2
+    echo "  source \"\$HOME/.cargo/env\"" >&2
+    echo "  ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report" >&2
+    exit 127
+fi
+
+if ! command -v pkg-config >/dev/null 2>&1; then
+    echo -e "${RED}Error: pkg-config not found in PATH.${NC}" >&2
+    echo -e "${YELLOW}Install required build dependencies:${NC}" >&2
+    echo "  sudo apt install -y pkg-config libtss2-dev" >&2
+    exit 127
+fi
+
+if ! pkg-config --exists tss2-sys; then
+    echo -e "${RED}Error: TPM2 system library 'tss2-sys' not found.${NC}" >&2
+    echo -e "${YELLOW}Install required TPM2 development package:${NC}" >&2
+    echo "  sudo apt install -y libtss2-dev" >&2
+    exit 127
+fi
+
+if ! command -v nasm >/dev/null 2>&1; then
+    echo -e "${RED}Error: nasm not found in PATH.${NC}" >&2
+    echo -e "${YELLOW}Install required assembler dependency:${NC}" >&2
+    echo "  sudo apt install -y nasm" >&2
+    exit 127
+fi
+
+if ! command -v unzip >/dev/null 2>&1; then
+    echo -e "${RED}Error: unzip not found in PATH.${NC}" >&2
+    echo -e "${YELLOW}Install required archive extraction tool:${NC}" >&2
+    echo "  sudo apt install -y unzip" >&2
+    exit 127
+fi
+
+if ! command -v autoreconf >/dev/null 2>&1; then
+    echo -e "${RED}Error: autoreconf not found in PATH.${NC}" >&2
+    echo -e "${YELLOW}Install required autotools dependencies:${NC}" >&2
+    echo "  sudo apt install -y autoconf automake libtool" >&2
+    exit 127
+fi
+
+if ! command -v ocamlbuild >/dev/null 2>&1; then
+    echo -e "${RED}Error: ocamlbuild not found in PATH.${NC}" >&2
+    echo -e "${YELLOW}Install required OCaml build tools:${NC}" >&2
+    echo "  sudo apt install -y ocaml ocamlbuild" >&2
+    exit 127
+fi
 
 # Input Files
 POLICY_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_v2_raw.json"
@@ -376,21 +439,40 @@ echo -e "${BLUE}=== Step 1: Building Tools ===${NC}"
 cd "$PROJECT_ROOT"
 
 echo "Building azcvm-extract-report (from deps/td-shim-AzCVMEmu)..."
-(cd deps/td-shim-AzCVMEmu/azcvm-extract-report && cargo build --release) 2>&1 | grep -E "(Compiling|Finished|error)" || true
+if ! (cd deps/td-shim-AzCVMEmu/azcvm-extract-report && cargo build --release); then
+    echo -e "${RED}Error: Failed to build azcvm-extract-report${NC}" >&2
+    exit 1
+fi
 
 echo "Building json-signer..."
-cargo build --release -p json-signer 2>&1 | grep -E "(Compiling|Finished|error)" || true
+if ! cargo build --release -p json-signer; then
+    echo -e "${RED}Error: Failed to build json-signer${NC}" >&2
+    exit 1
+fi
 
 echo "Building servtd-collateral-generator..."
-cargo build --release -p servtd-collateral-generator 2>&1 | grep -E "(Compiling|Finished|error)" || true
+if ! cargo build --release -p servtd-collateral-generator; then
+    echo -e "${RED}Error: Failed to build servtd-collateral-generator${NC}" >&2
+    exit 1
+fi
 
 echo "Building migtd-policy-generator..."
-cargo build --release -p migtd-policy-generator 2>&1 | grep -E "(Compiling|Finished|error)" || true
+if ! cargo build --release -p migtd-policy-generator; then
+    echo -e "${RED}Error: Failed to build migtd-policy-generator${NC}" >&2
+    exit 1
+fi
 
 # Verify tools exist
-# Note: azcvm-extract-report is in a different location
-if [ ! -f "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report" ]; then
-    echo -e "${RED}Error: Tool 'azcvm-extract-report' not found${NC}" >&2
+# azcvm-extract-report may be emitted either to the local crate target/ or the
+# workspace target/ when CARGO_TARGET_DIR is set.
+if [ -f "$AZCVM_EXTRACT_REPORT_LOCAL_BIN" ]; then
+    AZCVM_EXTRACT_REPORT_BIN="$AZCVM_EXTRACT_REPORT_LOCAL_BIN"
+elif [ -f "$AZCVM_EXTRACT_REPORT_WORKSPACE_BIN" ]; then
+    AZCVM_EXTRACT_REPORT_BIN="$AZCVM_EXTRACT_REPORT_WORKSPACE_BIN"
+else
+    echo -e "${RED}Error: Tool 'azcvm-extract-report' not found at either:${NC}" >&2
+    echo -e "${RED}  - $AZCVM_EXTRACT_REPORT_LOCAL_BIN${NC}" >&2
+    echo -e "${RED}  - $AZCVM_EXTRACT_REPORT_WORKSPACE_BIN${NC}" >&2
     exit 1
 fi
 
@@ -424,7 +506,7 @@ if [ "$USE_MOCK_REPORT" = true ]; then
         export MOCK_QUOTE_FILE
     fi
 
-    "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report" \
+    "$AZCVM_EXTRACT_REPORT_BIN" \
         --mock-report \
         --output-json "migtd_report_data.json"
 
@@ -436,7 +518,7 @@ if [ "$USE_MOCK_REPORT" = true ]; then
 else
     # Use sudo to access vTPM device (requires /dev/tpmrm0 access)
     echo "Note: Using sudo to access vTPM device..."
-    sudo "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report"
+    sudo "$AZCVM_EXTRACT_REPORT_BIN"
 
     # Report extractor creates migtd_report_data.json in current directory
     if [ ! -f "migtd_report_data.json" ]; then
