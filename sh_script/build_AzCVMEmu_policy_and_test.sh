@@ -80,6 +80,49 @@ NC='\033[0m' # No Color
 echo -e "${BLUE}=== MigTD Custom Policy Builder ===${NC}"
 echo
 
+print_error() {
+    printf '%b\n' "${RED}Error: $1${NC}" >&2
+}
+
+print_hint_header() {
+    printf '%b\n' "${YELLOW}$1${NC}" >&2
+}
+
+print_hint_lines() {
+    local hint
+    for hint in "$@"; do
+        printf '  %s\n' "$hint" >&2
+    done
+}
+
+require_cmd() {
+    local cmd="$1"
+    local error_message="$2"
+    local hint_header="$3"
+    shift 3
+
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        print_error "$error_message"
+        print_hint_header "$hint_header"
+        print_hint_lines "$@"
+        exit 127
+    fi
+}
+
+require_pkg_config_module() {
+    local module="$1"
+    local error_message="$2"
+    local hint_header="$3"
+    shift 3
+
+    if ! pkg-config --exists "$module" >/dev/null 2>&1; then
+        print_error "$error_message"
+        print_hint_header "$hint_header"
+        print_hint_lines "$@"
+        exit 127
+    fi
+}
+
 # Default paths
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_MATERIAL_DIR="$PROJECT_ROOT/config/AzCVMEmu"
@@ -98,57 +141,51 @@ if ! command -v cargo >/dev/null 2>&1; then
     fi
 fi
 
-if ! command -v cargo >/dev/null 2>&1; then
-    echo -e "${RED}Error: cargo not found in PATH.${NC}" >&2
-    echo -e "${YELLOW}Install Rust toolchain and reload your shell:${NC}" >&2
-    echo "  sudo apt install -y rustup" >&2
-    echo "  rustup default stable" >&2
-    echo "  source \"\$HOME/.cargo/env\"" >&2
-    echo "  ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report" >&2
-    exit 127
-fi
+require_cmd \
+    cargo \
+    "cargo not found in PATH." \
+    "Install Rust toolchain and reload your shell (platform-specific):" \
+    "Cross-platform (recommended): https://rustup.rs" \
+    "Debian/Ubuntu: sudo apt install -y rustup" \
+    "rustup default stable" \
+    "source \"\$HOME/.cargo/env\"" \
+    "./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report"
 
-if ! command -v pkg-config >/dev/null 2>&1; then
-    echo -e "${RED}Error: pkg-config not found in PATH.${NC}" >&2
-    echo -e "${YELLOW}Install required build dependencies:${NC}" >&2
-    echo "  sudo apt install -y pkg-config libtss2-dev" >&2
-    exit 127
-fi
+require_cmd \
+    pkg-config \
+    "pkg-config not found in PATH." \
+    "Install required build dependencies (platform-specific):" \
+    "Debian/Ubuntu: sudo apt install -y pkg-config libtss2-dev"
 
-if ! pkg-config --exists tss2-sys; then
-    echo -e "${RED}Error: TPM2 system library 'tss2-sys' not found.${NC}" >&2
-    echo -e "${YELLOW}Install required TPM2 development package:${NC}" >&2
-    echo "  sudo apt install -y libtss2-dev" >&2
-    exit 127
-fi
+require_pkg_config_module \
+    tss2-sys \
+    "TPM2 system library 'tss2-sys' not found." \
+    "Install required TPM2 development package (platform-specific):" \
+    "Debian/Ubuntu: sudo apt install -y libtss2-dev"
 
-if ! command -v nasm >/dev/null 2>&1; then
-    echo -e "${RED}Error: nasm not found in PATH.${NC}" >&2
-    echo -e "${YELLOW}Install required assembler dependency:${NC}" >&2
-    echo "  sudo apt install -y nasm" >&2
-    exit 127
-fi
+require_cmd \
+    nasm \
+    "nasm not found in PATH." \
+    "Install required assembler dependency (platform-specific):" \
+    "Debian/Ubuntu: sudo apt install -y nasm"
 
-if ! command -v unzip >/dev/null 2>&1; then
-    echo -e "${RED}Error: unzip not found in PATH.${NC}" >&2
-    echo -e "${YELLOW}Install required archive extraction tool:${NC}" >&2
-    echo "  sudo apt install -y unzip" >&2
-    exit 127
-fi
+require_cmd \
+    unzip \
+    "unzip not found in PATH." \
+    "Install required archive extraction tool (platform-specific):" \
+    "Debian/Ubuntu: sudo apt install -y unzip"
 
-if ! command -v autoreconf >/dev/null 2>&1; then
-    echo -e "${RED}Error: autoreconf not found in PATH.${NC}" >&2
-    echo -e "${YELLOW}Install required autotools dependencies:${NC}" >&2
-    echo "  sudo apt install -y autoconf automake libtool" >&2
-    exit 127
-fi
+require_cmd \
+    autoreconf \
+    "autoreconf not found in PATH." \
+    "Install required autotools dependencies (platform-specific):" \
+    "Debian/Ubuntu: sudo apt install -y autoconf automake libtool"
 
-if ! command -v ocamlbuild >/dev/null 2>&1; then
-    echo -e "${RED}Error: ocamlbuild not found in PATH.${NC}" >&2
-    echo -e "${YELLOW}Install required OCaml build tools:${NC}" >&2
-    echo "  sudo apt install -y ocaml ocamlbuild" >&2
-    exit 127
-fi
+require_cmd \
+    ocamlbuild \
+    "ocamlbuild not found in PATH." \
+    "Install required OCaml build tools (platform-specific):" \
+    "Debian/Ubuntu: sudo apt install -y ocaml ocamlbuild"
 
 # Input Files
 POLICY_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_v2_raw.json"
