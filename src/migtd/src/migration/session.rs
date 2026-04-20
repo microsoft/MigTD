@@ -484,9 +484,7 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
 
     let mut pending_error_report: Option<(u64, MigrationResult)> = None;
     let result = poll_fn(|_cx| {
-        if VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
-            VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
-        } else {
+        if !VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
             return Poll::Pending;
         }
 
@@ -497,7 +495,14 @@ pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
             return Poll::Ready(Err(MigrationResult::OutOfResource));
         };
 
-        parse_request(data_buffer, reqbufferhdrlen, &mut pending_error_report)
+        let result = parse_request(data_buffer, reqbufferhdrlen, &mut pending_error_report);
+
+        // Only consume the flag after data is confirmed ready (not Pending)
+        if !matches!(result, Poll::Pending) {
+            VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
+        }
+
+        result
     })
     .await;
 
@@ -544,9 +549,7 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
         tdx::tdvmcall_service(cmd_mem.as_bytes(), rsp_mem.as_mut_bytes(), 0, 0)?;
 
         #[cfg(feature = "vmcall-interrupt")]
-        if VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
-            VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
-        } else {
+        if !VMCALL_SERVICE_FLAG.load(Ordering::SeqCst) {
             return Poll::Pending;
         }
 
@@ -563,6 +566,8 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
                 "wait_for_request: GUID mismatch in response rsp.read_guid() = {:?}\n",
                 rsp.read_guid()
             );
+            #[cfg(feature = "vmcall-interrupt")]
+            VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
             return Poll::Ready(Err(MigrationResult::InvalidParameter));
         }
         let wfr = rsp
@@ -573,6 +578,8 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
                 "wait_for_request: command mismatch in response wfr.command = {:?}\n",
                 wfr.command
             );
+            #[cfg(feature = "vmcall-interrupt")]
+            VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
             return Poll::Ready(Err(MigrationResult::InvalidParameter));
         }
         if wfr.operation == 1 {
@@ -584,12 +591,16 @@ pub async fn wait_for_request() -> Result<MigrationInformation> {
             if REQUESTS.lock().contains(&request_id) {
                 Poll::Pending
             } else {
+                #[cfg(feature = "vmcall-interrupt")]
+                VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
                 REQUESTS.lock().insert(request_id);
                 Poll::Ready(Ok(mig_info))
             }
         } else if wfr.operation == 0 {
             Poll::Pending
         } else {
+            #[cfg(feature = "vmcall-interrupt")]
+            VMCALL_SERVICE_FLAG.store(false, Ordering::SeqCst);
             Poll::Ready(Err(MigrationResult::InvalidParameter))
         }
     })
@@ -744,10 +755,19 @@ pub async fn report_status(status: u8, request_id: u64, data: &Vec<u8>) -> Resul
 
     poll_fn(|_cx| -> Poll<Result<()>> {
         reqbufferhdr = process_buffer(data_buffer);
-        let data_status_bytes = &reqbufferhdr.datastatus.to_le_bytes();
-        if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
-            log::info!(migration_request_id = request_id; "report_status: Pending confirmation\n");
+        let data_status = reqbufferhdr.datastatus;
+
+        if data_status == 0 {
+            // VMM hasn't written the response yet
             return Poll::Pending;
+        }
+
+        if data_status.to_le_bytes()[0] != TDX_VMCALL_VMM_SUCCESS {
+            log::error!(migration_request_id = request_id;
+                "report_status: VMM returned error, data_status=0x{:x}\n",
+                data_status
+            );
+            return Poll::Ready(Err(MigrationResult::VmmInternalError));
         }
 
         Poll::Ready(Ok(()))
