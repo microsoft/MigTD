@@ -127,19 +127,24 @@ async fn vmcall_service_migtd_send(
                 return Poll::Pending;
             }
         } else {
-            let _ = Poll::Ready(Err::<Vec<u8>, _>(VmcallRawError::Illegal));
+            return Poll::Ready(Err(VmcallRawError::Illegal));
         }
 
         let (_send_buf, data_status, data_length) = process_buffer(data_buffer);
         let data_status_bytes = data_status.to_le_bytes();
 
-        if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
+        if data_status == 0 {
+            // VMM hasn't written the response yet
             return Poll::Pending;
         }
 
-        // Only consume the flag after confirming success
+        // Only consume the flag after VMM has written a final status
         if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
             flag.store(false, Ordering::SeqCst);
+        }
+
+        if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
+            return Poll::Ready(Err(VmcallRawError::TdVmcallErr));
         }
 
         Poll::Ready(Ok(data_length as usize))
@@ -172,19 +177,24 @@ async fn vmcall_service_migtd_receive(
                 return Poll::Pending;
             }
         } else {
-            let _ = Poll::Ready(Err::<Vec<u8>, _>(VmcallRawError::Illegal));
+            return Poll::Ready(Err(VmcallRawError::Illegal));
         }
 
         let (response_buf, data_status, data_length) = process_buffer(data_buffer);
         let data_status_bytes = data_status.to_le_bytes();
 
-        if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
+        if data_status == 0 {
+            // VMM hasn't written the response yet
             return Poll::Pending;
         }
 
-        // Only consume the flag after confirming success
+        // Only consume the flag after VMM has written a final status
         if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
             flag.store(false, Ordering::SeqCst);
+        }
+
+        if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
+            return Poll::Ready(Err(VmcallRawError::TdVmcallErr));
         }
 
         recv_packet(&response_buf, data_length as usize, stream)?;
