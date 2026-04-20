@@ -347,12 +347,6 @@ fn initialize_policy() -> String {
         panic!("Failed to initialize migration policy");
     });
 
-    // Initialize and verify the migration policy
-    let _ = mig_policy::init_tcb_info().map_err(|e| {
-        log::error!("Failed to initialize migration TCB info: {:?}\n", e);
-        panic!("Failed to initialize migration TCB info");
-    });
-
     version.expect("Failed to initialize migration policy")
 }
 
