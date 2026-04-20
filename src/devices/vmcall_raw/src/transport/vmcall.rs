@@ -77,6 +77,46 @@ pub fn vmcall_raw_transport_can_recv() -> Result<bool, ()> {
     Ok(false)
 }
 
+/// Poll the VMM completion status for a pending VMCALL operation.
+///
+/// Shared logic for both send and receive: checks the interrupt flag,
+/// parses data_status from the shared buffer header, and consumes the
+/// flag only after the VMM has written a final (non-zero) status.
+///
+/// Returns `Poll::Pending` if the operation is still in flight,
+/// `Poll::Ready(Ok((payload, data_length)))` on success, or
+/// `Poll::Ready(Err(...))` on VMM error or missing context.
+fn poll_vmcall_completion<'a>(
+    mig_request_id: u64,
+    data_buffer: &'a mut [u8],
+) -> Poll<Result<(&'a mut [u8], u32), VmcallRawError>> {
+    if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
+        if !flag.load(Ordering::SeqCst) {
+            return Poll::Pending;
+        }
+    } else {
+        return Poll::Ready(Err(VmcallRawError::Illegal));
+    }
+
+    let (payload, data_status, data_length) = process_buffer(data_buffer);
+
+    if data_status == 0 {
+        // VMM hasn't written the response yet
+        return Poll::Pending;
+    }
+
+    // Only consume the flag after VMM has written a final status
+    if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
+        flag.store(false, Ordering::SeqCst);
+    }
+
+    if data_status.to_le_bytes()[0] != TDX_VMCALL_VMM_SUCCESS {
+        return Poll::Ready(Err(VmcallRawError::TdVmcallErr));
+    }
+
+    Poll::Ready(Ok((payload, data_length)))
+}
+
 async fn vmcall_service_migtd_send(
     mig_request_id: u64,
     data_buffer: &mut [u8],
@@ -84,34 +124,13 @@ async fn vmcall_service_migtd_send(
     tdx::tdvmcall_migtd_send(mig_request_id, data_buffer, VMCALL_VECTOR)
         .map_err(|_e| VmcallRawError::TdVmcallErr)?;
 
-    poll_fn(|_cx| -> Poll<Result<usize, VmcallRawError>> {
-        if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-            if !flag.load(Ordering::SeqCst) {
-                return Poll::Pending;
-            }
-        } else {
-            return Poll::Ready(Err(VmcallRawError::Illegal));
-        }
-
-        let (_send_buf, data_status, data_length) = process_buffer(data_buffer);
-        let data_status_bytes = data_status.to_le_bytes();
-
-        if data_status == 0 {
-            // VMM hasn't written the response yet
-            return Poll::Pending;
-        }
-
-        // Only consume the flag after VMM has written a final status
-        if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-            flag.store(false, Ordering::SeqCst);
-        }
-
-        if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
-            return Poll::Ready(Err(VmcallRawError::TdVmcallErr));
-        }
-
-        Poll::Ready(Ok(data_length as usize))
-    })
+    poll_fn(
+        |_cx| match poll_vmcall_completion(mig_request_id, data_buffer) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Ok((_payload, data_length))) => Poll::Ready(Ok(data_length as usize)),
+        },
+    )
     .await
 }
 
@@ -130,43 +149,20 @@ async fn vmcall_service_migtd_receive(
     stream: &VmcallRaw,
     data_buffer: &mut [u8],
 ) -> Result<Vec<u8>, VmcallRawError> {
-    tdx::tdvmcall_migtd_receive(stream.addr.transport_context(), data_buffer, VMCALL_VECTOR)
+    let mig_request_id = stream.addr.transport_context();
+    tdx::tdvmcall_migtd_receive(mig_request_id, data_buffer, VMCALL_VECTOR)
         .map_err(|_e| VmcallRawError::TdVmcallErr)?;
 
-    poll_fn(|_cx| -> Poll<Result<Vec<u8>, VmcallRawError>> {
-        let mig_request_id = stream.addr.transport_context();
-        if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-            if !flag.load(Ordering::SeqCst) {
-                return Poll::Pending;
-            }
-        } else {
-            return Poll::Ready(Err(VmcallRawError::Illegal));
-        }
-
-        let (response_buf, data_status, data_length) = process_buffer(data_buffer);
-        let data_status_bytes = data_status.to_le_bytes();
-
-        if data_status == 0 {
-            // VMM hasn't written the response yet
-            return Poll::Pending;
-        }
-
-        // Only consume the flag after VMM has written a final status
-        if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-            flag.store(false, Ordering::SeqCst);
-        }
-
-        if data_status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
-            return Poll::Ready(Err(VmcallRawError::TdVmcallErr));
-        }
-
-        let data = match response_buf.get(..data_length as usize) {
-            Some(slice) => slice.to_vec(),
-            None => return Poll::Ready(Err(VmcallRawError::TdVmcallErr)),
-        };
-
-        Poll::Ready(Ok(data))
-    })
+    poll_fn(
+        |_cx| match poll_vmcall_completion(mig_request_id, data_buffer) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Ok((payload, data_length))) => match payload.get(..data_length as usize) {
+                Some(slice) => Poll::Ready(Ok(slice.to_vec())),
+                None => Poll::Ready(Err(VmcallRawError::TdVmcallErr)),
+            },
+        },
+    )
     .await
 }
 
