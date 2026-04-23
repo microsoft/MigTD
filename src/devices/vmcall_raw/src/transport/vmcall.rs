@@ -110,7 +110,22 @@ fn poll_vmcall_completion<'a>(
         flag.store(false, Ordering::SeqCst);
     }
 
-    if data_status.to_le_bytes()[0] != TDX_VMCALL_VMM_SUCCESS {
+    let status_bytes = data_status.to_le_bytes();
+    if status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
+        // byte[0]=0x02 (not completed), byte[1]=0x03 (VMM cancel)
+        if status_bytes[0] == 0x02 && status_bytes[1] == 0x03 {
+            log::warn!(
+                "VMM canceled migration session (migration_request_id={}, data_status=0x{:x})\n",
+                mig_request_id,
+                data_status
+            );
+            return Poll::Ready(Err(VmcallRawError::VmmCanceled));
+        }
+        log::error!(
+            "vmcall failed (migration_request_id={}, data_status=0x{:x})\n",
+            mig_request_id,
+            data_status
+        );
         return Poll::Ready(Err(VmcallRawError::TdVmcallErr));
     }
 
