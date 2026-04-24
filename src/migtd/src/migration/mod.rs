@@ -50,6 +50,47 @@ macro_rules! impl_read_from_bytes {
     };
 }
 
+/// Implement `read_from_bytes(data_length, payload)` for a struct whose layout
+/// starts with `mig_request_id: u64` followed by optional data bytes.
+/// Accepts either the full struct or just the `mig_request_id` (with the
+/// optional field set to its default).
+///
+/// Usage: `impl_read_from_bytes_with_optional!(Type, field_name, default_value)`
+///
+/// Example:
+///   `impl_read_from_bytes_with_optional!(ReportInfo, reportdata, [0u8; 64])`
+#[cfg(feature = "vmcall-raw")]
+macro_rules! impl_read_from_bytes_with_optional {
+    ($t:ty, $field:ident, $default:expr) => {
+        #[cfg(feature = "vmcall-raw")]
+        impl $t {
+            pub fn read_from_bytes(
+                data_length: u32,
+                payload: &[u8],
+            ) -> core::result::Result<Self, MigrationResult> {
+                let request_id_only = core::mem::size_of::<u64>() as u32;
+                let full_size = core::mem::size_of::<Self>() as u32;
+                if data_length != request_id_only && data_length != full_size {
+                    return Err(MigrationResult::InvalidParameter);
+                }
+                if data_length == full_size {
+                    payload
+                        .pread(0)
+                        .map_err(|_| MigrationResult::InvalidParameter)
+                } else {
+                    let mig_request_id: u64 = payload
+                        .pread(0)
+                        .map_err(|_| MigrationResult::InvalidParameter)?;
+                    Ok(Self {
+                        mig_request_id,
+                        $field: $default,
+                    })
+                }
+            }
+        }
+    };
+}
+
 use tdx_tdcall::TdCallError;
 use tdx_tdcall::TdVmcallError;
 #[cfg(feature = "virtio-serial")]
@@ -143,32 +184,7 @@ pub struct ReportInfo {
 }
 
 #[cfg(feature = "vmcall-raw")]
-impl ReportInfo {
-    /// Accept either full ReportInfo or request_id only (with zero reportdata).
-    pub fn read_from_bytes(
-        data_length: u32,
-        payload: &[u8],
-    ) -> core::result::Result<Self, MigrationResult> {
-        let request_id_only = core::mem::size_of::<u64>() as u32;
-        let full_report = core::mem::size_of::<Self>() as u32;
-        if data_length != request_id_only && data_length != full_report {
-            return Err(MigrationResult::InvalidParameter);
-        }
-        if data_length == full_report {
-            payload
-                .pread(0)
-                .map_err(|_| MigrationResult::InvalidParameter)
-        } else {
-            let mig_request_id: u64 = payload
-                .pread(0)
-                .map_err(|_| MigrationResult::InvalidParameter)?;
-            Ok(ReportInfo {
-                mig_request_id,
-                reportdata: [0u8; 64],
-            })
-        }
-    }
-}
+impl_read_from_bytes_with_optional!(ReportInfo, reportdata, [0u8; 64]);
 
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite)]
@@ -181,7 +197,7 @@ pub struct MigtdDataInfo {
 }
 
 #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-impl_read_from_bytes!(MigtdDataInfo);
+impl_read_from_bytes_with_optional!(MigtdDataInfo, reportdata, [0u8; 64]);
 
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite)]
