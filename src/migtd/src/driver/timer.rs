@@ -42,7 +42,7 @@ pub fn init_timer() {
         TSC_DEADLINE_ENABLED.store(false, Ordering::SeqCst);
         #[cfg(not(feature = "oneshot-apic"))]
         {
-            panic!("Please enable TSC deadline mode for TD");
+            panic_with_guest_crash_reg_report(0xFF, b"Please enable TSC deadline mode for TD");
         }
     }
 
