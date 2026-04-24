@@ -32,7 +32,10 @@ pub fn main() {
     // Initialize VMM logger (outputs to console via td-logger-emu in AzCVMEmu mode)
     let result = init_vmm_logger();
     if result.is_err() {
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to initialize VMM logger");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InitializationError as u64,
+            b"Failed to initialize VMM logger",
+        );
     }
 
     // Init internal heap

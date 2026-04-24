@@ -110,7 +110,10 @@ pub fn runtime_main() {
     {
         let result = init_vmm_logger();
         if result.is_err() {
-            panic_with_guest_crash_reg_report(0xFF, b"Failed to initialize VMM logger");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InitializationError as u64,
+                b"Failed to initialize VMM logger",
+            );
         }
         let _ = create_logarea();
     }
@@ -127,7 +130,10 @@ pub fn runtime_main() {
     #[cfg(not(feature = "vmcall-raw"))]
     {
         if query().is_err() {
-            panic_with_guest_crash_reg_report(0xFF, b"Migration is not supported by VMM");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::Unsupported as u64,
+                b"Migration is not supported by VMM",
+            );
         }
     }
 
@@ -156,7 +162,10 @@ fn do_measurements() {
             log::error!(
                 "Failed to get the event log - firmware did not allocate event log buffer\n"
             );
-            panic_with_guest_crash_reg_report(0xFF, b"Failed to get the event log");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InitializationError as u64,
+                b"Failed to get the event log",
+            );
         }
     };
 
@@ -181,7 +190,10 @@ fn do_measurements() {
             log::error!(
                 "Failed to get the event log - firmware did not allocate event log buffer\n"
             );
-            panic_with_guest_crash_reg_report(0xFF, b"Failed to get the event log");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InitializationError as u64,
+                b"Failed to get the event log",
+            );
         }
     };
 
@@ -207,7 +219,10 @@ fn measure_test_feature(event_log: &mut [u8]) {
     )
     .map_err(|e| {
         log::error!("Failed to log migtd test feature: {:?}\n", e);
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to log migtd test feature");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InitializationError as u64,
+            b"Failed to log migtd test feature",
+        );
     });
 }
 
@@ -218,7 +233,10 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
         Some(policy) => policy,
         None => {
             log::error!("Fail to get policy from CFV\n");
-            panic_with_guest_crash_reg_report(0xFF, b"Fail to get policy from CFV");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Fail to get policy from CFV",
+            );
         }
     };
 
@@ -234,7 +252,10 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
     )
     .map_err(|e| {
         log::error!("Failed to log migration policy: {:?}\n", e);
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to log migration policy");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InitializationError as u64,
+            b"Failed to log migration policy",
+        );
     });
 }
 
@@ -245,7 +266,10 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
         Some(policy) => policy,
         None => {
             log::error!("Fail to get policy from CFV\n");
-            panic_with_guest_crash_reg_report(0xFF, b"Fail to get policy from CFV");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Fail to get policy from CFV",
+            );
         }
     };
 
@@ -263,7 +287,10 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
     )
     .map_err(|e| {
         log::error!("Failed to log migration policy: {:?}\n", e);
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to log migration policy");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InitializationError as u64,
+            b"Failed to log migration policy",
+        );
     });
 }
 
@@ -274,7 +301,10 @@ fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
         Some(policy_issuer_chain) => policy_issuer_chain,
         None => {
             log::error!("Fail to get policy issuer chain from CFV\n");
-            panic_with_guest_crash_reg_report(0xFF, b"Fail to get policy issuer chain from CFV");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Fail to get policy issuer chain from CFV",
+            );
         }
     };
 
@@ -288,7 +318,10 @@ fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
     )
     .map_err(|e| {
         log::error!("Failed to log policy issuer chain: {:?}\n", e);
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to log policy issuer chain");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InitializationError as u64,
+            b"Failed to log policy issuer chain",
+        );
     });
 }
 
@@ -298,7 +331,10 @@ fn get_ca_and_measure(event_log: &mut [u8]) {
         Some(policy_issuer_chain) => policy_issuer_chain,
         None => {
             log::error!("Fail to get root certificate chain from CFV\n");
-            panic_with_guest_crash_reg_report(0xFF, b"Fail to get root certificate chain from CFV");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Fail to get root certificate chain from CFV",
+            );
         }
     };
 
@@ -312,14 +348,20 @@ fn get_ca_and_measure(event_log: &mut [u8]) {
     )
     .map_err(|e| {
         log::error!("Failed to log SGX root CA: {:?}\n", e);
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to log SGX root CA");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InitializationError as u64,
+            b"Failed to log SGX root CA",
+        );
     });
 
     match attestation::root_ca::set_ca(root_ca) {
         Ok(_) => (),
         Err(e) => {
             log::error!("Invalid root certificate: {:?}\n", e);
-            panic_with_guest_crash_reg_report(0xFF, b"Invalid root certificate");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Invalid root certificate",
+            );
         }
     }
 }
@@ -332,26 +374,38 @@ fn initialize_policy() -> String {
         Some(policy) => policy,
         None => {
             log::error!("Fail to get policy from CFV\n");
-            panic_with_guest_crash_reg_report(0xFF, b"Fail to get policy from CFV");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Fail to get policy from CFV",
+            );
         }
     };
     let policy_issuer_chain = match config::get_policy_issuer_chain() {
         Some(chain) => chain,
         None => {
             log::error!("Fail to get policy issuer chain from CFV\n");
-            panic_with_guest_crash_reg_report(0xFF, b"Fail to get policy issuer chain from CFV");
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Fail to get policy issuer chain from CFV",
+            );
         }
     };
     // Initialize and verify the migration policy
     let version = mig_policy::init_policy(policy, policy_issuer_chain).map_err(|e| {
         log::error!("Failed to initialize migration policy: {:?}\n", e);
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to initialize migration policy");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InvalidPolicyError as u64,
+            b"Failed to initialize migration policy",
+        );
     });
 
     // Initialize and verify the migration policy
     let _ = mig_policy::init_tcb_info().map_err(|e| {
         log::error!("Failed to initialize migration TCB info: {:?}\n", e);
-        panic_with_guest_crash_reg_report(0xFF, b"Failed to initialize migration TCB info");
+        panic_with_guest_crash_reg_report(
+            MigrationResult::InvalidPolicyError as u64,
+            b"Failed to initialize migration TCB info",
+        );
     });
 
     version.expect("Failed to initialize migration policy")
