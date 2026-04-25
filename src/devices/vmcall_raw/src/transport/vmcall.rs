@@ -80,53 +80,41 @@ pub fn vmcall_raw_transport_can_recv() -> Result<bool, ()> {
 /// Poll the VMM completion status for a pending VMCALL operation.
 ///
 /// Shared logic for both send and receive: checks the interrupt flag,
-/// parses data_status from the shared buffer header, and consumes the
-/// flag only after the VMM has written a final (non-zero) status.
+/// parses data_status from the shared buffer header, and immediately
+/// consumes the flag so work only happens on a real interrupt.
 ///
 /// Returns `Poll::Pending` if the operation is still in flight,
 /// `Poll::Ready(Ok((payload, data_length)))` on success, or
-/// `Poll::Ready(Err(...))` on VMM error or missing context.
+/// `Poll::Ready(Err(...))` on VMM cancellation or missing context.
 fn poll_vmcall_completion<'a>(
     mig_request_id: u64,
     data_buffer: &'a mut [u8],
 ) -> Poll<Result<(&'a mut [u8], u32), VmcallRawError>> {
     if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-        if !flag.load(Ordering::SeqCst) {
+        if flag.load(Ordering::SeqCst) {
+            flag.store(false, Ordering::SeqCst);
+        } else {
             return Poll::Pending;
         }
     } else {
-        return Poll::Ready(Err(VmcallRawError::Illegal));
+        let _ = Poll::Ready(Err::<(&mut [u8], u32), _>(VmcallRawError::Illegal));
     }
 
     let (payload, data_status, data_length) = process_buffer(data_buffer);
-
-    if data_status == 0 {
-        // VMM hasn't written the response yet
-        return Poll::Pending;
-    }
-
-    // Only consume the flag after VMM has written a final status
-    if let Some(flag) = VMCALL_MIG_CONTEXT_FLAGS.lock().get(&mig_request_id) {
-        flag.store(false, Ordering::SeqCst);
-    }
-
     let status_bytes = data_status.to_le_bytes();
-    if status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
-        // byte[0]=0x02 (not completed), byte[1]=0x03 (VMM cancel)
-        if status_bytes[0] == 0x02 && status_bytes[1] == 0x03 {
-            log::warn!(
-                "VMM canceled migration session (migration_request_id={}, data_status=0x{:x})\n",
-                mig_request_id,
-                data_status
-            );
-            return Poll::Ready(Err(VmcallRawError::VmmCanceled));
-        }
-        log::error!(
-            "vmcall failed (migration_request_id={}, data_status=0x{:x})\n",
+
+    // byte[0]=0x02 (not completed), byte[1]=0x03 (VMM cancel)
+    if status_bytes[0] == 0x02 && status_bytes[1] == 0x03 {
+        log::warn!(
+            "VMM canceled migration session (migration_request_id={}, data_status=0x{:x})\n",
             mig_request_id,
             data_status
         );
-        return Poll::Ready(Err(VmcallRawError::TdVmcallErr));
+        return Poll::Ready(Err(VmcallRawError::VmmCanceled));
+    }
+
+    if status_bytes[0] != TDX_VMCALL_VMM_SUCCESS {
+        return Poll::Pending;
     }
 
     Poll::Ready(Ok((payload, data_length)))
