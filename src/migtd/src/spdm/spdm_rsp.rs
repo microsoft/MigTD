@@ -511,7 +511,15 @@ pub fn handle_exchange_mig_attest_info_req(
     #[cfg(feature = "policy_v2")]
     unsafe {
         let spdm_responder_ex = upcast_mut(responder_context);
-        spdm_responder_ex.servtd_ext = ServtdExt::read_from_bytes(servtd_ext_bytes);
+        spdm_responder_ex.servtd_ext =
+            Some(ServtdExt::read_from_bytes(servtd_ext_bytes).ok_or_else(|| {
+                error!(
+                    "Failed to parse SERVTD_EXT: length {} < expected {}\n",
+                    servtd_ext_bytes.len(),
+                    core::mem::size_of::<ServtdExt>()
+                );
+                SPDM_STATUS_INVALID_MSG_SIZE
+            })?);
     };
 
     // Init TDINFO from src (used for SERVTD_HASH verification)
@@ -1157,7 +1165,15 @@ pub fn handle_exchange_rebind_attest_info_req(
 
     unsafe {
         let spdm_responder_ex = upcast_mut(responder_context);
-        spdm_responder_ex.servtd_ext = ServtdExt::read_from_bytes(&servtd_ext_vec);
+        spdm_responder_ex.servtd_ext =
+            Some(ServtdExt::read_from_bytes(&servtd_ext_vec).ok_or_else(|| {
+                error!(
+                    "Failed to parse SERVTD_EXT: length {} < expected {}\n",
+                    servtd_ext_vec.len(),
+                    core::mem::size_of::<ServtdExt>()
+                );
+                SPDM_STATUS_INVALID_MSG_SIZE
+            })?);
     };
 
     let mut writer = Writer::init(vendor_defined_rsp_payload);
