@@ -127,9 +127,7 @@ pub fn read_servtd_ext(
     let actual_attr = u64::from_le_bytes(cur_servtd_attr);
     if actual_attr != EXPECTED_SERVTD_ATTR {
         log::error!(
-            "SERVTD_ATTR mismatch: expected {:#x}, got {:#x}",
-            EXPECTED_SERVTD_ATTR,
-            actual_attr
+            "SERVTD_ATTR mismatch: expected {EXPECTED_SERVTD_ATTR:#x}, got {actual_attr:#x}"
         );
         return Err(MigrationResult::InvalidParameter);
     }
