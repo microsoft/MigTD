@@ -102,10 +102,10 @@ pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
                 quote.as_mut_ptr() as *mut c_void,
                 &mut quote_size as *mut u32,
             );
-            if result != AttestLibError::Success {
-                log::error!("get_quote_inner failed with error: {:?}\n", result);
+            if result != 0 {
+                log::error!("get_quote_inner failed with error: {:#x}\n", result);
                 return Err(match result {
-                    AttestLibError::Busy => Error::Busy,
+                    x if x == AttestLibError::Busy as i32 => Error::Busy,
                     _ => Error::GetQuote,
                 });
             }
@@ -132,8 +132,8 @@ pub fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, Error> {
             td_report_verify.as_mut_ptr() as *mut c_void,
             &mut report_verify_size as *mut u32,
         );
-        if result != AttestLibError::Success {
-            log::error!("verify_quote_integrity failed with error: {:?}\n", result);
+        if result != 0 {
+            log::error!("verify_quote_integrity failed with error: {:#x}\n", result);
             return Err(Error::VerifyQuote);
         }
     }
@@ -174,9 +174,9 @@ pub fn verify_quote_with_collaterals(
             td_report_verify.as_mut_ptr() as *mut c_void,
             &mut report_verify_size as *mut u32,
         );
-        if result != AttestLibError::Success {
+        if result != 0 {
             log::error!(
-                "verify_quote_integrity_ex failed with error: {:?}\n",
+                "verify_quote_integrity_ex failed with error: {:#x}\n",
                 result
             );
             return Err(Error::VerifyQuote);
