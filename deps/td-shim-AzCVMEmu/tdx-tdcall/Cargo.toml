@@ -14,7 +14,7 @@ original-tdx-tdcall = { package = "tdx-tdcall", path = "../../td-shim/tdx-tdcall
 tdx-mock-data = { path = "../tdx-mock-data", optional = true }
 
 # Core dependencies for emulation
-tokio = { version = "1.50", features = ["net", "sync", "time", "rt", "rt-multi-thread", "io-util"], default-features = false }
+tokio = { version = "1.52", features = ["net", "sync", "time", "rt", "rt-multi-thread", "io-util"], default-features = false }
 log = { version = "0.4", default-features = false }
 
 # Azure CVM specific dependencies
