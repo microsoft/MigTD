@@ -18,7 +18,7 @@ use crate::migration::servtd_ext::read_servtd_ext;
 use crate::spdm;
 use crate::{event_log, migration::transport::*};
 
-use crate::migration::pre_session_data::pre_session_data_exchange;
+use crate::migration::pre_session_data::{pre_session_data_exchange, LogErr};
 
 use crate::{
     driver::ticks::with_timeout,
@@ -240,6 +240,14 @@ pub async fn start_rebinding(
 
     // Exchange policy firstly because of the message size limitation of TLS protocol
     const PRE_SESSION_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
+    let peer_data = Box::pin(with_timeout(
+        PRE_SESSION_TIMEOUT,
+        pre_session_data_exchange(&mut transport),
+    ))
+    .await
+    .log_err("start_rebinding: pre_session_data_exchange timeout")?
+    .log_err("start_rebinding: pre_session_data_exchange")?;
+
     if info.rebinding_src == 1 {
         let local_data =
             InitData::get_from_local(&[0u8; 64]).ok_or(MigrationResult::InvalidParameter)?;
@@ -248,25 +256,7 @@ pub async fn start_rebinding(
             .as_ref()
             .or(Some(&local_data))
             .ok_or(MigrationResult::InvalidParameter)?;
-        let peer_data = Box::pin(with_timeout(
-            PRE_SESSION_TIMEOUT,
-            pre_session_data_exchange(&mut transport),
-        ))
-        .await
-        .map_err(|e| {
-            log::error!(
-                "start_rebinding: pre_session_data_exchange (old) timeout error: {:?}\n",
-                e
-            );
-            e
-        })?
-        .map_err(|e| {
-            log::error!(
-                "start_rebinding: pre_session_data_exchange (old) error: {:?}\n",
-                e
-            );
-            e
-        })?;
+
         #[cfg(not(feature = "spdm_attestation"))]
         rebinding_old_prepare(transport, info, &init_migtd_data, data, peer_data).await?;
 
@@ -280,26 +270,6 @@ pub async fn start_rebinding(
         )
         .await?;
     } else {
-        let peer_data = Box::pin(with_timeout(
-            PRE_SESSION_TIMEOUT,
-            pre_session_data_exchange(&mut transport),
-        ))
-        .await
-        .map_err(|e| {
-            log::error!(
-                "start_rebinding: pre_session_data_exchange (new) timeout error: {:?}\n",
-                e
-            );
-            e
-        })?
-        .map_err(|e| {
-            log::error!(
-                "start_rebinding: pre_session_data_exchange (new) error: {:?}\n",
-                e
-            );
-            e
-        })?;
-
         #[cfg(not(feature = "spdm_attestation"))]
         rebinding_new_prepare(transport, info, data, peer_data).await?;
 
