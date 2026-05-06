@@ -267,6 +267,8 @@ pub enum WaitForRequestResponse {
 
 pub struct MigrationInformation {
     pub mig_info: MigtdMigrationInformation,
+    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+    pub init_migtd_data: Option<crate::migration::rebinding::InitData>,
     #[cfg(all(
         not(feature = "vmcall-raw"),
         any(feature = "vmcall-vsock", feature = "virtio-vsock")
@@ -730,7 +732,8 @@ mod test {
         let mig_info = MigtdMigrationInformation {
             mig_request_id: 0,
             migration_source: 1,
-            _pad: [0, 0, 0, 0, 0, 0, 0],
+            has_init_data: 0,
+            _reserved: [0; 6],
             target_td_uuid: [0, 0, 0, 0],
             binding_handle: 0,
             mig_policy_id: 0,

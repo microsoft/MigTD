@@ -90,6 +90,9 @@ pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>
 pub async fn spdm_requester_transfer_msk(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
+    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))] init_migtd_data: Option<
+        &crate::migration::rebinding::InitData,
+    >,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
     Box::pin(spdm_requester.send_receive_spdm_version()).await?;
@@ -107,6 +110,8 @@ pub async fn spdm_requester_transfer_msk(
         spdm_requester,
         mig_info,
         session_id,
+        #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+        init_migtd_data,
         #[cfg(feature = "policy_v2")]
         peer_data,
     ))
@@ -296,6 +301,9 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
     session_id: u32,
+    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))] init_migtd_data: Option<
+        &crate::migration::rebinding::InitData,
+    >,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> SpdmResult {
     if spdm_requester.common.provision_info.my_pub_key.is_none()
@@ -419,11 +427,27 @@ pub async fn send_and_receive_sdm_migration_attest_info(
             .ok_or(SPDM_STATUS_BUFFER_FULL)?;
     }
 
-    // Init TDINFO: local MigTD TDINFO_STRUCT for SERVTD_HASH verification by peer
+    // Init TDINFO: use VMM-provided initMigtdData if available, otherwise local
     {
-        let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
-            .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
-        let tdinfo_init = report.td_info.as_bytes();
+        #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+        let tdinfo_init_vec;
+        #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+        let tdinfo_init: &[u8] = if let Some(init_data) = init_migtd_data {
+            &init_data.init_tdinfo
+        } else {
+            let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
+                .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            tdinfo_init_vec = report.td_info.as_bytes().to_vec();
+            &tdinfo_init_vec
+        };
+        #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
+        let tdinfo_init = {
+            let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
+                .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            report.td_info.as_bytes().to_vec()
+        };
+        #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
+        let tdinfo_init: &[u8] = &tdinfo_init;
         let tdinfo_init_element = VdmMessageElement {
             element_type: VdmMessageElementType::TdReportInit,
             length: tdinfo_init.len() as u32,
