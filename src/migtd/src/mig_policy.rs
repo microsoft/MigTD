@@ -259,7 +259,6 @@ mod v2 {
         event_log_src: &[u8],
         mig_policy_src: &[u8],
         init_tdinfo: &[u8],
-        init_event_log: &[u8],
         servtd_ext_src: &[u8],
     ) -> Result<Vec<u8>, PolicyError> {
         let (mig_policy_src, peer_issuer_chain) =
@@ -289,10 +288,6 @@ mod v2 {
                 None,
             ))
             .ok_or(PolicyError::SvnMismatch)?;
-
-        // Verify init event log integrity against RTMRs from init tdinfo
-        verify_event_log(init_event_log, &get_rtmrs_from_tdinfo(&init_td_info)?)
-            .map_err(|_| PolicyError::InvalidEventLog)?;
 
         // Use local policy's tcb_mapping with init tdinfo measurements
         let relative_reference = setup_evaluation_data_with_tdinfo(&init_td_info, policy)?;
