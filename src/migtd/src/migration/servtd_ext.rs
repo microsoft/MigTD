@@ -146,6 +146,27 @@ pub fn read_servtd_ext(
     })
 }
 
+/// Verify that CURR_SERVTD_ATTR of the target TD matches the hardcoded expected value.
+///
+/// Per GHCI 1.5: Both source and destination MigTDs must verify this before
+/// any TDG.SERVTD.WR operations (mig_dec_key, mig_version).
+pub fn verify_servtd_attr(
+    binding_handle: u64,
+    target_td_uuid: &[u64],
+) -> Result<(), MigrationResult> {
+    let result = tdcall_servtd_rd(binding_handle, TDCS_FIELD_SERVTD_ATTR, target_td_uuid)?;
+    let actual_attr = result.content;
+    if actual_attr != EXPECTED_SERVTD_ATTR {
+        log::error!(
+            "SERVTD_ATTR mismatch: expected {:#x}, got {:#x}",
+            EXPECTED_SERVTD_ATTR,
+            actual_attr
+        );
+        return Err(MigrationResult::InvalidParameter);
+    }
+    Ok(())
+}
+
 pub fn write_approved_servtd_ext_hash(servtd_ext_hash: &[u8]) -> Result<(), MigrationResult> {
     if servtd_ext_hash.len() != SHA384_DIGEST_SIZE {
         return Err(MigrationResult::InvalidParameter);
