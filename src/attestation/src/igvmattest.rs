@@ -159,7 +159,20 @@ pub fn get_quote_igvm(td_report: &[u8]) -> Result<Vec<u8>, Error> {
 
     log::info!("get_quote_igvm returned quote_size = {}\n", quote_size);
 
-    log::debug!("quote = {:?}\n", &quote[..quote_size as usize]);
+    // Avoid formatting the full quote (5000+ bytes via {:?} materializes a
+    // ~20 KB heap string inside the logger and stalls the TD for seconds,
+    // missing the migration timeout on the host). Log only a small preview.
+    let qlen = quote_size as usize;
+    if qlen >= 16 {
+        log::debug!(
+            "quote: len={} first8={:02x?} last8={:02x?}\n",
+            qlen,
+            &quote[..8],
+            &quote[qlen - 8..qlen]
+        );
+    } else {
+        log::debug!("quote: len={} bytes={:02x?}\n", qlen, &quote[..qlen]);
+    }
 
     quote.truncate(quote_size as usize);
     Ok(quote)
