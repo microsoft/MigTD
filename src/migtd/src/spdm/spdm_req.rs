@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 use crate::mig_policy;
-#[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
-use crate::migration::rebinding::RebindingInfo;
 use crate::{
     migration::{
         data::MigrationSessionKey,
@@ -90,9 +88,6 @@ pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>
 pub async fn spdm_requester_transfer_msk(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
-    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))] init_migtd_data: Option<
-        &crate::migration::rebinding::InitData,
-    >,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
     Box::pin(spdm_requester.send_receive_spdm_version()).await?;
@@ -110,8 +105,6 @@ pub async fn spdm_requester_transfer_msk(
         spdm_requester,
         mig_info,
         session_id,
-        #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-        init_migtd_data,
         #[cfg(feature = "policy_v2")]
         peer_data,
     ))
@@ -301,9 +294,6 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
     session_id: u32,
-    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))] init_migtd_data: Option<
-        &crate::migration::rebinding::InitData,
-    >,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> SpdmResult {
     if spdm_requester.common.provision_info.my_pub_key.is_none()
@@ -427,27 +417,26 @@ pub async fn send_and_receive_sdm_migration_attest_info(
             .ok_or(SPDM_STATUS_BUFFER_FULL)?;
     }
 
-    // Init TDINFO: use VMM-provided initMigtdData if available, otherwise local
+    // Init TDINFO: use VMM-provided init_td_info if available, otherwise local
     {
         #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-        let tdinfo_init_vec;
+        let tdinfo_init_local;
         #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-        let tdinfo_init: &[u8] = if let Some(init_data) = init_migtd_data {
-            &init_data.init_tdinfo
+        let tdinfo_init: &[u8] = if let Some(td_info) = mig_info.init_td_info_if_present() {
+            td_info
         } else {
-            let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
+            tdinfo_init_local = crate::migration::local_init_td_info()
                 .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            tdinfo_init_vec = report.td_info.as_bytes().to_vec();
-            &tdinfo_init_vec
+            &tdinfo_init_local
         };
         #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
-        let tdinfo_init = {
+        let tdinfo_init_owned = {
             let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
                 .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
             report.td_info.as_bytes().to_vec()
         };
         #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
-        let tdinfo_init: &[u8] = &tdinfo_init;
+        let tdinfo_init: &[u8] = &tdinfo_init_owned;
         let tdinfo_init_element = VdmMessageElement {
             element_type: VdmMessageElementType::TdReportInit,
             length: tdinfo_init.len() as u32,
@@ -913,7 +902,7 @@ async fn send_and_receive_sdm_exchange_migration_info(
 #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
 pub async fn send_and_receive_sdm_rebind_attest_info(
     spdm_requester: &mut RequesterContext,
-    rebind_info: &RebindingInfo,
+    rebind_info: &MigtdMigrationInformation,
     session_id: u32,
     peer_data: Vec<u8>,
 ) -> SpdmResult {
@@ -1015,9 +1004,19 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
     //SERVTD_EXT
     let binding_handle = rebind_info.binding_handle;
     let target_td_uuid = &rebind_info.target_td_uuid;
-    let local_data = crate::migration::rebinding::InitData::get_from_local(&[0u8; 64])
-        .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-    let init_migtd_data = rebind_info.init_migtd_data.as_ref().unwrap_or(&local_data);
+
+    // Resolve the initial TDINFO_STRUCT: use VMM-provided bytes when present,
+    // otherwise fall back to the local MigTD's self-report.
+    let local_td_info;
+    let init_td_info: &[u8; crate::migration::TD_INFO_SIZE] =
+        match rebind_info.init_td_info_if_present() {
+            Some(t) => t,
+            None => {
+                local_td_info = crate::migration::local_init_td_info()
+                    .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                &local_td_info
+            }
+        };
 
     let servtd_ext = read_servtd_ext(binding_handle, target_td_uuid)
         .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
@@ -1033,10 +1032,10 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
         .extend_from_slice(servtd_ext.as_bytes())
         .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
-    //TD info init (per GHCI 1.5: MIGTD_DATA type 0 = TDINFO_STRUCT)
+    //TD info init (per GHCI 1.5: TDINFO_STRUCT)
     // NOTE: VdmMessageElementType::TdReportInit name retained for wire compatibility;
     // payload is now TDINFO_STRUCT, not full TDREPORT.
-    let tdinfo_init = &init_migtd_data.init_tdinfo;
+    let tdinfo_init: &[u8] = init_td_info;
     let tdreport_init_element = VdmMessageElement {
         element_type: VdmMessageElementType::TdReportInit,
         length: tdinfo_init.len() as u32,
@@ -1051,7 +1050,7 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
     //mig policy init hash
     // Per GHCI 1.5: policy_key is in tdinfo.mrowner; sent as init_policy_hash.
     // NOTE: MigPolicyInit VDM element name retained for wire compatibility.
-    let mig_policy_init_hash = init_migtd_data.mrowner().to_vec();
+    let mig_policy_init_hash = crate::migration::td_info_mrowner(init_td_info);
     let mig_policy_init_element = VdmMessageElement {
         element_type: VdmMessageElementType::MigPolicyInit,
         length: mig_policy_init_hash.len() as u32,
@@ -1060,7 +1059,7 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
     cnt += writer
-        .extend_from_slice(&mig_policy_init_hash)
+        .extend_from_slice(mig_policy_init_hash)
         .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
     spdm_requester.common.reset_buffer_via_request_code(
@@ -1222,7 +1221,7 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
 #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
 pub async fn send_and_receive_sdm_rebind_info(
     spdm_requester: &mut RequesterContext,
-    rebind_info: &RebindingInfo,
+    rebind_info: &MigtdMigrationInformation,
     session_id: Option<u32>,
 ) -> SpdmResult {
     use crate::migration::rebinding::{approve_rebinding, create_rebind_token};

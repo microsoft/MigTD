@@ -2,9 +2,6 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-#[cfg(all(feature = "main", feature = "vmcall-raw", feature = "policy_v2"))]
-use crate::migration::rebinding::RebindingInfo;
-
 use super::*;
 #[cfg(feature = "vmcall-raw")]
 use bitfield_struct::bitfield;
@@ -258,7 +255,7 @@ pub struct RequestDataBuffer<'a> {
 pub enum WaitForRequestResponse {
     StartMigration(MigrationInformation),
     #[cfg(all(feature = "main", feature = "policy_v2"))]
-    StartRebinding(RebindingInfo),
+    StartRebinding(MigtdMigrationInformation),
     GetTdReport(ReportInfo),
     EnableLogArea(EnableLogAreaInfo),
     #[cfg(feature = "policy_v2")]
@@ -267,8 +264,6 @@ pub enum WaitForRequestResponse {
 
 pub struct MigrationInformation {
     pub mig_info: MigtdMigrationInformation,
-    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-    pub init_migtd_data: Option<crate::migration::rebinding::InitData>,
     #[cfg(all(
         not(feature = "vmcall-raw"),
         any(feature = "vmcall-vsock", feature = "virtio-vsock")
