@@ -4,8 +4,6 @@
 
 pub mod data;
 pub mod event;
-#[cfg(feature = "policy_v2")]
-pub mod init_data;
 pub mod logging;
 #[cfg(feature = "policy_v2")]
 pub mod pre_session_data;
@@ -145,6 +143,61 @@ pub const STREAM_SOCKET_INFO_HOB_GUID: Guid = Guid::from_fields(
     &[0x2f, 0x3d, 0x2e, 0x8b, 0x1e, 0xe],
 );
 
+/// Size in bytes of the TDX-module `TdInfo` struct (TDINFO_STRUCT per the
+/// TDX module ABI and GHCI 1.5 MIGTD_DATA `initMigtdData`).
+pub const TD_INFO_SIZE: usize = core::mem::size_of::<tdx_tdcall::tdreport::TdInfo>();
+
+/// Offset of the `mrowner` field inside a TDINFO_STRUCT.
+/// Layout: attributes(8) + xfam(8) + mrtd(48) + mrconfig_id(48).
+pub const TD_INFO_MROWNER_OFFSET: usize = 8 + 8 + 48 + 48;
+/// Offset of the `mrownerconfig` field inside a TDINFO_STRUCT.
+pub const TD_INFO_MROWNERCONFIG_OFFSET: usize = TD_INFO_MROWNER_OFFSET + 48;
+/// Size of `mrowner` / `mrownerconfig` (SHA-384 digest size).
+pub const TD_INFO_OWNER_FIELD_SIZE: usize = 48;
+
+// Compile-time guard: catch any drift in the upstream TdInfo layout.
+const _: () = {
+    assert!(TD_INFO_SIZE == 512);
+    assert!(TD_INFO_MROWNER_OFFSET == 112);
+    assert!(TD_INFO_MROWNERCONFIG_OFFSET == 160);
+};
+
+/// Read `mrowner` from a raw TDINFO_STRUCT byte buffer.
+pub fn td_info_mrowner(td_info: &[u8; TD_INFO_SIZE]) -> &[u8; TD_INFO_OWNER_FIELD_SIZE] {
+    // Slice into a fixed-size array reference; bounds are guaranteed by the
+    // compile-time assertions above.
+    (&td_info[TD_INFO_MROWNER_OFFSET..TD_INFO_MROWNER_OFFSET + TD_INFO_OWNER_FIELD_SIZE])
+        .try_into()
+        .expect("static slice bounds")
+}
+
+/// Read `mrownerconfig` from a raw TDINFO_STRUCT byte buffer.
+pub fn td_info_mrownerconfig(td_info: &[u8; TD_INFO_SIZE]) -> &[u8; TD_INFO_OWNER_FIELD_SIZE] {
+    (&td_info
+        [TD_INFO_MROWNERCONFIG_OFFSET..TD_INFO_MROWNERCONFIG_OFFSET + TD_INFO_OWNER_FIELD_SIZE])
+        .try_into()
+        .expect("static slice bounds")
+}
+
+/// Fetch the local MigTD's TDINFO_STRUCT bytes via `tdcall_report`.
+/// Used as a fallback when no VMM-provided `init_td_info` is available.
+#[cfg(all(feature = "main", feature = "vmcall-raw", feature = "policy_v2"))]
+pub fn local_init_td_info() -> Result<[u8; TD_INFO_SIZE], MigrationResult> {
+    let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
+        .map_err(|_| MigrationResult::TdxModuleError)?;
+    let mut buf = [0u8; TD_INFO_SIZE];
+    buf.copy_from_slice(report.td_info.as_bytes());
+    Ok(buf)
+}
+
+/// Size of the fixed `MigtdMigrationInformation` header preceding the
+/// optional `init_td_info` tail (per GHCI 1.5 StartMigration layout).
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+const MIGTD_MIGRATION_INFO_HEADER_SIZE: usize = {
+    // u64(8) + u8(1) + u8(1) + [u8;6] + [u64;4](32) + u64(8)
+    8 + 1 + 1 + 6 + 32 + 8
+};
+
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite, Clone)]
 #[cfg_attr(
@@ -178,6 +231,16 @@ pub struct MigtdMigrationInformation {
     // Unique identifier for the communication between MigTD and VMM
     // It can be retrieved from MIGTD_STREAM_SOCKET_INFO HOB
     pub communication_id: u64,
+
+    // Per GHCI 1.5: optional 512-byte TDINFO_STRUCT of the initial MigTD.
+    // Present when `has_init_data == 1`. Use `init_td_info_if_present()` for
+    // safe access. Sent by the VMM as the raw `TdInfo` bytes (no envelope).
+    //
+    // NOTE: literal `512` (== TD_INFO_SIZE) is required here because
+    // scroll-derive 0.10.5 only accepts integer literals as array length.
+    // A const-time assertion below guards against drift.
+    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+    pub init_td_info: [u8; 512],
 }
 
 #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
@@ -262,22 +325,20 @@ impl MigtdMigrationInformation {
         data_length: u32,
         payload: &[u8],
     ) -> core::result::Result<Self, MigrationResult> {
-        let fixed_size = core::mem::size_of::<Self>() as u32;
-        if (data_length as usize) < fixed_size as usize {
+        let full_size = core::mem::size_of::<Self>() as u32;
+        if data_length != full_size {
             return Err(MigrationResult::InvalidParameter);
         }
-        let info: Self = payload
+        let parsed: Self = payload
             .pread(0)
             .map_err(|_| MigrationResult::InvalidParameter)?;
-        // Reject trailing bytes unless has_init_data is set
-        if data_length > fixed_size && info.has_init_data != 1 {
+        if parsed._reserved != [0; 6] {
             return Err(MigrationResult::InvalidParameter);
         }
-        // Reject reserved fields that must be zero
-        if info._reserved != [0; 6] {
+        if parsed.has_init_data != 0 {
             return Err(MigrationResult::InvalidParameter);
         }
-        Ok(info)
+        Ok(parsed)
     }
 }
 
