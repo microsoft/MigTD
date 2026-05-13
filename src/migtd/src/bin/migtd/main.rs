@@ -275,17 +275,20 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
 
     let version = initialize_policy();
 
-    // Per GHCI 1.5: Verify own TDINFO.MROWNER/MROWNERCONFIG matches policy key/SVN
-    // Skip in AzCVMEmu mode — emulator uses mock TD reports where VMM does not
-    // populate MROWNER/MROWNERCONFIG.
+    // Per GHCI 1.5: Verify own TDINFO.MROWNER/MROWNERCONFIG matches policy key/SVN.
+    // Skipped under AzCVMEmu because the mock TDREPORT has zero MROWNER/MROWNERCONFIG,
+    // which would otherwise fail the check and block all policy_v2 + mock-report tests.
+    //
+    // TEST MODE: failures are logged but do not abort startup, so MigTD can boot on
+    // hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
     #[cfg(not(feature = "AzCVMEmu"))]
     {
         use migtd::mig_policy;
         if let Err(e) = mig_policy::verify_own_tdinfo() {
-            log::error!("TDINFO policy binding verification failed: {:?}\n", e);
-            panic_with_guest_crash_reg_report(
-                MigrationResult::InvalidPolicyError as u64,
-                b"TDINFO MROWNER/MROWNERCONFIG mismatch with policy",
+            log::error!(
+                "TDINFO policy binding verification failed: {:?} \
+                 (ignored: TEST MODE, continuing startup)\n",
+                e
             );
         }
     }

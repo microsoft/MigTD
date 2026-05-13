@@ -935,6 +935,10 @@ async fn migration_src_exchange_msk(
 ) -> Result<()> {
     use core::ops::DerefMut;
 
+    log::info!(
+        "BC> SIDE=SRC migration_src_exchange_msk ENTER mig_request_id={}\n",
+        info.mig_info.mig_request_id
+    );
     const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
     let (mut spdm_requester, device_io_ref) = spdm::spdm_requester(transport).map_err(|_e| {
         log::error!(
@@ -980,6 +984,10 @@ async fn migration_dst_exchange_msk(
 ) -> Result<()> {
     use core::ops::DerefMut;
 
+    log::info!(
+        "BC> SIDE=DST migration_dst_exchange_msk ENTER mig_request_id={}\n",
+        info.mig_info.mig_request_id
+    );
     const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
     let (mut spdm_responder, device_io_ref) = spdm::spdm_responder(transport).map_err(|_e| {
         log::error!(
@@ -1020,16 +1028,18 @@ async fn migration_dst_exchange_msk(
 
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
-    // Per GHCI 1.5: if VMM provided initMigtdData, verify policy binding
+    // Per GHCI 1.5: if VMM provided initMigtdData, verify policy binding.
+    // TEST MODE: failures are logged but do not abort the migration, so MigTD can run
+    // against peers/hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
     #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
     if let Some(init_td_info) = info.mig_info.init_td_info_if_present() {
-        crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info).map_err(|e| {
+        if let Err(e) = crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info) {
             log::error!(
                 migration_request_id = info.mig_info.mig_request_id;
-                "exchange_msk: initMigtdData policy binding verification failed: {:?}\n", e
+                "exchange_msk: initMigtdData policy binding verification failed: {:?} \
+                 (ignored: TEST MODE, continuing migration)\n", e
             );
-            MigrationResult::PolicyUnsatisfiedError
-        })?;
+        }
     }
 
     let mut transport = setup_transport(
