@@ -250,8 +250,10 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
 
     let version = initialize_policy();
 
-    // Per GHCI 1.5: Verify own TDINFO.MROWNER/MROWNERCONFIG matches policy key/SVN
-    #[cfg(feature = "vmcall-raw")]
+    // Per GHCI 1.5: Verify own TDINFO.MROWNER/MROWNERCONFIG matches policy key/SVN.
+    // Skipped under AzCVMEmu because the mock TDREPORT has zero MROWNER/MROWNERCONFIG,
+    // which would otherwise fail the check and block all policy_v2 + mock-report tests.
+    #[cfg(all(feature = "vmcall-raw", not(feature = "AzCVMEmu")))]
     {
         use migtd::driver::vmcall_raw::panic_with_guest_crash_reg_report;
         use migtd::mig_policy;
