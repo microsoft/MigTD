@@ -253,6 +253,7 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
     // Per GHCI 1.5: Verify own TDINFO.MROWNER/MROWNERCONFIG matches policy key/SVN
     #[cfg(feature = "vmcall-raw")]
     {
+        use migtd::driver::vmcall_raw::panic_with_guest_crash_reg_report;
         use migtd::mig_policy;
         if let Err(e) = mig_policy::verify_own_tdinfo() {
             log::error!("TDINFO policy binding verification failed: {:?}\n", e);

@@ -743,6 +743,7 @@ mod v2 {
 
     /// Per GHCI 1.5: Verify initMigtdData.MROWNER matches own policy signer key hash
     /// and initMigtdData.MROWNERCONFIG <= own policy SVN.
+    #[cfg(all(feature = "main", feature = "vmcall-raw"))]
     pub fn verify_init_migtd_data_policy_binding(
         init_data: &crate::migration::rebinding::InitData,
     ) -> Result<(), PolicyError> {
