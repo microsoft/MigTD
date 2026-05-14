@@ -9,7 +9,7 @@ use crate::binding::verify_quote_integrity_ex;
 use crate::binding::get_quote as get_quote_inner;
 
 use crate::{
-    binding::{init_heap, verify_quote_integrity, QveCollateral},
+    binding::{init_heap, peak_heap_used, verify_quote_integrity, QveCollateral},
     root_ca::ROOT_CA_PUBLIC_KEY,
     Error, TD_VERIFIED_REPORT_SIZE,
 };
@@ -142,6 +142,7 @@ pub fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, Error> {
             td_report_verify.as_mut_ptr() as *mut c_void,
             &mut report_verify_size as *mut u32,
         );
+        log_peak_heap_used("verify_quote_integrity");
         if result != 0 {
             log::error!("verify_quote_integrity failed with error: {:#x}\n", result);
             return Err(Error::VerifyQuote);
@@ -184,6 +185,7 @@ pub fn verify_quote_with_collaterals(
             td_report_verify.as_mut_ptr() as *mut c_void,
             &mut report_verify_size as *mut u32,
         );
+        log_peak_heap_used("verify_quote_integrity_ex");
         if result != 0 {
             log::error!(
                 "verify_quote_integrity_ex failed with error: {:#x}\n",
@@ -209,4 +211,20 @@ fn mask_verified_report_values(report: &mut [u8]) {
     for (i, j) in R_ATTRIBUTES.zip(R_ATTRIBUTES_MASK) {
         report[i] &= report[j]
     }
+}
+
+/// Read tlibc's high-water mark and log it alongside the heap capacity, so
+/// migrations on real platforms produce a trace of how close `ATTEST_HEAP_SIZE`
+/// is being driven. The C verifier wrapper aborts (raw `ud2`) on OOM with no
+/// return code, so per-call peak is the only direct signal available.
+fn log_peak_heap_used(label: &str) {
+    let peak = peak_heap_used();
+    log::info!(
+        "ATTEST g_peak_heap_used after {} = 0x{:x} ({} KiB) of 0x{:x} ({} KiB)\n",
+        label,
+        peak,
+        peak / 1024,
+        ATTEST_HEAP_SIZE,
+        ATTEST_HEAP_SIZE / 1024
+    );
 }

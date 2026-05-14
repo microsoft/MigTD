@@ -129,6 +129,30 @@ mod attest_lib_binding {
         /// @return false: Failed to init heap for internal use. E.g. the parameter is incorrect, etc.
         pub fn init_heap(p_td_heap_base: *const ::core::ffi::c_void, td_heap_size: u32) -> i32;
     }
+
+    // tlibc sbrk's monotonically-non-decreasing high-water mark of the
+    // bounded heap. Defined in `deps/linux-sgx/sdk/tlibc/gen/sbrk.c`.
+    //
+    // Not available in `AzCVMEmu` builds because the fixup script strips
+    // the entire tlibc archive (those builds use host glibc malloc instead
+    // of a bounded arena, so the metric is not meaningful).
+    #[cfg(not(feature = "AzCVMEmu"))]
+    extern "C" {
+        static g_peak_heap_used: usize;
+    }
+
+    /// Return the current value of tlibc sbrk's peak-heap-used counter,
+    /// or 0 in `AzCVMEmu` builds where the bounded allocator is not linked.
+    pub fn peak_heap_used() -> usize {
+        #[cfg(not(feature = "AzCVMEmu"))]
+        unsafe {
+            g_peak_heap_used
+        }
+        #[cfg(feature = "AzCVMEmu")]
+        {
+            0
+        }
+    }
 }
 
 #[cfg(feature = "test")]
@@ -178,6 +202,10 @@ mod null_binding {
         _p_td_heap_base: *const ::core::ffi::c_void,
         _td_heap_size: u32,
     ) -> i32 {
+        0
+    }
+
+    pub fn peak_heap_used() -> usize {
         0
     }
 }
