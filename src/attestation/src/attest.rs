@@ -27,7 +27,16 @@ compile_error!(
 
 pub const TD_QUOTE_SIZE: usize = 0x2000;
 const TD_REPORT_VERIFY_SIZE: usize = 1024;
-const ATTEST_HEAP_SIZE: usize = 0x80000;
+// NOTE: bumped from 0x80000 (512 KiB) to 0x200000 (2 MiB).
+// Each verify_quote_integrity_ex() call allocates from this private heap and
+// the dlmalloc heap does not move sbrk down (limited defragmentation after
+// each free() calls) to original position after the call returns. With
+// LOCAL_TCB_INFO caching removed (commit 3c44ea9), each migration now does
+// up to 4 verify_quote calls in the same MigTD process (loopback), which can
+// exhaust the 512 KiB heap at 3rd call due to statics and fragmentation in
+// heap, and trigger an internal abort (#UD) inside the C verifier lib with
+// no error code returned.
+const ATTEST_HEAP_SIZE: usize = 0x200000;
 
 /// C-compatible version of Collateral with null-terminated strings
 #[derive(Debug)]
