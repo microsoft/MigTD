@@ -146,7 +146,11 @@ pub const STREAM_SOCKET_INFO_HOB_GUID: Guid = Guid::from_fields(
 );
 
 #[repr(C)]
-#[derive(Debug, Pread, Pwrite, Clone, Default)]
+#[derive(Debug, Pread, Pwrite, Clone)]
+#[cfg_attr(
+    not(all(feature = "vmcall-raw", feature = "policy_v2")),
+    derive(Default)
+)]
 pub struct MigtdMigrationInformation {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
@@ -176,7 +180,83 @@ pub struct MigtdMigrationInformation {
     pub communication_id: u64,
 }
 
-#[cfg(feature = "vmcall-raw")]
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+impl Default for MigtdMigrationInformation {
+    fn default() -> Self {
+        Self {
+            mig_request_id: 0,
+            migration_source: 0,
+            has_init_data: 0,
+            _reserved: [0; 6],
+            target_td_uuid: [0; 4],
+            binding_handle: 0,
+            init_td_info: [0u8; TD_INFO_SIZE],
+        }
+    }
+}
+
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+impl MigtdMigrationInformation {
+    /// Safe accessor for the optional initial TDINFO_STRUCT. Returns `Some`
+    /// only when the VMM signaled `has_init_data == 1`.
+    pub fn init_td_info_if_present(&self) -> Option<&[u8; TD_INFO_SIZE]> {
+        if self.has_init_data == 1 {
+            Some(&self.init_td_info)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+impl MigtdMigrationInformation {
+    /// Parse a vmcall-raw + policy_v2 wire payload of either:
+    /// - 56 bytes (short form, no `init_td_info` tail, `has_init_data == 0`), or
+    /// - 568 bytes (full form, with `init_td_info` tail, `has_init_data == 1`).
+    /// Used for both StartMigration and StartRebinding (the wire layouts are
+    /// identical; byte 8 encodes whether this MigTD is the source/initiator).
+    pub fn read_from_bytes(
+        data_length: u32,
+        payload: &[u8],
+    ) -> core::result::Result<Self, MigrationResult> {
+        let short_size = MIGTD_MIGRATION_INFO_HEADER_SIZE as u32;
+        let full_size = core::mem::size_of::<Self>() as u32;
+        if data_length != short_size && data_length != full_size {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        if (payload.len() as u32) < data_length {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        let parsed: Self = if data_length == full_size {
+            payload
+                .pread(0)
+                .map_err(|_| MigrationResult::InvalidParameter)?
+        } else {
+            // Short form: zero-pad to full_size and pread; tail field's default
+            // is `[0u8; TD_INFO_SIZE]` so zero-fill is correct.
+            let mut padded = alloc::vec![0u8; full_size as usize];
+            padded[..short_size as usize].copy_from_slice(&payload[..short_size as usize]);
+            padded
+                .as_slice()
+                .pread(0)
+                .map_err(|_| MigrationResult::InvalidParameter)?
+        };
+
+        if parsed._reserved != [0; 6] {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        if parsed.has_init_data > 1 {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        let has_optional = data_length == full_size;
+        if (parsed.has_init_data == 1) != has_optional {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        Ok(parsed)
+    }
+}
+
+#[cfg(all(feature = "vmcall-raw", not(feature = "policy_v2")))]
 impl MigtdMigrationInformation {
     pub fn read_from_bytes(
         data_length: u32,
