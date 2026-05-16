@@ -14,6 +14,7 @@ use tdx_tdcall::tdx::{tdcall_servtd_rebind_approve, tdcall_vm_write};
 
 use crate::migration::servtd_ext::read_servtd_ext;
 use crate::migration::transport::*;
+use crate::migration::transport::*;
 #[cfg(feature = "spdm_attestation")]
 use crate::spdm;
 

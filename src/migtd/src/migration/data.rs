@@ -353,9 +353,8 @@ fn create_migration_information(
     mig_socket_hob: Option<&[u8]>,
     policy_info_hob: Option<&[u8]>,
 ) -> Option<MigrationInformation> {
-    let mig_info = hob_lib::get_guid_data(mig_info_hob?)?
-        .pread::<MigtdMigrationInformation>(0)
-        .ok()?;
+    let mig_info_data = hob_lib::get_guid_data(mig_info_hob?)?;
+    let mig_info = mig_info_data.pread::<MigtdMigrationInformation>(0).ok()?;
 
     #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
     let mig_socket_info = hob_lib::get_guid_data(mig_socket_hob?)?
