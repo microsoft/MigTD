@@ -56,6 +56,7 @@ impl PreSessionMessage {
     }
 }
 
+#[repr(C)]
 pub(super) struct HelloPacketPayload {
     magic_word: [u8; 4],
     lowest_supported_version: u16,
