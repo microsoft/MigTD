@@ -144,7 +144,7 @@ pub enum State {
     Closed,
     Listen,
     RequestSend,
-    Establised,
+    Established,
     Closing,
 }
 
