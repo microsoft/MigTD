@@ -30,7 +30,7 @@ use log::error;
 
 use crate::spdm::{
     build_report_data, gen_quote_spdm, spdm_verify_quote, verify_report_data_binding,
-    vmcall_msg::VmCallTransportEncap, *,
+    verify_tdreport_data_binding, vmcall_msg::VmCallTransportEncap, *,
 };
 use spdmlib::{
     common::{self, *},
@@ -438,7 +438,10 @@ pub fn handle_exchange_mig_attest_info_req(
     log::info!("BC> RSP-ATT-01 gen_quote_spdm (dst)\n");
     //quote dst
     let quote_dst = gen_quote_spdm(&report_data)?;
-    log::info!("BC> RSP-ATT-02 gen_quote_spdm done, len={}\n", quote_dst.len());
+    log::info!(
+        "BC> RSP-ATT-02 gen_quote_spdm done, len={}\n",
+        quote_dst.len()
+    );
     // Self-quote verification is only needed for policy v1, which uses
     // verified_report_local in authenticate_policy(). Policy v2 re-verifies
     // the quote internally via authenticate_remote().
@@ -1141,6 +1144,18 @@ pub fn handle_exchange_rebind_attest_info_req(
         if let Err(e) = &policy_check_result {
             error!("Policy v2 check failed, below is the detail information:\n");
             error!("{:x?}\n", e);
+            let session = responder_context
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
+
+        // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
+        let verified_report_peer = policy_check_result.unwrap();
+        if verify_tdreport_data_binding(&verified_report_peer, b"MigTDReq", &th1).is_err() {
+            error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = responder_context
                 .common
                 .get_session_via_id(session_id)

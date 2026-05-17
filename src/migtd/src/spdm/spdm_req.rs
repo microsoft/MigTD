@@ -10,7 +10,8 @@ use crate::{
     },
     spdm::{
         build_report_data, gen_quote_spdm, spdm_rsp::SECRET_ASYM_IMPL_INSTANCE, spdm_verify_quote,
-        verify_report_data_binding, vmcall_msg::VmCallTransportEncap, *,
+        verify_report_data_binding, verify_tdreport_data_binding, vmcall_msg::VmCallTransportEncap,
+        *,
     },
 };
 use async_io::{AsyncRead, AsyncWrite};
@@ -115,7 +116,9 @@ pub async fn spdm_requester_transfer_msk(
         peer_data,
     ))
     .await?;
-    log::info!("BC> REQ-07 send_and_receive_sdm_migration_attest_info OK; send_receive_spdm_finish\n");
+    log::info!(
+        "BC> REQ-07 send_and_receive_sdm_migration_attest_info OK; send_receive_spdm_finish\n"
+    );
 
     Box::pin(spdm_requester.send_receive_spdm_finish(Some(0xff), session_id)).await?;
     log::info!("BC> REQ-08 send_receive_spdm_finish OK; send_and_receive_sdm_exchange_migration_info BEGIN\n");
@@ -344,7 +347,10 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     log::info!("BC> REQ-ATT-01 gen_quote_spdm (src)\n");
     //quote src
     let quote_src = gen_quote_spdm(&report_data)?;
-    log::info!("BC> REQ-ATT-02 gen_quote_spdm done, len={}\n", quote_src.len());
+    log::info!(
+        "BC> REQ-ATT-02 gen_quote_spdm done, len={}\n",
+        quote_src.len()
+    );
     // Self-quote verification is only needed for policy v1, which uses
     // verified_report_local in authenticate_policy(). Policy v2 re-verifies
     // the quote internally via authenticate_remote().
@@ -493,7 +499,10 @@ pub async fn send_and_receive_sdm_migration_attest_info(
             &mut receive_buffer,
         )
         .await?;
-    log::info!("BC> REQ-ATT-04 attest_info VDM response received, len={}\n", response.len());
+    log::info!(
+        "BC> REQ-ATT-04 attest_info VDM response received, len={}\n",
+        response.len()
+    );
 
     // Format checks
     let mut reader = Reader::init(response);
@@ -839,7 +848,9 @@ async fn send_and_receive_sdm_exchange_migration_info(
     send_used += request_payload.spdm_encode(&mut spdm_requester.common, &mut writer)?;
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
-    log::info!("BC> REQ-MIG-01 send_receive_spdm_vendor_defined_request_ex (exchange_migration_info)\n");
+    log::info!(
+        "BC> REQ-MIG-01 send_receive_spdm_vendor_defined_request_ex (exchange_migration_info)\n"
+    );
     let response = spdm_requester
         .send_receive_spdm_vendor_defined_request_ex(
             session_id,
@@ -847,7 +858,10 @@ async fn send_and_receive_sdm_exchange_migration_info(
             &mut receive_buffer,
         )
         .await?;
-    log::info!("BC> REQ-MIG-02 exchange_migration_info VDM response received, len={}\n", response.len());
+    log::info!(
+        "BC> REQ-MIG-02 exchange_migration_info VDM response received, len={}\n",
+        response.len()
+    );
 
     // Format checks
     let mut reader = Reader::init(response);
@@ -1229,6 +1243,18 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
         if let Err(e) = &policy_check_result {
             error!("Policy v2 check failed, below is the detail information:\n");
             error!("{:x?}\n", e);
+            let session = spdm_requester
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
+
+        // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
+        let verified_report_peer = policy_check_result.unwrap();
+        if verify_tdreport_data_binding(&verified_report_peer, b"MigTDRsp", &th1).is_err() {
+            error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = spdm_requester
                 .common
                 .get_session_via_id(session_id)
