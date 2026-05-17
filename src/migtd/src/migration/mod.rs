@@ -200,6 +200,10 @@ const MIGTD_MIGRATION_INFO_HEADER_SIZE: usize = {
 
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite, Clone)]
+#[cfg_attr(
+    not(all(feature = "vmcall-raw", feature = "policy_v2")),
+    derive(Default)
+)]
 pub struct MigtdMigrationInformation {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
@@ -239,6 +243,7 @@ pub struct MigtdMigrationInformation {
     pub init_td_info: [u8; 512],
 }
 
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
 impl Default for MigtdMigrationInformation {
     fn default() -> Self {
         Self {
@@ -248,11 +253,6 @@ impl Default for MigtdMigrationInformation {
             _reserved: [0; 6],
             target_td_uuid: [0; 4],
             binding_handle: 0,
-            #[cfg(not(feature = "vmcall-raw"))]
-            mig_policy_id: 0,
-            #[cfg(not(feature = "vmcall-raw"))]
-            communication_id: 0,
-            #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
             init_td_info: [0u8; TD_INFO_SIZE],
         }
     }
