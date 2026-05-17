@@ -225,6 +225,40 @@ pub fn verify_report_data_binding(
     verify_peer_report_data(supplemental_data, &report_data)
 }
 
+/// Verify that a TDREPORT's REPORTDATA is bound to the expected prefix and TH1.
+///
+/// This is the rebind-path counterpart of [`verify_report_data_binding`], which
+/// operates on quote supplemental data.  In the rebind flow the peer provides a
+/// raw TDREPORT instead of a quote; the REPORTDATA field lives at a different
+/// offset (128 vs 520).
+pub fn verify_tdreport_data_binding(
+    tdreport_bytes: &[u8],
+    peer_prefix: &[u8],
+    th1: &SpdmDigestStruct,
+) -> Result<(), MigrationResult> {
+    // REPORTDATA sits inside ReportMac at offset 128, 64 bytes total;
+    // the first 48 bytes hold SHA384(prefix || TH1).
+    const TDREPORT_REPORT_DATA_OFFSET: usize = 128;
+    const REPORT_DATA_HASH_SIZE: usize = 48;
+
+    if tdreport_bytes.len() < TDREPORT_REPORT_DATA_OFFSET + REPORT_DATA_HASH_SIZE {
+        error!("TDREPORT too short for REPORTDATA extraction\n");
+        return Err(MigrationResult::InvalidParameter);
+    }
+
+    let expected_report_data =
+        build_report_data(peer_prefix, th1).map_err(|_| MigrationResult::InvalidParameter)?;
+    let expected_hash = digest_sha384(&expected_report_data)?;
+    let actual = &tdreport_bytes
+        [TDREPORT_REPORT_DATA_OFFSET..TDREPORT_REPORT_DATA_OFFSET + REPORT_DATA_HASH_SIZE];
+
+    if actual != expected_hash.as_slice() {
+        return Err(MigrationResult::InvalidParameter);
+    }
+
+    Ok(())
+}
+
 const ECDSA_P384_SHA384_PRIVATE_KEY_LENGTH: usize = 0xb9;
 
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop, Eq, PartialEq)]
