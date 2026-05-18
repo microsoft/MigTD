@@ -36,23 +36,6 @@ use tdx_tdcall::tdreport;
 #[cfg(feature = "AzCVMEmu")]
 mod cvmemu;
 
-// Local trait to convert TdInfo to bytes without external dependency
-#[cfg(feature = "vmcall-raw")]
-trait TdInfoAsBytes {
-    fn as_bytes(&self) -> &[u8];
-}
-#[cfg(feature = "vmcall-raw")]
-impl TdInfoAsBytes for tdreport::TdInfo {
-    fn as_bytes(&self) -> &[u8] {
-        unsafe {
-            core::slice::from_raw_parts(
-                self as *const _ as *const u8,
-                core::mem::size_of::<tdreport::TdInfo>(),
-            )
-        }
-    }
-}
-
 #[cfg(feature = "vmcall-raw")]
 fn dump_td_info_and_hash() {
     let td_report =

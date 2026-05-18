@@ -567,6 +567,7 @@ mod v2 {
         )
     }
 
+    #[cfg(test)]
     fn get_rtmrs_from_tdinfo(
         td_info: &TdInfo,
     ) -> Result<[[u8; SHA384_DIGEST_SIZE]; 4], PolicyError> {

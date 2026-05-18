@@ -5,6 +5,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::mem::MaybeUninit;
 use core::time::Duration;
+#[cfg(not(feature = "spdm_attestation"))]
 use crypto::{
     tls::SecureChannel,
     x509::{Certificate, Decode},
@@ -12,6 +13,7 @@ use crypto::{
 use ring::rand::{SecureRandom, SystemRandom};
 use tdx_tdcall::tdx::{tdcall_servtd_rebind_approve, tdcall_vm_write};
 
+#[cfg(not(feature = "spdm_attestation"))]
 use crate::migration::servtd_ext::read_servtd_ext;
 use crate::migration::transport::*;
 #[cfg(feature = "spdm_attestation")]
@@ -21,9 +23,13 @@ use crate::migration::pre_session_data::{pre_session_data_exchange, LogErr};
 
 use crate::{
     driver::ticks::with_timeout,
+    migration::{MigrationResult, MigtdMigrationInformation},
+};
+#[cfg(not(feature = "spdm_attestation"))]
+use crate::{
     migration::{
         servtd_ext::{write_approved_servtd_ext_hash, ServtdExt},
-        MigrationResult, MigtdMigrationInformation, TD_INFO_SIZE,
+        TD_INFO_SIZE,
     },
     ratls::{self, find_extension, EXTNID_MIGTD_SERVTD_EXT},
 };
@@ -36,6 +42,7 @@ pub const TDCS_FIELD_SERVTD_REBIND_ACCEPT_TOKEN: u64 = 0x191000030000021E;
 pub const TDCS_FIELD_SERVTD_REBIND_ATTR: u64 = 0x1910000300000222;
 const TDCS_FIELD_WRITE_MASK: u64 = u64::MAX;
 
+#[cfg(not(feature = "spdm_attestation"))]
 const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
                                                        // FIXME: Need VMM provide socket information
 
@@ -359,6 +366,7 @@ pub fn approve_rebinding(
     Ok(())
 }
 
+#[cfg(not(feature = "spdm_attestation"))]
 fn get_servtd_ext_from_cert(certs: &Option<Vec<&[u8]>>) -> Result<ServtdExt, MigrationResult> {
     if let Some(cert_chain) = certs {
         if cert_chain.is_empty() {
@@ -392,6 +400,7 @@ pub fn create_rebind_token() -> Result<RebindingToken, MigrationResult> {
     Ok(RebindingToken { token })
 }
 
+#[cfg(not(feature = "spdm_attestation"))]
 async fn tls_send_rebind_token(
     tls_session: &mut SecureChannel<TransportType>,
     rebind_token: &RebindingToken,
@@ -419,6 +428,7 @@ async fn tls_send_rebind_token(
     Ok(())
 }
 
+#[cfg(not(feature = "spdm_attestation"))]
 async fn tls_receive_rebind_token(
     tls_session: &mut SecureChannel<TransportType>,
 ) -> Result<RebindingToken, MigrationResult> {
@@ -446,6 +456,7 @@ async fn tls_receive_rebind_token(
     Ok(rebind_token)
 }
 
+#[cfg(not(feature = "spdm_attestation"))]
 async fn tls_session_write_all(
     tls_session: &mut SecureChannel<TransportType>,
     data: &[u8],
@@ -461,6 +472,7 @@ async fn tls_session_write_all(
     Ok(())
 }
 
+#[cfg(not(feature = "spdm_attestation"))]
 async fn tls_session_read_exact(
     tls_session: &mut SecureChannel<TransportType>,
     data: &mut [u8],
@@ -479,7 +491,7 @@ async fn tls_session_read_exact(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::migration::{td_info_mrowner, td_info_mrownerconfig};
+    use crate::migration::{td_info_mrowner, td_info_mrownerconfig, TD_INFO_SIZE};
     use alloc::vec;
 
     /// Create a 512-byte TDINFO_STRUCT with known mrowner and mrownerconfig.

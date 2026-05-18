@@ -6,7 +6,7 @@ use crate::migration::MigrationResult;
 use crate::{
     migration::{data::MigrationSessionKey, MigtdMigrationInformation},
     spdm::{
-        build_report_data, gen_quote_spdm, spdm_rsp::SECRET_ASYM_IMPL_INSTANCE, spdm_verify_quote,
+        build_report_data, gen_quote_spdm, spdm_rsp::SECRET_ASYM_IMPL_INSTANCE,
         verify_report_data_binding, verify_tdreport_data_binding, vmcall_msg::VmCallTransportEncap,
         *,
     },
@@ -27,6 +27,8 @@ use zeroize::Zeroize;
 extern crate alloc;
 #[cfg(feature = "policy_v2")]
 use crate::migration::pre_session_data::local_peer_data;
+#[cfg(not(feature = "policy_v2"))]
+use crate::spdm::spdm_verify_quote;
 use crate::{event_log::get_event_log, migration::session::ExchangeInformation};
 use alloc::sync::Arc;
 use log::error;

@@ -208,6 +208,7 @@ pub fn write_approved_servtd_ext_hash(
     Ok(())
 }
 
+#[cfg(test)]
 mod test {
     use super::ServtdExt;
 

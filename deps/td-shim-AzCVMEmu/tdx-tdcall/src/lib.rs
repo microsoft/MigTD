@@ -3,8 +3,6 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-#![cfg_attr(feature = "no-std", no_std)]
-
 //! Azure CVM Emulation layer for TDX TDCALL interface
 //!
 //! This crate provides a drop-in replacement for the original tdx-tdcall crate
@@ -121,7 +119,7 @@ pub mod tdreport {
     }
 
     /// Emulated TD Report Verification
-    pub fn tdcall_verify_report(report_mac: &[u8]) -> Result<(), TdCallError> {
+    pub fn tdcall_verify_report(_report_mac: &[u8]) -> Result<(), TdCallError> {
         log::warn!("Emulated TD report verification");
         Ok(())
     }
