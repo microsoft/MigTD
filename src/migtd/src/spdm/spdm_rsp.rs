@@ -532,9 +532,22 @@ pub fn handle_exchange_mig_attest_info_req(
         );
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
-    let _td_report_init = reader
+    #[cfg(feature = "policy_v2")]
+    if vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
+        error!(
+            "Invalid VDM message TdReportInit length: {} (expected {})\n",
+            vdm_element.length,
+            crate::migration::TD_INFO_SIZE
+        );
+        return Err(SPDM_STATUS_INVALID_MSG_SIZE);
+    }
+    let td_report_init = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
+    #[cfg(feature = "policy_v2")]
+    let td_report_init_vec = td_report_init.to_vec();
+    #[cfg(not(feature = "policy_v2"))]
+    let _ = td_report_init;
 
     // Policy-specific verification
     #[cfg(not(feature = "policy_v2"))]
@@ -557,6 +570,7 @@ pub fn handle_exchange_mig_attest_info_req(
             &quote_src_vec,
             &event_log_src_vec,
             &mig_policy_hash_src,
+            &td_report_init_vec,
             &peer_data,
             &th1,
             responder_context,
@@ -692,6 +706,7 @@ fn rsp_verify_peer_attestation_v2(
     quote_peer: &[u8],
     event_log_peer: &[u8],
     mig_policy_hash_peer: &[u8],
+    peer_init_td_info: &[u8],
     peer_data: &[u8],
     th1: &SpdmDigestStruct,
     responder_context: &mut ResponderContext,
@@ -709,16 +724,19 @@ fn rsp_verify_peer_attestation_v2(
     {
         let policy_check_result =
             mig_policy::authenticate_remote(false, quote_peer, peer_data, event_log_peer);
-        if let Err(e) = &policy_check_result {
-            error!("Policy v2 check failed, below is the detail information:\n");
-            error!("{:x?}\n", e);
-            let session = responder_context
-                .common
-                .get_session_via_id(session_id)
-                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            session.teardown();
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-        }
+        let verified_report_peer = match policy_check_result {
+            Err(e) => {
+                error!("Policy v2 check failed, below is the detail information:\n");
+                error!("{:x?}\n", e);
+                let session = responder_context
+                    .common
+                    .get_session_via_id(session_id)
+                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                session.teardown();
+                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+            }
+            Ok(s) => s,
+        };
 
         // 3. Verify REPORTDATA binding using supplemental data from authenticate_remote
         #[cfg(not(any(
@@ -727,7 +745,6 @@ fn rsp_verify_peer_attestation_v2(
             feature = "use-mock-quote"
         )))]
         {
-            let verified_report_peer = policy_check_result.unwrap();
             if verify_report_data_binding(&verified_report_peer, b"MigTDReq", th1).is_err() {
                 error!("Peer REPORTDATA does not match expected TH1 binding!\n");
                 let session = responder_context
@@ -738,7 +755,38 @@ fn rsp_verify_peer_attestation_v2(
                 return Err(SPDM_STATUS_INVALID_MSG_FIELD);
             }
         }
+
+        // 4. Per GHCI 1.5: cross-check the peer's wire-claimed init TDINFO
+        //    against the peer's authenticated TDREPORT (via the supplemental
+        //    data returned by quote verification). The peer's init policy
+        //    signer must match its current MROWNER, and the peer's init
+        //    policy SVN must be ≤ its current MROWNERCONFIG SVN.
+        if verified_report_peer.len() < mig_policy::REPORT_DATA_SIZE {
+            error!("Verified report too short for init TDINFO cross-check\n");
+            let session = responder_context
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
+        if let Err(e) = mig_policy::verify_peer_init_tdinfo_against_owner(
+            peer_init_td_info,
+            &verified_report_peer[mig_policy::Report::R_MIGTD_MROWNER],
+            &verified_report_peer[mig_policy::Report::R_MIGTD_MROWNERCONFIG],
+        ) {
+            error!("Peer init TDINFO MROWNER/MROWNERCONFIG cross-check failed: {:x?}\n", e);
+            let session = responder_context
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
+            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+        }
     }
+
+    #[cfg(feature = "test_disable_ra_and_accept_all")]
+    let _ = peer_init_td_info;
 
     Ok(())
 }
@@ -1074,6 +1122,14 @@ pub fn handle_exchange_rebind_attest_info_req(
         );
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     };
+    if vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
+        error!(
+            "Invalid VDM message TdReportInit length: {} (expected {})\n",
+            vdm_element.length,
+            crate::migration::TD_INFO_SIZE
+        );
+        return Err(SPDM_STATUS_INVALID_MSG_SIZE);
+    }
     let td_report_init = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
