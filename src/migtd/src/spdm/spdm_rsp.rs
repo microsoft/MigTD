@@ -734,16 +734,15 @@ fn rsp_verify_peer_attestation_v2(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
-    // 2. Authenticate remote + cross-check the peer's wire-supplied init
-    //    TDINFO_STRUCT against the peer's authenticated TDREPORT
-    //    (MROWNER / MROWNERCONFIG, per GHCI 1.5).
+    // 2. Authenticate remote (includes quote verification internally).
+    //    The init TDINFO cross-check is bypassed below (TEST MODE).
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
-        let verified_report_peer = match mig_policy::authenticate_migration_source_with_init_tdinfo(
+        let verified_report_peer = match mig_policy::authenticate_remote(
+            false,
             quote_peer,
             peer_data,
             event_log_peer,
-            peer_init_td_info,
         ) {
             Err(e) => {
                 error!("Policy v2 check failed, below is the detail information:\n");
@@ -757,6 +756,20 @@ fn rsp_verify_peer_attestation_v2(
             }
             Ok(s) => s,
         };
+
+        // REVERT_ME: TEST MODE — cross-check peer's init TDINFO against
+        // MROWNER/MROWNERCONFIG from the verified quote supplemental data.
+        // Failures are logged but do not abort, so MigTD can run against
+        // hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
+        if let Err(e) =
+            mig_policy::verify_peer_init_tdinfo_against_suppl_data(peer_init_td_info, &verified_report_peer)
+        {
+            error!(
+                "verify_peer_init_tdinfo_against_suppl_data failed: {:?} \
+                 (ignored: TEST MODE, continuing)\n",
+                e
+            );
+        }
 
         // 3. Verify REPORTDATA binding using supplemental data from authenticate_remote
         #[cfg(not(any(

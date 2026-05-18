@@ -309,11 +309,20 @@ mod v2 {
         // Per GHCI 1.5: cross-check the peer's wire-claimed init TDINFO against
         // the peer's verified TDREPORT — init policy signer and init SVN must
         // be consistent with the peer's current self-report.
-        verify_peer_init_tdinfo_against_owner(
+        //
+        // REVERT_ME: TEST MODE — failures are logged but do not abort, so MigTD can
+        // run against hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
+        if let Err(e) = verify_peer_init_tdinfo_against_owner(
             init_tdinfo,
             &tdx_report.td_info.mrowner,
             &tdx_report.td_info.mrownerconfig,
-        )?;
+        ) {
+            log::error!(
+                "verify_peer_init_tdinfo_against_owner failed: {:?} \
+                 (ignored: TEST MODE, continuing)\n",
+                e
+            );
+        }
 
         // Verify the init tdinfo against servtd_ext hash
         let servtd_ext_src_obj =
