@@ -851,6 +851,47 @@ mod v2 {
         Ok(())
     }
 
+    /// Cross-check a peer's wire-supplied init `TDINFO_STRUCT` against the
+    /// MROWNER/MROWNERCONFIG bytes carried in the peer's verified quote
+    /// supplemental data (see `Report::R_MIGTD_MROWNER` /
+    /// `Report::R_MIGTD_MROWNERCONFIG`).
+    ///
+    /// This is a pure function: it length-checks `verified_suppl_data` before
+    /// slicing so it cannot panic on a too-short buffer, and it does not
+    /// invoke quote verification. Callers that want the combined attestation
+    /// + cross-check should use `authenticate_migration_source_with_init_tdinfo`.
+    pub fn verify_peer_init_tdinfo_against_suppl_data(
+        peer_init_td_info: &[u8],
+        verified_suppl_data: &[u8],
+    ) -> Result<(), PolicyError> {
+        if verified_suppl_data.len() < REPORT_DATA_SIZE {
+            return Err(PolicyError::InvalidParameter);
+        }
+        verify_peer_init_tdinfo_against_owner(
+            peer_init_td_info,
+            &verified_suppl_data[Report::R_MIGTD_MROWNER],
+            &verified_suppl_data[Report::R_MIGTD_MROWNERCONFIG],
+        )
+    }
+
+    /// Destination-side migration helper: verify the peer's quote/event log
+    /// via `authenticate_remote(false, ...)` and cross-check the peer's
+    /// wire-supplied init `TDINFO_STRUCT` against the resulting supplemental
+    /// data.
+    ///
+    /// Returns the verified supplemental data on success so the caller can
+    /// reuse it for SPDM-level bindings (e.g., REPORTDATA / TH1).
+    pub fn authenticate_migration_source_with_init_tdinfo(
+        quote_peer: &[u8],
+        peer_data: &[u8],
+        event_log_peer: &[u8],
+        peer_init_td_info: &[u8],
+    ) -> Result<Vec<u8>, PolicyError> {
+        let verified = authenticate_remote(false, quote_peer, peer_data, event_log_peer)?;
+        verify_peer_init_tdinfo_against_suppl_data(peer_init_td_info, &verified)?;
+        Ok(verified)
+    }
+
     #[test]
     fn test_unix_to_iso8601() {
         let timestamp = 1704067200; // Corresponds to 2024-01-01T00:00:00Z
@@ -1082,6 +1123,57 @@ mod v2 {
         assert!(matches!(
             verify_peer_init_tdinfo_against_owner(&init, &mrowner, short_mrownerconfig),
             Err(PolicyError::InvalidParameter)
+        ));
+    }
+
+    fn make_suppl_data(mrowner: &[u8; 48], svn: u32) -> Vec<u8> {
+        let mut suppl = alloc::vec![0u8; REPORT_DATA_SIZE];
+        suppl[Report::R_MIGTD_MROWNER].copy_from_slice(mrowner);
+        suppl[Report::R_MIGTD_MROWNERCONFIG][..4].copy_from_slice(&svn.to_le_bytes());
+        suppl
+    }
+
+    #[test]
+    fn test_verify_peer_init_tdinfo_against_suppl_data_ok() {
+        let mrowner = [0xCDu8; 48];
+        let init = make_init_tdinfo(&mrowner, 3);
+        let suppl = make_suppl_data(&mrowner, 5);
+        assert!(verify_peer_init_tdinfo_against_suppl_data(&init, &suppl).is_ok());
+    }
+
+    #[test]
+    fn test_verify_peer_init_tdinfo_against_suppl_data_short_buffer() {
+        let mrowner = [0xCDu8; 48];
+        let init = make_init_tdinfo(&mrowner, 3);
+        let short = alloc::vec![0u8; REPORT_DATA_SIZE - 1];
+        // Must return InvalidParameter, not panic, even though
+        // R_MIGTD_MROWNERCONFIG = 280..328 would otherwise slice OOB.
+        assert!(matches!(
+            verify_peer_init_tdinfo_against_suppl_data(&init, &short),
+            Err(PolicyError::InvalidParameter)
+        ));
+    }
+
+    #[test]
+    fn test_verify_peer_init_tdinfo_against_suppl_data_mrowner_mismatch() {
+        let init_mrowner = [0xCDu8; 48];
+        let peer_mrowner = [0xEEu8; 48];
+        let init = make_init_tdinfo(&init_mrowner, 3);
+        let suppl = make_suppl_data(&peer_mrowner, 5);
+        assert!(matches!(
+            verify_peer_init_tdinfo_against_suppl_data(&init, &suppl),
+            Err(PolicyError::PolicyHashMismatch)
+        ));
+    }
+
+    #[test]
+    fn test_verify_peer_init_tdinfo_against_suppl_data_svn_greater_rejected() {
+        let mrowner = [0xCDu8; 48];
+        let init = make_init_tdinfo(&mrowner, 7);
+        let suppl = make_suppl_data(&mrowner, 5);
+        assert!(matches!(
+            verify_peer_init_tdinfo_against_suppl_data(&init, &suppl),
+            Err(PolicyError::SvnMismatch)
         ));
     }
 }

@@ -719,12 +719,17 @@ fn rsp_verify_peer_attestation_v2(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
-    // 2. Authenticate remote (includes quote verification internally)
+    // 2. Authenticate remote + cross-check the peer's wire-supplied init
+    //    TDINFO_STRUCT against the peer's authenticated TDREPORT
+    //    (MROWNER / MROWNERCONFIG, per GHCI 1.5).
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
-        let policy_check_result =
-            mig_policy::authenticate_remote(false, quote_peer, peer_data, event_log_peer);
-        let verified_report_peer = match policy_check_result {
+        let verified_report_peer = match mig_policy::authenticate_migration_source_with_init_tdinfo(
+            quote_peer,
+            peer_data,
+            event_log_peer,
+            peer_init_td_info,
+        ) {
             Err(e) => {
                 error!("Policy v2 check failed, below is the detail information:\n");
                 error!("{:x?}\n", e);
@@ -756,33 +761,12 @@ fn rsp_verify_peer_attestation_v2(
             }
         }
 
-        // 4. Per GHCI 1.5: cross-check the peer's wire-claimed init TDINFO
-        //    against the peer's authenticated TDREPORT (via the supplemental
-        //    data returned by quote verification). The peer's init policy
-        //    signer must match its current MROWNER, and the peer's init
-        //    policy SVN must be ≤ its current MROWNERCONFIG SVN.
-        if verified_report_peer.len() < mig_policy::REPORT_DATA_SIZE {
-            error!("Verified report too short for init TDINFO cross-check\n");
-            let session = responder_context
-                .common
-                .get_session_via_id(session_id)
-                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            session.teardown();
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-        }
-        if let Err(e) = mig_policy::verify_peer_init_tdinfo_against_owner(
-            peer_init_td_info,
-            &verified_report_peer[mig_policy::Report::R_MIGTD_MROWNER],
-            &verified_report_peer[mig_policy::Report::R_MIGTD_MROWNERCONFIG],
-        ) {
-            error!("Peer init TDINFO MROWNER/MROWNERCONFIG cross-check failed: {:x?}\n", e);
-            let session = responder_context
-                .common
-                .get_session_via_id(session_id)
-                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            session.teardown();
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-        }
+        #[cfg(any(
+            feature = "AzCVMEmu",
+            feature = "test_mock_report",
+            feature = "use-mock-quote"
+        ))]
+        let _ = (th1, &verified_report_peer);
     }
 
     #[cfg(feature = "test_disable_ra_and_accept_all")]
