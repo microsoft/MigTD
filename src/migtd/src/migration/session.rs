@@ -4,8 +4,8 @@
 
 #[cfg(feature = "policy_v2")]
 use crate::migration::pre_session_data::pre_session_data_exchange;
-#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-use crate::migration::rebinding::RebindingInfo;
+#[cfg(not(feature = "spdm_attestation"))]
+use crate::migration::servtd_ext::verify_servtd_attr;
 use crate::migration::transport::setup_transport;
 use crate::migration::transport::shutdown_transport;
 use crate::migration::transport::TransportType;
@@ -232,7 +232,7 @@ fn process_buffer(buffer: &[u8]) -> RequestDataBufferHeader {
 
 #[cfg(feature = "vmcall-raw")]
 fn calculate_shared_page_nums(reqbufferhdrlen: usize) -> Result<usize> {
-    let init_data_header_size = 44; // size of MIGTD_DATA_STRUCT header + MIGTD_DATA_ENTRY_STRUCT header
+    // The response payload for GetMigtdData is just the raw 512-byte TDINFO_STRUCT.
     let policy_size = crate::config::get_policy()
         .ok_or(MigrationResult::InvalidParameter)?
         .len();
@@ -240,8 +240,11 @@ fn calculate_shared_page_nums(reqbufferhdrlen: usize) -> Result<usize> {
         .ok_or(MigrationResult::InvalidParameter)?
         .len();
     let report_size = 1024;
-    let total_size =
-        reqbufferhdrlen + init_data_header_size + policy_size + event_log_size + report_size;
+    let total_size = reqbufferhdrlen
+        + crate::migration::TD_INFO_SIZE
+        + policy_size
+        + event_log_size
+        + report_size;
     Ok((total_size + PAGE_SIZE - 1) / PAGE_SIZE)
 }
 
@@ -404,7 +407,7 @@ fn parse_request(
         DataStatusOperation::StartRebinding => {
             #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
             {
-                decode_and_dispatch!(RebindingInfo, |info| {
+                decode_and_dispatch!(MigtdMigrationInformation, |info| {
                     WaitForRequestResponse::StartRebinding(info)
                 })
             }
@@ -672,16 +675,14 @@ pub async fn get_migtd_data(
     data: &mut Vec<u8>,
     request_id: u64,
 ) -> Result<()> {
-    use crate::migration::rebinding::InitData;
-
-    let init_data = InitData::get_from_local(additional_data).ok_or_else(|| {
+    let report = tdx_tdcall::tdreport::tdcall_report(additional_data).map_err(|_| {
         log::error!( migration_request_id = request_id;
             "Failed to get init migtd data from local\n",
         );
         MigrationResult::InvalidParameter
     })?;
 
-    init_data.write_into_bytes(data);
+    data.extend_from_slice(report.td_info.as_bytes());
     Ok(())
 }
 
@@ -1019,6 +1020,18 @@ async fn migration_dst_exchange_msk(
 
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
+    // Per GHCI 1.5: if VMM provided initMigtdData, verify policy binding
+    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+    if let Some(init_td_info) = info.mig_info.init_td_info_if_present() {
+        crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info).map_err(|e| {
+            log::error!(
+                migration_request_id = info.mig_info.mig_request_id;
+                "exchange_msk: initMigtdData policy binding verification failed: {:?}\n", e
+            );
+            MigrationResult::PolicyUnsatisfiedError
+        })?;
+    }
+
     let mut transport = setup_transport(
         info.mig_info.mig_request_id,
         #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
@@ -1083,6 +1096,14 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
                 log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: cal_mig_version error: {:?}\n", e);
                 e
             })?;
+        verify_servtd_attr(
+            info.mig_info.binding_handle,
+            &info.mig_info.target_td_uuid,
+        )
+        .map_err(|e| {
+            log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: verify_servtd_attr error: {:?}\n", e);
+            e
+        })?;
         set_mig_version(&info.mig_info, mig_ver).map_err(|e| {
             log::error!(migration_request_id = info.mig_info.mig_request_id; "exchange_msk: set_mig_version error: {:?}\n", e);
             e

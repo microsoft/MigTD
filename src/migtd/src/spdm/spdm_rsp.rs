@@ -6,11 +6,11 @@ use crate::mig_policy;
 #[cfg(feature = "policy_v2")]
 use crate::migration::pre_session_data::local_peer_data;
 #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
-use crate::migration::rebinding::{
-    write_rebinding_session_token, write_servtd_rebind_attr, RebindingInfo,
-};
+use crate::migration::rebinding::{write_rebinding_session_token, write_servtd_rebind_attr};
+#[cfg(not(feature = "policy_v2"))]
+use crate::migration::servtd_ext::verify_servtd_attr;
 #[cfg(feature = "policy_v2")]
-use crate::migration::servtd_ext::{write_approved_servtd_ext_hash, ServtdExt};
+use crate::migration::servtd_ext::{verify_servtd_attr, write_approved_servtd_ext_hash, ServtdExt};
 use crate::{
     event_log::get_event_log,
     migration::{
@@ -59,7 +59,7 @@ pub struct ResponderContextEx<'a> {
 pub enum ResponderContextExInfo<'a> {
     MigrationInformation(&'a MigtdMigrationInformation),
     #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
-    RebindInformation(&'a RebindingInfo),
+    RebindInformation(&'a MigtdMigrationInformation),
     None,
 }
 
@@ -532,9 +532,22 @@ pub fn handle_exchange_mig_attest_info_req(
         );
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
-    let _td_report_init = reader
+    #[cfg(feature = "policy_v2")]
+    if vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
+        error!(
+            "Invalid VDM message TdReportInit length: {} (expected {})\n",
+            vdm_element.length,
+            crate::migration::TD_INFO_SIZE
+        );
+        return Err(SPDM_STATUS_INVALID_MSG_SIZE);
+    }
+    let td_report_init = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
+    #[cfg(feature = "policy_v2")]
+    let td_report_init_vec = td_report_init.to_vec();
+    #[cfg(not(feature = "policy_v2"))]
+    let _ = td_report_init;
 
     // Policy-specific verification
     #[cfg(not(feature = "policy_v2"))]
@@ -557,6 +570,7 @@ pub fn handle_exchange_mig_attest_info_req(
             &quote_src_vec,
             &event_log_src_vec,
             &mig_policy_hash_src,
+            &td_report_init_vec,
             &peer_data,
             &th1,
             responder_context,
@@ -692,6 +706,7 @@ fn rsp_verify_peer_attestation_v2(
     quote_peer: &[u8],
     event_log_peer: &[u8],
     mig_policy_hash_peer: &[u8],
+    peer_init_td_info: &[u8],
     peer_data: &[u8],
     th1: &SpdmDigestStruct,
     responder_context: &mut ResponderContext,
@@ -704,21 +719,29 @@ fn rsp_verify_peer_attestation_v2(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
-    // 2. Authenticate remote (includes quote verification internally)
+    // 2. Authenticate remote + cross-check the peer's wire-supplied init
+    //    TDINFO_STRUCT against the peer's authenticated TDREPORT
+    //    (MROWNER / MROWNERCONFIG, per GHCI 1.5).
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
-        let policy_check_result =
-            mig_policy::authenticate_remote(false, quote_peer, peer_data, event_log_peer);
-        if let Err(e) = &policy_check_result {
-            error!("Policy v2 check failed, below is the detail information:\n");
-            error!("{:x?}\n", e);
-            let session = responder_context
-                .common
-                .get_session_via_id(session_id)
-                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            session.teardown();
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-        }
+        let verified_report_peer = match mig_policy::authenticate_migration_source_with_init_tdinfo(
+            quote_peer,
+            peer_data,
+            event_log_peer,
+            peer_init_td_info,
+        ) {
+            Err(e) => {
+                error!("Policy v2 check failed, below is the detail information:\n");
+                error!("{:x?}\n", e);
+                let session = responder_context
+                    .common
+                    .get_session_via_id(session_id)
+                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                session.teardown();
+                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+            }
+            Ok(s) => s,
+        };
 
         // 3. Verify REPORTDATA binding using supplemental data from authenticate_remote
         #[cfg(not(any(
@@ -727,7 +750,6 @@ fn rsp_verify_peer_attestation_v2(
             feature = "use-mock-quote"
         )))]
         {
-            let verified_report_peer = policy_check_result.unwrap();
             if verify_report_data_binding(&verified_report_peer, b"MigTDReq", th1).is_err() {
                 error!("Peer REPORTDATA does not match expected TH1 binding!\n");
                 let session = responder_context
@@ -738,7 +760,17 @@ fn rsp_verify_peer_attestation_v2(
                 return Err(SPDM_STATUS_INVALID_MSG_FIELD);
             }
         }
+
+        #[cfg(any(
+            feature = "AzCVMEmu",
+            feature = "test_mock_report",
+            feature = "use-mock-quote"
+        ))]
+        let _ = (th1, &verified_report_peer);
     }
+
+    #[cfg(feature = "test_disable_ra_and_accept_all")]
+    let _ = peer_init_td_info;
 
     Ok(())
 }
@@ -832,6 +864,11 @@ pub fn handle_exchange_mig_info_req(
     let responder_app_context =
         SpdmAppContextData::read(&mut reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     let exchange_information = exchange_info(&responder_app_context.migration_info, false)?;
+
+    verify_servtd_attr(
+        responder_app_context.migration_info.binding_handle,
+        &responder_app_context.migration_info.target_td_uuid,
+    )?;
 
     let mig_ver = cal_mig_version(false, &exchange_information, &remote_information)?;
     set_mig_version(&responder_app_context.migration_info, mig_ver)?;
@@ -1069,37 +1106,18 @@ pub fn handle_exchange_rebind_attest_info_req(
         );
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     };
+    if vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
+        error!(
+            "Invalid VDM message TdReportInit length: {} (expected {})\n",
+            vdm_element.length,
+            crate::migration::TD_INFO_SIZE
+        );
+        return Err(SPDM_STATUS_INVALID_MSG_SIZE);
+    }
     let td_report_init = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     let td_report_init_vec = td_report_init.to_vec();
-
-    // event log init
-    let vdm_element = VdmMessageElement::read(reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
-    if vdm_element.element_type != VdmMessageElementType::EventLogInit {
-        error!(
-            "Invalid VDM message element_type: {:x?}\n",
-            vdm_element.element_type
-        );
-        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-    };
-    let event_log_init = reader
-        .take(vdm_element.length as usize)
-        .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
-    let event_log_init_vec = event_log_init.to_vec();
-
-    // mig policy init hash
-    let vdm_element = VdmMessageElement::read(reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
-    if vdm_element.element_type != VdmMessageElementType::MigPolicyInit {
-        error!(
-            "Invalid VDM message element_type: {:x?}\n",
-            vdm_element.element_type
-        );
-        return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-    };
-    let mig_policy_init_hash_src = reader
-        .take(vdm_element.length as usize)
-        .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
 
     // attestation verification
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
@@ -1115,21 +1133,11 @@ pub fn handle_exchange_rebind_attest_info_req(
             return Err(SPDM_STATUS_INVALID_MSG_FIELD);
         }
 
-        // Per GHCI 1.5: init_policy_hash is mrowner from TDINFO — compare directly
-        let mrowner = td_report_init_vec
-            .get(112..160)
-            .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
-        if mig_policy_init_hash_src != mrowner {
-            error!("The received mig policy init hash does not match mrowner from init tdinfo!\n");
-            return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-        }
-
         let policy_check_result = mig_policy::authenticate_rebinding_old(
             &td_report_src_vec,
             &event_log_src_vec,
             peer_data,
             &td_report_init_vec,
-            &event_log_init_vec,
             &servtd_ext_vec,
         );
         if let Err(e) = &policy_check_result {

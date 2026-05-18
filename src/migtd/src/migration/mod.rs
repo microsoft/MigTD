@@ -143,8 +143,67 @@ pub const STREAM_SOCKET_INFO_HOB_GUID: Guid = Guid::from_fields(
     &[0x2f, 0x3d, 0x2e, 0x8b, 0x1e, 0xe],
 );
 
+/// Size in bytes of the TDX-module `TdInfo` struct (TDINFO_STRUCT per the
+/// TDX module ABI and GHCI 1.5 MIGTD_DATA `initMigtdData`).
+pub const TD_INFO_SIZE: usize = core::mem::size_of::<tdx_tdcall::tdreport::TdInfo>();
+
+/// Offset of the `mrowner` field inside a TDINFO_STRUCT.
+/// Layout: attributes(8) + xfam(8) + mrtd(48) + mrconfig_id(48).
+pub const TD_INFO_MROWNER_OFFSET: usize = 8 + 8 + 48 + 48;
+/// Offset of the `mrownerconfig` field inside a TDINFO_STRUCT.
+pub const TD_INFO_MROWNERCONFIG_OFFSET: usize = TD_INFO_MROWNER_OFFSET + 48;
+/// Size of `mrowner` / `mrownerconfig` (SHA-384 digest size).
+pub const TD_INFO_OWNER_FIELD_SIZE: usize = 48;
+
+// Compile-time guard: catch any drift in the upstream TdInfo layout.
+const _: () = {
+    assert!(TD_INFO_SIZE == 512);
+    assert!(TD_INFO_MROWNER_OFFSET == 112);
+    assert!(TD_INFO_MROWNERCONFIG_OFFSET == 160);
+};
+
+/// Read `mrowner` from a raw TDINFO_STRUCT byte buffer.
+pub fn td_info_mrowner(td_info: &[u8; TD_INFO_SIZE]) -> &[u8; TD_INFO_OWNER_FIELD_SIZE] {
+    // Slice into a fixed-size array reference; bounds are guaranteed by the
+    // compile-time assertions above.
+    (&td_info[TD_INFO_MROWNER_OFFSET..TD_INFO_MROWNER_OFFSET + TD_INFO_OWNER_FIELD_SIZE])
+        .try_into()
+        .expect("static slice bounds")
+}
+
+/// Read `mrownerconfig` from a raw TDINFO_STRUCT byte buffer.
+pub fn td_info_mrownerconfig(td_info: &[u8; TD_INFO_SIZE]) -> &[u8; TD_INFO_OWNER_FIELD_SIZE] {
+    (&td_info
+        [TD_INFO_MROWNERCONFIG_OFFSET..TD_INFO_MROWNERCONFIG_OFFSET + TD_INFO_OWNER_FIELD_SIZE])
+        .try_into()
+        .expect("static slice bounds")
+}
+
+/// Fetch the local MigTD's TDINFO_STRUCT bytes via `tdcall_report`.
+/// Used as a fallback when no VMM-provided `init_td_info` is available.
+#[cfg(all(feature = "main", feature = "vmcall-raw", feature = "policy_v2"))]
+pub fn local_init_td_info() -> Result<[u8; TD_INFO_SIZE], MigrationResult> {
+    let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
+        .map_err(|_| MigrationResult::TdxModuleError)?;
+    let mut buf = [0u8; TD_INFO_SIZE];
+    buf.copy_from_slice(report.td_info.as_bytes());
+    Ok(buf)
+}
+
+/// Size of the fixed `MigtdMigrationInformation` header preceding the
+/// optional `init_td_info` tail (per GHCI 1.5 StartMigration layout).
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+const MIGTD_MIGRATION_INFO_HEADER_SIZE: usize = {
+    // u64(8) + u8(1) + u8(1) + [u8;6] + [u64;4](32) + u64(8)
+    8 + 1 + 1 + 6 + 32 + 8
+};
+
 #[repr(C)]
-#[derive(Debug, Pread, Pwrite, Clone, Default)]
+#[derive(Debug, Pread, Pwrite, Clone)]
+#[cfg_attr(
+    not(all(feature = "vmcall-raw", feature = "policy_v2")),
+    derive(Default)
+)]
 pub struct MigtdMigrationInformation {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
@@ -152,7 +211,11 @@ pub struct MigtdMigrationInformation {
 
     // If set, current MigTD is MigTD-s else current MigTD is MigTD-d
     pub migration_source: u8,
-    _pad: [u8; 7],
+
+    // Per GHCI 1.5: hasInitMigtdData — true if initMigtdData follows at offset 56
+    pub has_init_data: u8,
+
+    _reserved: [u8; 6],
 
     // UUID of target TD
     pub target_td_uuid: [u64; 4],
@@ -168,10 +231,116 @@ pub struct MigtdMigrationInformation {
     // Unique identifier for the communication between MigTD and VMM
     // It can be retrieved from MIGTD_STREAM_SOCKET_INFO HOB
     pub communication_id: u64,
+
+    // Per GHCI 1.5: optional 512-byte TDINFO_STRUCT of the initial MigTD.
+    // Present when `has_init_data == 1`. Use `init_td_info_if_present()` for
+    // safe access. Sent by the VMM as the raw `TdInfo` bytes (no envelope).
+    //
+    // NOTE: literal `512` (== TD_INFO_SIZE) is required here because
+    // scroll-derive 0.10.5 only accepts integer literals as array length.
+    // A const-time assertion below guards against drift.
+    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+    pub init_td_info: [u8; 512],
 }
 
-#[cfg(feature = "vmcall-raw")]
-impl_read_from_bytes!(MigtdMigrationInformation);
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+impl Default for MigtdMigrationInformation {
+    fn default() -> Self {
+        Self {
+            mig_request_id: 0,
+            migration_source: 0,
+            has_init_data: 0,
+            _reserved: [0; 6],
+            target_td_uuid: [0; 4],
+            binding_handle: 0,
+            init_td_info: [0u8; TD_INFO_SIZE],
+        }
+    }
+}
+
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+impl MigtdMigrationInformation {
+    /// Safe accessor for the optional initial TDINFO_STRUCT. Returns `Some`
+    /// only when the VMM signaled `has_init_data == 1`.
+    pub fn init_td_info_if_present(&self) -> Option<&[u8; TD_INFO_SIZE]> {
+        if self.has_init_data == 1 {
+            Some(&self.init_td_info)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+impl MigtdMigrationInformation {
+    /// Parse a vmcall-raw + policy_v2 wire payload of either:
+    /// - 56 bytes (short form, no `init_td_info` tail, `has_init_data == 0`), or
+    /// - 568 bytes (full form, with `init_td_info` tail, `has_init_data == 1`).
+    /// Used for both StartMigration and StartRebinding (the wire layouts are
+    /// identical; byte 8 encodes whether this MigTD is the source/initiator).
+    pub fn read_from_bytes(
+        data_length: u32,
+        payload: &[u8],
+    ) -> core::result::Result<Self, MigrationResult> {
+        let short_size = MIGTD_MIGRATION_INFO_HEADER_SIZE as u32;
+        let full_size = core::mem::size_of::<Self>() as u32;
+        if data_length != short_size && data_length != full_size {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        if (payload.len() as u32) < data_length {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        let parsed: Self = if data_length == full_size {
+            payload
+                .pread(0)
+                .map_err(|_| MigrationResult::InvalidParameter)?
+        } else {
+            // Short form: zero-pad to full_size and pread; tail field's default
+            // is `[0u8; TD_INFO_SIZE]` so zero-fill is correct.
+            let mut padded = alloc::vec![0u8; full_size as usize];
+            padded[..short_size as usize].copy_from_slice(&payload[..short_size as usize]);
+            padded
+                .as_slice()
+                .pread(0)
+                .map_err(|_| MigrationResult::InvalidParameter)?
+        };
+
+        if parsed._reserved != [0; 6] {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        if parsed.has_init_data > 1 {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        let has_optional = data_length == full_size;
+        if (parsed.has_init_data == 1) != has_optional {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        Ok(parsed)
+    }
+}
+
+#[cfg(all(feature = "vmcall-raw", not(feature = "policy_v2")))]
+impl MigtdMigrationInformation {
+    pub fn read_from_bytes(
+        data_length: u32,
+        payload: &[u8],
+    ) -> core::result::Result<Self, MigrationResult> {
+        let full_size = core::mem::size_of::<Self>() as u32;
+        if data_length != full_size {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        let parsed: Self = payload
+            .pread(0)
+            .map_err(|_| MigrationResult::InvalidParameter)?;
+        if parsed._reserved != [0; 6] {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        if parsed.has_init_data != 0 {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        Ok(parsed)
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite)]
@@ -265,6 +434,7 @@ pub enum MigrationResult {
     VmmCanceled = 10,
     VmmInternalError = 11,
     UnsupportedOperationError = 12,
+    InitializationError = 0xFF,
 }
 
 impl TryFrom<u8> for MigrationResult {
@@ -285,6 +455,7 @@ impl TryFrom<u8> for MigrationResult {
             10 => Ok(MigrationResult::VmmCanceled),
             11 => Ok(MigrationResult::VmmInternalError),
             12 => Ok(MigrationResult::UnsupportedOperationError),
+            0xFF => Ok(MigrationResult::InitializationError),
             _ => Err(()),
         }
     }

@@ -2,9 +2,6 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-#[cfg(all(feature = "main", feature = "vmcall-raw", feature = "policy_v2"))]
-use crate::migration::rebinding::RebindingInfo;
-
 use super::*;
 #[cfg(feature = "vmcall-raw")]
 use bitfield_struct::bitfield;
@@ -258,7 +255,7 @@ pub struct RequestDataBuffer<'a> {
 pub enum WaitForRequestResponse {
     StartMigration(MigrationInformation),
     #[cfg(all(feature = "main", feature = "policy_v2"))]
-    StartRebinding(RebindingInfo),
+    StartRebinding(MigtdMigrationInformation),
     GetTdReport(ReportInfo),
     EnableLogArea(EnableLogAreaInfo),
     #[cfg(feature = "policy_v2")]
@@ -356,9 +353,8 @@ fn create_migration_information(
     mig_socket_hob: Option<&[u8]>,
     policy_info_hob: Option<&[u8]>,
 ) -> Option<MigrationInformation> {
-    let mig_info = hob_lib::get_guid_data(mig_info_hob?)?
-        .pread::<MigtdMigrationInformation>(0)
-        .ok()?;
+    let mig_info_data = hob_lib::get_guid_data(mig_info_hob?)?;
+    let mig_info = mig_info_data.pread::<MigtdMigrationInformation>(0).ok()?;
 
     #[cfg(any(feature = "vmcall-vsock", feature = "virtio-vsock"))]
     let mig_socket_info = hob_lib::get_guid_data(mig_socket_hob?)?
@@ -730,7 +726,8 @@ mod test {
         let mig_info = MigtdMigrationInformation {
             mig_request_id: 0,
             migration_source: 1,
-            _pad: [0, 0, 0, 0, 0, 0, 0],
+            has_init_data: 0,
+            _reserved: [0; 6],
             target_td_uuid: [0, 0, 0, 0],
             binding_handle: 0,
             mig_policy_id: 0,

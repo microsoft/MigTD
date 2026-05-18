@@ -9,7 +9,7 @@ use crate::binding::verify_quote_integrity_ex;
 use crate::binding::get_quote as get_quote_inner;
 
 use crate::{
-    binding::{init_heap, verify_quote_integrity, AttestLibError, QveCollateral},
+    binding::{init_heap, verify_quote_integrity, QveCollateral},
     root_ca::ROOT_CA_PUBLIC_KEY,
     Error, TD_VERIFIED_REPORT_SIZE,
 };
@@ -27,7 +27,16 @@ compile_error!(
 
 pub const TD_QUOTE_SIZE: usize = 0x2000;
 const TD_REPORT_VERIFY_SIZE: usize = 1024;
-const ATTEST_HEAP_SIZE: usize = 0x80000;
+// NOTE: bumped from 0x80000 (512 KiB) to 0x200000 (2 MiB).
+// Each verify_quote_integrity_ex() call allocates from this private heap and
+// the dlmalloc heap does not move sbrk down (limited defragmentation after
+// each free() calls) to original position after the call returns. With
+// LOCAL_TCB_INFO caching removed (commit 3c44ea9), each migration now does
+// up to 4 verify_quote calls in the same MigTD process (loopback), which can
+// exhaust the 512 KiB heap at 3rd call due to statics and fragmentation in
+// heap, and trigger an internal abort (#UD) inside the C verifier lib with
+// no error code returned.
+const ATTEST_HEAP_SIZE: usize = 0x200000;
 
 /// C-compatible version of Collateral with null-terminated strings
 #[derive(Debug)]
@@ -102,10 +111,11 @@ pub fn get_quote(td_report: &[u8]) -> Result<Vec<u8>, Error> {
                 quote.as_mut_ptr() as *mut c_void,
                 &mut quote_size as *mut u32,
             );
-            if result != AttestLibError::Success {
-                log::error!("get_quote_inner failed with error: {:?}\n", result);
+            if result != 0 {
+                log::error!("get_quote_inner failed with error: {:#x}\n", result);
                 return Err(match result {
-                    AttestLibError::Busy => Error::Busy,
+                    // SERVTD_ATTEST_ERROR_BUSY from servtd_attest.h
+                    0x0043 => Error::Busy,
                     _ => Error::GetQuote,
                 });
             }
@@ -132,8 +142,8 @@ pub fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, Error> {
             td_report_verify.as_mut_ptr() as *mut c_void,
             &mut report_verify_size as *mut u32,
         );
-        if result != AttestLibError::Success {
-            log::error!("verify_quote_integrity failed with error: {:?}\n", result);
+        if result != 0 {
+            log::error!("verify_quote_integrity failed with error: {:#x}\n", result);
             return Err(Error::VerifyQuote);
         }
     }
@@ -174,9 +184,9 @@ pub fn verify_quote_with_collaterals(
             td_report_verify.as_mut_ptr() as *mut c_void,
             &mut report_verify_size as *mut u32,
         );
-        if result != AttestLibError::Success {
+        if result != 0 {
             log::error!(
-                "verify_quote_integrity_ex failed with error: {:?}\n",
+                "verify_quote_integrity_ex failed with error: {:#x}\n",
                 result
             );
             return Err(Error::VerifyQuote);

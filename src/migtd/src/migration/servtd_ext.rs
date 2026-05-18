@@ -123,11 +123,19 @@ pub fn read_servtd_ext(
     read_field(TDCS_FIELD_SERVTD_INFO_HASH, 8, &mut cur_servtd_info_hash)?;
     read_field(TDCS_FIELD_SERVTD_ATTR, 8, &mut cur_servtd_attr)?;
 
-    // Verify CURR_SERVTD_ATTR matches the hardcoded expected value per GHCI 1.5.
+    // Verify CURR_SERVTD_ATTR matches both the hardcoded expected value and the
+    // INIT_ATTR from MigTDData's TDINFO per GHCI 1.5.
     let actual_attr = u64::from_le_bytes(cur_servtd_attr);
+    let expected_init_attr = u64::from_le_bytes(init_attr);
     if actual_attr != EXPECTED_SERVTD_ATTR {
         log::error!(
-            "SERVTD_ATTR mismatch: expected {EXPECTED_SERVTD_ATTR:#x}, got {actual_attr:#x}"
+            "SERVTD_ATTR mismatch vs hardcoded: expected {EXPECTED_SERVTD_ATTR:#x}, got {actual_attr:#x}"
+        );
+        return Err(MigrationResult::InvalidParameter);
+    }
+    if actual_attr != expected_init_attr {
+        log::error!(
+            "SERVTD_ATTR mismatch vs INIT_ATTR: expected {expected_init_attr:#x}, got {actual_attr:#x}"
         );
         return Err(MigrationResult::InvalidParameter);
     }
@@ -144,6 +152,36 @@ pub fn read_servtd_ext(
         reserved: [0u8; 8],
         reserved2: [0u8; 104],
     })
+}
+
+/// Verify that CURR_SERVTD_ATTR of the target TD matches both the hardcoded
+/// expected value and the INIT_ATTR from MigTDData's TDINFO.
+///
+/// Per GHCI 1.5: Both source and destination MigTDs must verify this before
+/// any TDG.SERVTD.WR operations (mig_dec_key, mig_version).
+pub fn verify_servtd_attr(
+    binding_handle: u64,
+    target_td_uuid: &[u64],
+) -> Result<(), MigrationResult> {
+    let result = tdcall_servtd_rd(binding_handle, TDCS_FIELD_SERVTD_ATTR, target_td_uuid)?;
+    let actual_attr = result.content;
+    if actual_attr != EXPECTED_SERVTD_ATTR {
+        log::error!(
+            "SERVTD_ATTR mismatch vs hardcoded: expected {EXPECTED_SERVTD_ATTR:#x}, got {actual_attr:#x}"
+        );
+        return Err(MigrationResult::InvalidParameter);
+    }
+
+    let init_result =
+        tdcall_servtd_rd(binding_handle, TDCS_FIELD_SERVTD_INIT_ATTR, target_td_uuid)?;
+    let expected_init_attr = init_result.content;
+    if actual_attr != expected_init_attr {
+        log::error!(
+            "SERVTD_ATTR mismatch vs INIT_ATTR: expected {expected_init_attr:#x}, got {actual_attr:#x}"
+        );
+        return Err(MigrationResult::InvalidParameter);
+    }
+    Ok(())
 }
 
 pub fn write_approved_servtd_ext_hash(servtd_ext_hash: &[u8]) -> Result<(), MigrationResult> {
