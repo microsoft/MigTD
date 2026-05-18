@@ -459,7 +459,7 @@ fn parse_request(
 
 #[cfg(feature = "vmcall-raw")]
 pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
-    let mut reqbufferhdr = RequestDataBufferHeader {
+    let reqbufferhdr = RequestDataBufferHeader {
         datastatus: 0,
         length: 0,
     };

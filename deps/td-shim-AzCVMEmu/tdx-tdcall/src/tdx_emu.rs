@@ -1047,7 +1047,7 @@ pub fn tdcall_sys_wr(field_identifier: u64, value: u64) -> core::result::Result<
 }
 
 /// Emulation for TDG.VM.WR: write a TD-scope metadata field
-pub fn tdcall_vm_write(field_identifier: u64, value: u64, mask: u64) -> Result<u64, TdCallError> {
+pub fn tdcall_vm_write(field_identifier: u64, value: u64, _mask: u64) -> Result<u64, TdCallError> {
     warn!(
         "AzCVMEmu: tdcall_vm_write emulated: field=0x{:x} <= 0x{:x}",
         field_identifier, value
