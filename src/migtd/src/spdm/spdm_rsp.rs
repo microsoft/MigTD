@@ -752,32 +752,29 @@ fn rsp_verify_peer_attestation_v2(
     //    The init TDINFO cross-check is bypassed below (TEST MODE).
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
-        let verified_report_peer = match mig_policy::authenticate_remote(
-            false,
-            quote_peer,
-            peer_data,
-            event_log_peer,
-        ) {
-            Err(e) => {
-                error!("Policy v2 check failed, below is the detail information:\n");
-                error!("{:x?}\n", e);
-                let session = responder_context
-                    .common
-                    .get_session_via_id(session_id)
-                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-                session.teardown();
-                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-            }
-            Ok(s) => s,
-        };
+        let verified_report_peer =
+            match mig_policy::authenticate_remote(false, quote_peer, peer_data, event_log_peer) {
+                Err(e) => {
+                    error!("Policy v2 check failed, below is the detail information:\n");
+                    error!("{:x?}\n", e);
+                    let session = responder_context
+                        .common
+                        .get_session_via_id(session_id)
+                        .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                    session.teardown();
+                    return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+                }
+                Ok(s) => s,
+            };
 
         // REVERT_ME: TEST MODE — cross-check peer's init TDINFO against
         // MROWNER/MROWNERCONFIG from the verified quote supplemental data.
         // Failures are logged but do not abort, so MigTD can run against
         // hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
-        if let Err(e) =
-            mig_policy::verify_peer_init_tdinfo_against_suppl_data(peer_init_td_info, &verified_report_peer)
-        {
+        if let Err(e) = mig_policy::verify_peer_init_tdinfo_against_suppl_data(
+            peer_init_td_info,
+            &verified_report_peer,
+        ) {
             error!(
                 "verify_peer_init_tdinfo_against_suppl_data failed: {:?} \
                  (ignored: TEST MODE, continuing)\n",

@@ -613,9 +613,7 @@ fn maybe_truncate(msg: Vec<u8>) -> Vec<u8> {
     out.extend_from_slice(head);
     out.extend_from_slice(b"... ");
     out.extend_from_slice(tail);
-    out.extend_from_slice(
-        format!(", log truncated number of bytes: {}\n", truncated).as_bytes(),
-    );
+    out.extend_from_slice(format!(", log truncated number of bytes: {}\n", truncated).as_bytes());
     out
 }
 
@@ -672,11 +670,7 @@ impl log::Log for VmmLoggerBackend {
                         msg_str
                     ));
                 } else {
-                    td_logger::dbg_write_string(&format!(
-                        "{} - {}",
-                        record.level(),
-                        msg_str
-                    ));
+                    td_logger::dbg_write_string(&format!("{} - {}", record.level(), msg_str));
                 }
             }
         }
@@ -1636,7 +1630,10 @@ mod test {
     fn test_maybe_truncate_at_threshold() {
         let msg = vec![b'A'; LOG_TRUNCATE_THRESHOLD];
         let result = maybe_truncate(msg.clone());
-        assert_eq!(result, msg, "message exactly at threshold should not be truncated");
+        assert_eq!(
+            result, msg,
+            "message exactly at threshold should not be truncated"
+        );
     }
 
     #[test]

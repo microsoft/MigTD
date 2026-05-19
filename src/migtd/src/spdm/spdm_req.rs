@@ -1076,25 +1076,26 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
     // Resolve the initial TDINFO_STRUCT: use VMM-provided bytes when present,
     // otherwise fall back to the local MigTD's self-report.
     let local_td_info;
-    let init_td_info: &[u8; crate::migration::TD_INFO_SIZE] =
-        match rebind_info.init_td_info_if_present() {
-            Some(t) => {
-                log::trace!(
-                    migration_request_id = rebind_info.mig_request_id;
-                    "send_and_receive_sdm_rebind_attest_info: using VMM-provided init_td_info\n"
-                );
-                t
-            }
-            None => {
-                log::trace!(
-                    migration_request_id = rebind_info.mig_request_id;
-                    "send_and_receive_sdm_rebind_attest_info: VMM omitted init_td_info, falling back to local tdcall_report\n"
-                );
-                local_td_info = crate::migration::local_init_td_info()
-                    .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
-                &local_td_info
-            }
-        };
+    let init_td_info: &[u8; crate::migration::TD_INFO_SIZE] = match rebind_info
+        .init_td_info_if_present()
+    {
+        Some(t) => {
+            log::trace!(
+                migration_request_id = rebind_info.mig_request_id;
+                "send_and_receive_sdm_rebind_attest_info: using VMM-provided init_td_info\n"
+            );
+            t
+        }
+        None => {
+            log::trace!(
+                migration_request_id = rebind_info.mig_request_id;
+                "send_and_receive_sdm_rebind_attest_info: VMM omitted init_td_info, falling back to local tdcall_report\n"
+            );
+            local_td_info = crate::migration::local_init_td_info()
+                .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            &local_td_info
+        }
+    };
     crate::migration::trace_td_info(
         "send_and_receive_sdm_rebind_attest_info",
         rebind_info.mig_request_id,
