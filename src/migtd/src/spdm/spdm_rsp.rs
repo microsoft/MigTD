@@ -529,6 +529,8 @@ pub fn handle_exchange_mig_attest_info_req(
     let servtd_ext_bytes = reader
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
+    #[cfg(feature = "policy_v2")]
+    let servtd_ext_bytes_vec = servtd_ext_bytes.to_vec();
 
     // Store SERVTD_EXT in ResponderContextEx for later use during MSK exchange
     #[cfg(feature = "policy_v2")]
@@ -594,6 +596,7 @@ pub fn handle_exchange_mig_attest_info_req(
             &event_log_src_vec,
             &mig_policy_hash_src,
             &td_report_init_vec,
+            &servtd_ext_bytes_vec,
             &peer_data,
             &th1,
             responder_context,
@@ -731,6 +734,7 @@ fn rsp_verify_peer_attestation_v2(
     event_log_peer: &[u8],
     mig_policy_hash_peer: &[u8],
     peer_init_td_info: &[u8],
+    servtd_ext_peer: &[u8],
     peer_data: &[u8],
     th1: &SpdmDigestStruct,
     responder_context: &mut ResponderContext,
@@ -748,39 +752,29 @@ fn rsp_verify_peer_attestation_v2(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
-    // 2. Authenticate remote (includes quote verification internally).
-    //    The init TDINFO cross-check is bypassed below (TEST MODE).
+    // 2. Authenticate remote, verify init TDINFO integrity against ServtdExt,
+    //    and evaluate policy with init TDINFO as reference.
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
-        let verified_report_peer =
-            match mig_policy::authenticate_remote(false, quote_peer, peer_data, event_log_peer) {
-                Err(e) => {
-                    error!("Policy v2 check failed, below is the detail information:\n");
-                    error!("{:x?}\n", e);
-                    let session = responder_context
-                        .common
-                        .get_session_via_id(session_id)
-                        .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-                    session.teardown();
-                    return Err(SPDM_STATUS_INVALID_MSG_FIELD);
-                }
-                Ok(s) => s,
-            };
-
-        // REVERT_ME: TEST MODE — cross-check peer's init TDINFO against
-        // MROWNER/MROWNERCONFIG from the verified quote supplemental data.
-        // Failures are logged but do not abort, so MigTD can run against
-        // hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
-        if let Err(e) = mig_policy::verify_peer_init_tdinfo_against_suppl_data(
+        let verified_report_peer = match mig_policy::authenticate_migration_source_with_init_tdinfo(
+            quote_peer,
+            peer_data,
+            event_log_peer,
             peer_init_td_info,
-            &verified_report_peer,
+            servtd_ext_peer,
         ) {
-            error!(
-                "verify_peer_init_tdinfo_against_suppl_data failed: {:?} \
-                 (ignored: TEST MODE, continuing)\n",
-                e
-            );
-        }
+            Err(e) => {
+                error!("Policy v2 check failed, below is the detail information:\n");
+                error!("{:x?}\n", e);
+                let session = responder_context
+                    .common
+                    .get_session_via_id(session_id)
+                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                session.teardown();
+                return Err(SPDM_STATUS_INVALID_MSG_FIELD);
+            }
+            Ok(s) => s,
+        };
 
         // 3. Verify REPORTDATA binding using supplemental data from authenticate_remote
         #[cfg(not(any(
@@ -809,7 +803,7 @@ fn rsp_verify_peer_attestation_v2(
     }
 
     #[cfg(feature = "test_disable_ra_and_accept_all")]
-    let _ = peer_init_td_info;
+    let _ = (peer_init_td_info, servtd_ext_peer);
 
     Ok(())
 }

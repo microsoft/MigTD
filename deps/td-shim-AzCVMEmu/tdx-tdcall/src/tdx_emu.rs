@@ -137,6 +137,10 @@ pub fn set_emulated_start_migration(
         target_td_uuid,
         binding_handle,
     });
+
+    // Step 4: Populate ServTD extension fields from TD report data
+    // (mirrors the rebinding path — needed for init_TDINFO verification)
+    populate_servtd_fields(binding_handle, target_td_uuid);
 }
 
 /// Helper: Set a GetTDReport request
