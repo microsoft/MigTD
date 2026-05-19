@@ -93,23 +93,8 @@ pub async fn spdm_requester_transfer_msk(
     mig_info: &MigtdMigrationInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
-    log::info!("BC> REQ-01 spdm_requester_transfer_msk: send_receive_spdm_version\n");
-    Box::pin(spdm_requester.send_receive_spdm_version()).await?;
-    log::info!("BC> REQ-02 send_receive_spdm_capability\n");
-    Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
-    log::info!("BC> REQ-03 send_receive_spdm_algorithm\n");
-    Box::pin(spdm_requester.send_receive_spdm_algorithm()).await?;
+    let session_id = crate::spdm::handshake::requester_handshake_prelude(spdm_requester).await?;
 
-    log::info!("BC> REQ-04 send_and_receive_pub_key\n");
-    Box::pin(send_and_receive_pub_key(spdm_requester)).await?;
-    log::info!("BC> REQ-05 send_receive_spdm_key_exchange\n");
-    let session_id = Box::pin(spdm_requester.send_receive_spdm_key_exchange(
-        0xff,
-        SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeNone,
-    ))
-    .await?;
-
-    log::info!("BC> REQ-06 send_and_receive_sdm_migration_attest_info BEGIN\n");
     Box::pin(send_and_receive_sdm_migration_attest_info(
         spdm_requester,
         mig_info,
@@ -118,21 +103,17 @@ pub async fn spdm_requester_transfer_msk(
         peer_data,
     ))
     .await?;
-    log::info!(
-        "BC> REQ-07 send_and_receive_sdm_migration_attest_info OK; send_receive_spdm_finish\n"
-    );
 
     Box::pin(spdm_requester.send_receive_spdm_finish(Some(0xff), session_id)).await?;
-    log::info!("BC> REQ-08 send_receive_spdm_finish OK; send_and_receive_sdm_exchange_migration_info BEGIN\n");
+
     Box::pin(send_and_receive_sdm_exchange_migration_info(
         spdm_requester,
         mig_info,
         Some(session_id),
     ))
     .await?;
-    log::info!("BC> REQ-09 send_and_receive_sdm_exchange_migration_info OK; send_receive_spdm_end_session\n");
+
     Box::pin(spdm_requester.send_receive_spdm_end_session(session_id)).await?;
-    log::info!("BC> REQ-10 spdm_requester_transfer_msk DONE\n");
 
     Ok(())
 }
