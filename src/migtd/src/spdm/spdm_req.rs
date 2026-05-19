@@ -443,8 +443,21 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         let tdinfo_init_local;
         #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
         let tdinfo_init: &[u8] = if let Some(td_info) = mig_info.init_td_info_if_present() {
+            log::trace!(
+                migration_request_id = mig_info.mig_request_id;
+                "send_and_receive_sdm_migration_attest_info: using VMM-provided init_td_info\n"
+            );
+            crate::migration::trace_td_info(
+                "send_and_receive_sdm_migration_attest_info",
+                mig_info.mig_request_id,
+                td_info,
+            );
             td_info
         } else {
+            log::trace!(
+                migration_request_id = mig_info.mig_request_id;
+                "send_and_receive_sdm_migration_attest_info: VMM omitted init_td_info, falling back to local tdcall_report\n"
+            );
             tdinfo_init_local = crate::migration::local_init_td_info()
                 .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
             &tdinfo_init_local
@@ -1066,13 +1079,28 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
     let local_td_info;
     let init_td_info: &[u8; crate::migration::TD_INFO_SIZE] =
         match rebind_info.init_td_info_if_present() {
-            Some(t) => t,
+            Some(t) => {
+                log::trace!(
+                    migration_request_id = rebind_info.mig_request_id;
+                    "send_and_receive_sdm_rebind_attest_info: using VMM-provided init_td_info\n"
+                );
+                t
+            }
             None => {
+                log::trace!(
+                    migration_request_id = rebind_info.mig_request_id;
+                    "send_and_receive_sdm_rebind_attest_info: VMM omitted init_td_info, falling back to local tdcall_report\n"
+                );
                 local_td_info = crate::migration::local_init_td_info()
                     .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
                 &local_td_info
             }
         };
+    crate::migration::trace_td_info(
+        "send_and_receive_sdm_rebind_attest_info",
+        rebind_info.mig_request_id,
+        init_td_info,
+    );
 
     let servtd_ext = read_servtd_ext(binding_handle, target_td_uuid)
         .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;

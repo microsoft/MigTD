@@ -89,6 +89,11 @@ pub async fn start_rebinding(
     // be rejected on the standard migration path.
     #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
     if let Some(init_td_info) = info.init_td_info_if_present() {
+        crate::migration::trace_td_info(
+            "start_rebinding: verify_init_migtd_data_policy_binding",
+            info.mig_request_id,
+            init_td_info,
+        );
         crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info).map_err(|e| {
             log::error!(
                 migration_request_id = info.mig_request_id;
@@ -257,12 +262,27 @@ async fn rebinding_old_prepare(
     // otherwise fall back to the local MigTD's self-report.
     let local;
     let init_td_info: &[u8; TD_INFO_SIZE] = match info.init_td_info_if_present() {
-        Some(t) => t,
+        Some(t) => {
+            log::trace!(
+                migration_request_id = info.mig_request_id;
+                "rebinding_old_prepare: using VMM-provided init_td_info\n"
+            );
+            t
+        }
         None => {
+            log::trace!(
+                migration_request_id = info.mig_request_id;
+                "rebinding_old_prepare: VMM omitted init_td_info, falling back to local tdcall_report\n"
+            );
             local = crate::migration::local_init_td_info()?;
             &local
         }
     };
+    crate::migration::trace_td_info(
+        "rebinding_old_prepare: client_rebinding",
+        info.mig_request_id,
+        init_td_info,
+    );
 
     // Per GHCI 1.5: init policy key hash is in tdinfo.mrowner.
     // Use mrowner directly as the init_policy_hash equivalent.

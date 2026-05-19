@@ -317,6 +317,22 @@ async fn report_wait_for_request_error(request_id: u64, status: MigrationResult)
     }
 }
 
+/// Trace-dump the host-provided `init_td_info` carried by an incoming
+/// `MigtdMigrationInformation`. Logs the full TDINFO_STRUCT bytes plus
+/// `mrowner` / `mrownerconfig` when present, or a single line noting that
+/// the VMM omitted the optional payload.
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+fn trace_init_td_info_from_host(context: &str, info: &MigtdMigrationInformation) {
+    match info.init_td_info_if_present() {
+        Some(td_info) => trace_td_info(context, info.mig_request_id, td_info),
+        None => log::trace!(
+            migration_request_id = info.mig_request_id;
+            "{}: no init_td_info provided by host (has_init_data == 0)\n",
+            context
+        ),
+    }
+}
+
 /// Parse a raw request buffer into a typed WaitForRequestResponse.
 ///
 #[cfg(feature = "vmcall-raw")]
@@ -401,6 +417,8 @@ fn parse_request(
     match op {
         DataStatusOperation::StartMigration => {
             decode_and_dispatch!(MigtdMigrationInformation, |mig_info| {
+                #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+                trace_init_td_info_from_host("wait_for_request[StartMigration]", &mig_info);
                 WaitForRequestResponse::StartMigration(MigrationInformation { mig_info })
             })
         }
@@ -408,6 +426,7 @@ fn parse_request(
             #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
             {
                 decode_and_dispatch!(MigtdMigrationInformation, |info| {
+                    trace_init_td_info_from_host("wait_for_request[StartRebinding]", &info);
                     WaitForRequestResponse::StartRebinding(info)
                 })
             }
@@ -1033,6 +1052,11 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     // against peers/hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
     #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
     if let Some(init_td_info) = info.mig_info.init_td_info_if_present() {
+        trace_td_info(
+            "exchange_msk: verify_init_migtd_data_policy_binding",
+            info.mig_info.mig_request_id,
+            init_td_info,
+        );
         if let Err(e) = crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info) {
             log::error!(
                 migration_request_id = info.mig_info.mig_request_id;
