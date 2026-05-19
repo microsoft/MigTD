@@ -718,6 +718,11 @@ fn verify_peer_attestation_v2(
     log::info!("BC> REQ-V2-02 digest_sha384(peer_data) ok\n");
     if mig_policy_hash_peer != peer_data_hash.as_slice() {
         error!("The received mig policy hash does not match the expected peer_data hash!\n");
+        let session = spdm_requester
+            .common
+            .get_session_via_id(session_id)
+            .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        session.teardown();
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
     log::info!("BC> REQ-V2-03 mig_policy_hash matches peer_data_hash\n");
