@@ -7,6 +7,7 @@ use crate::migration::pre_session_data::pre_session_data_exchange;
 #[cfg(not(feature = "spdm_attestation"))]
 use crate::migration::servtd_ext::verify_servtd_attr;
 use crate::migration::transport::setup_transport;
+#[cfg(not(feature = "spdm_attestation"))]
 use crate::migration::transport::shutdown_transport;
 use crate::migration::transport::TransportType;
 #[cfg(feature = "policy_v2")]
@@ -15,6 +16,7 @@ use alloc::collections::BTreeSet;
 
 #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
 use core::sync::atomic::Ordering;
+#[cfg(any(not(feature = "spdm_attestation"), feature = "policy_v2"))]
 use core::time::Duration;
 use core::{future::poll_fn, mem::size_of, task::Poll};
 #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
@@ -33,6 +35,7 @@ use zerocopy::IntoBytes;
 type Result<T> = core::result::Result<T, MigrationResult>;
 
 use super::{data::*, *};
+#[cfg(any(not(feature = "spdm_attestation"), feature = "policy_v2"))]
 use crate::driver::ticks::with_timeout;
 #[cfg(not(feature = "spdm_attestation"))]
 use crate::ratls;
@@ -952,46 +955,24 @@ async fn migration_src_exchange_msk(
     info: &MigrationInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<()> {
-    use core::ops::DerefMut;
+    use crate::migration::spdm_session::{finalize_spdm_session, map_spdm_setup_err};
 
-    log::info!(
-        "BC> SIDE=SRC migration_src_exchange_msk ENTER mig_request_id={}\n",
-        info.mig_info.mig_request_id
-    );
-    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-    let (mut spdm_requester, device_io_ref) = spdm::spdm_requester(transport).map_err(|_e| {
-        log::error!(
-            "exchange_msk(): Failed in spdm_requester transport. Migration ID: {}\n",
-            info.mig_info.mig_request_id
-        );
-        MigrationResult::SecureSessionError
-    })?;
-    with_timeout(
-        SPDM_TIMEOUT,
+    let (mut spdm_requester, io_ref) = spdm::spdm_requester(transport)
+        .map_err(|_| map_spdm_setup_err(info.mig_info.mig_request_id))?;
+
+    finalize_spdm_session(
         spdm::spdm_requester_transfer_msk(
             &mut spdm_requester,
             &info.mig_info,
             #[cfg(feature = "policy_v2")]
             peer_data,
         ),
+        io_ref,
+        info.mig_info.mig_request_id,
     )
-    .await
-    .map_err(|e| {
-        log::error!(
-            "exchange_msk: spdm_requester_transfer_msk timeout error: {:?}\n",
-            e
-        );
-        e
-    })?
-    .map_err(|e| {
-        log::error!("exchange_msk: spdm_requester_transfer_msk error: {:?}\n", e);
-        e
-    })?;
-    log::info!("MSK exchange completed\n");
+    .await?;
 
-    let mut transport_lock = device_io_ref.lock();
-    let transport = transport_lock.deref_mut();
-    shutdown_transport(&mut transport.transport, info.mig_info.mig_request_id).await?;
+    log::info!("MSK exchange completed\n");
     Ok(())
 }
 
@@ -1001,47 +982,24 @@ async fn migration_dst_exchange_msk(
     info: &MigrationInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<()> {
-    use core::ops::DerefMut;
+    use crate::migration::spdm_session::{finalize_spdm_session, map_spdm_setup_err};
 
-    log::info!(
-        "BC> SIDE=DST migration_dst_exchange_msk ENTER mig_request_id={}\n",
-        info.mig_info.mig_request_id
-    );
-    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-    let (mut spdm_responder, device_io_ref) = spdm::spdm_responder(transport).map_err(|_e| {
-        log::error!(
-            "exchange_msk(): Failed in spdm_responder transport. Migration ID: {}\n",
-            info.mig_info.mig_request_id
-        );
-        MigrationResult::SecureSessionError
-    })?;
+    let (mut spdm_responder, io_ref) = spdm::spdm_responder(transport)
+        .map_err(|_| map_spdm_setup_err(info.mig_info.mig_request_id))?;
 
-    with_timeout(
-        SPDM_TIMEOUT,
+    finalize_spdm_session(
         spdm::spdm_responder_transfer_msk(
             &mut spdm_responder,
             &info.mig_info,
             #[cfg(feature = "policy_v2")]
             peer_data,
         ),
+        io_ref,
+        info.mig_info.mig_request_id,
     )
-    .await
-    .map_err(|e| {
-        log::error!(
-            "exchange_msk: spdm_responder_transfer_msk timeout error: {:?}\n",
-            e
-        );
-        e
-    })?
-    .map_err(|e| {
-        log::error!("exchange_msk: spdm_responder_transfer_msk error: {:?}\n", e);
-        e
-    })?;
-    log::info!("MSK exchange completed\n");
+    .await?;
 
-    let mut transport_lock = device_io_ref.lock();
-    let transport = transport_lock.deref_mut();
-    shutdown_transport(&mut transport.transport, info.mig_info.mig_request_id).await?;
+    log::info!("MSK exchange completed\n");
     Ok(())
 }
 
