@@ -22,6 +22,7 @@ use spdmlib::{
     requester::RequesterContext,
 };
 use spin::Mutex;
+use zeroize::Zeroize;
 extern crate alloc;
 #[cfg(feature = "policy_v2")]
 use crate::migration::pre_session_data::local_peer_data;
@@ -85,6 +86,29 @@ pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>
 }
 
 pub async fn spdm_requester_transfer_msk(
+    spdm_requester: &mut RequesterContext,
+    mig_info: &MigtdMigrationInformation,
+    exchange_information: &ExchangeInformation,
+    #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
+) -> Result<ExchangeInformation, SpdmStatus> {
+    // `send_and_receive_pub_key` encodes the requester's ephemeral ECDSA
+    // private key into `spdm_requester.common.app_context_data_buffer` so
+    // libspdm's asymmetric signing callback can read it. The libspdm
+    // `SpdmContext` provides no automatic cleanup for that buffer (it is a
+    // plain `[u8; SIZE]`), so wipe it on every return path here.
+    let result = transfer_msk_inner(
+        spdm_requester,
+        mig_info,
+        exchange_information,
+        #[cfg(feature = "policy_v2")]
+        peer_data,
+    )
+    .await;
+    spdm_requester.common.app_context_data_buffer.zeroize();
+    result
+}
+
+async fn transfer_msk_inner(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
     exchange_information: &ExchangeInformation,
