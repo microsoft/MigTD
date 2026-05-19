@@ -155,23 +155,13 @@ pub async fn spdm_responder_transfer_msk(
     #[cfg(not(feature = "policy_v2"))]
     let peer_data = Vec::new();
 
-    spdm_responder_ex.peer_data = peer_data;
-
-    let spdm_responder = &mut spdm_responder_ex.responder_context;
-    let mut writer = Writer::init(&mut spdm_responder.common.app_context_data_buffer);
-
-    let responder_app_context = SpdmAppContextData {
+    let app_context = SpdmAppContextData {
         migration_info: mig_info.clone(),
         private_key: PrivateKeyDer::default(),
     };
-    responder_app_context
-        .encode(&mut writer)
-        .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
 
-    Box::pin(rsp_handle_message(spdm_responder)).await?;
-    spdm_responder.common.app_context_data_buffer.zeroize();
-
-    Ok(())
+    crate::spdm::handshake::run_responder_message_loop(spdm_responder_ex, peer_data, app_context)
+        .await
 }
 
 pub async fn rsp_handle_message(spdm_responder: &mut ResponderContext) -> Result<(), SpdmStatus> {

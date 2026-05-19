@@ -91,16 +91,7 @@ pub async fn spdm_requester_transfer_msk(
     mig_info: &MigtdMigrationInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
-    Box::pin(spdm_requester.send_receive_spdm_version()).await?;
-    Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
-    Box::pin(spdm_requester.send_receive_spdm_algorithm()).await?;
-
-    Box::pin(send_and_receive_pub_key(spdm_requester)).await?;
-    let session_id = Box::pin(spdm_requester.send_receive_spdm_key_exchange(
-        0xff,
-        SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeNone,
-    ))
-    .await?;
+    let session_id = crate::spdm::handshake::requester_handshake_prelude(spdm_requester).await?;
 
     Box::pin(send_and_receive_sdm_migration_attest_info(
         spdm_requester,
@@ -112,12 +103,14 @@ pub async fn spdm_requester_transfer_msk(
     .await?;
 
     Box::pin(spdm_requester.send_receive_spdm_finish(Some(0xff), session_id)).await?;
+
     Box::pin(send_and_receive_sdm_exchange_migration_info(
         spdm_requester,
         mig_info,
         Some(session_id),
     ))
     .await?;
+
     Box::pin(spdm_requester.send_receive_spdm_end_session(session_id)).await?;
 
     Ok(())
