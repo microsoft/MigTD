@@ -3,11 +3,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 use crate::mig_policy;
 use crate::{
-    migration::{
-        data::MigrationSessionKey,
-        session::{cal_mig_version, exchange_info, set_mig_version, write_msk},
-        MigtdMigrationInformation,
-    },
+    migration::{data::MigrationSessionKey, MigtdMigrationInformation},
     spdm::{
         build_report_data, gen_quote_spdm, spdm_rsp::SECRET_ASYM_IMPL_INSTANCE,
         verify_report_data_binding, verify_tdreport_data_binding, vmcall_msg::VmCallTransportEncap,
@@ -91,8 +87,9 @@ pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>
 pub async fn spdm_requester_transfer_msk(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
+    exchange_information: &ExchangeInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
-) -> Result<(), SpdmStatus> {
+) -> Result<ExchangeInformation, SpdmStatus> {
     let session_id = crate::spdm::handshake::requester_handshake_prelude(spdm_requester).await?;
 
     Box::pin(send_and_receive_sdm_migration_attest_info(
@@ -106,16 +103,16 @@ pub async fn spdm_requester_transfer_msk(
 
     Box::pin(spdm_requester.send_receive_spdm_finish(Some(0xff), session_id)).await?;
 
-    Box::pin(send_and_receive_sdm_exchange_migration_info(
+    let remote_information = Box::pin(send_and_receive_sdm_exchange_migration_info(
         spdm_requester,
-        mig_info,
+        exchange_information,
         Some(session_id),
     ))
     .await?;
 
     Box::pin(spdm_requester.send_receive_spdm_end_session(session_id)).await?;
 
-    Ok(())
+    Ok(remote_information)
 }
 
 pub async fn send_and_receive_pub_key(spdm_requester: &mut RequesterContext) -> SpdmResult {
@@ -764,14 +761,12 @@ fn verify_peer_attestation_v2(
 
 async fn send_and_receive_sdm_exchange_migration_info(
     spdm_requester: &mut RequesterContext,
-    mig_info: &MigtdMigrationInformation,
+    exchange_information: &ExchangeInformation,
     session_id: Option<u32>,
-) -> SpdmResult {
+) -> SpdmResult<ExchangeInformation> {
     let mut vendor_id = [0u8; MAX_SPDM_VENDOR_DEFINED_VENDOR_ID_LEN];
     vendor_id[..VDM_MESSAGE_VENDOR_ID_LEN].copy_from_slice(&VDM_MESSAGE_VENDOR_ID);
     let vendor_id = VendorIDStruct { len: 4, vendor_id };
-
-    let exchange_information = exchange_info(mig_info, false)?;
 
     let mut payload = vec![0u8; MAX_SPDM_VENDOR_DEFINED_PAYLOAD_SIZE];
     let mut writer = Writer::init(&mut payload);
@@ -940,13 +935,7 @@ async fn send_and_receive_sdm_exchange_migration_info(
         },
     };
 
-    let mig_ver = cal_mig_version(false, &exchange_information, &remote_information)?;
-    set_mig_version(mig_info, mig_ver)?;
-    log::info!("BC> REQ-MIG-03 about to write_msk\n");
-    write_msk(mig_info, &remote_information.key)?;
-    log::info!("BC> REQ-MIG-04 write_msk OK; Set MSK and report status\n");
-
-    Ok(())
+    Ok(remote_information)
 }
 
 #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
