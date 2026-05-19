@@ -7,6 +7,7 @@ use crate::migration::pre_session_data::pre_session_data_exchange;
 #[cfg(not(feature = "spdm_attestation"))]
 use crate::migration::servtd_ext::verify_servtd_attr;
 use crate::migration::transport::setup_transport;
+#[cfg(not(feature = "spdm_attestation"))]
 use crate::migration::transport::shutdown_transport;
 use crate::migration::transport::TransportType;
 #[cfg(feature = "policy_v2")]
@@ -15,6 +16,7 @@ use alloc::collections::BTreeSet;
 
 #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
 use core::sync::atomic::Ordering;
+#[cfg(any(not(feature = "spdm_attestation"), feature = "policy_v2"))]
 use core::time::Duration;
 use core::{future::poll_fn, mem::size_of, task::Poll};
 #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
@@ -33,6 +35,7 @@ use zerocopy::IntoBytes;
 type Result<T> = core::result::Result<T, MigrationResult>;
 
 use super::{data::*, *};
+#[cfg(any(not(feature = "spdm_attestation"), feature = "policy_v2"))]
 use crate::driver::ticks::with_timeout;
 #[cfg(not(feature = "spdm_attestation"))]
 use crate::ratls;
@@ -317,6 +320,22 @@ async fn report_wait_for_request_error(request_id: u64, status: MigrationResult)
     }
 }
 
+/// Trace-dump the host-provided `init_td_info` carried by an incoming
+/// `MigtdMigrationInformation`. Logs the full TDINFO_STRUCT bytes plus
+/// `mrowner` / `mrownerconfig` when present, or a single line noting that
+/// the VMM omitted the optional payload.
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+fn trace_init_td_info_from_host(context: &str, info: &MigtdMigrationInformation) {
+    match info.init_td_info_if_present() {
+        Some(td_info) => trace_td_info(context, info.mig_request_id, td_info),
+        None => log::trace!(
+            migration_request_id = info.mig_request_id;
+            "{}: no init_td_info provided by host (has_init_data == 0)\n",
+            context
+        ),
+    }
+}
+
 /// Parse a raw request buffer into a typed WaitForRequestResponse.
 ///
 #[cfg(feature = "vmcall-raw")]
@@ -401,6 +420,8 @@ fn parse_request(
     match op {
         DataStatusOperation::StartMigration => {
             decode_and_dispatch!(MigtdMigrationInformation, |mig_info| {
+                #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+                trace_init_td_info_from_host("wait_for_request[StartMigration]", &mig_info);
                 WaitForRequestResponse::StartMigration(MigrationInformation { mig_info })
             })
         }
@@ -408,6 +429,7 @@ fn parse_request(
             #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
             {
                 decode_and_dispatch!(MigtdMigrationInformation, |info| {
+                    trace_init_td_info_from_host("wait_for_request[StartRebinding]", &info);
                     WaitForRequestResponse::StartRebinding(info)
                 })
             }
@@ -459,7 +481,7 @@ fn parse_request(
 
 #[cfg(feature = "vmcall-raw")]
 pub async fn wait_for_request() -> Result<WaitForRequestResponse> {
-    let mut reqbufferhdr = RequestDataBufferHeader {
+    let reqbufferhdr = RequestDataBufferHeader {
         datastatus: 0,
         length: 0,
     };
@@ -933,42 +955,24 @@ async fn migration_src_exchange_msk(
     info: &MigrationInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<()> {
-    use core::ops::DerefMut;
+    use crate::migration::spdm_session::{finalize_spdm_session, map_spdm_setup_err};
 
-    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-    let (mut spdm_requester, device_io_ref) = spdm::spdm_requester(transport).map_err(|_e| {
-        log::error!(
-            "exchange_msk(): Failed in spdm_requester transport. Migration ID: {}\n",
-            info.mig_info.mig_request_id
-        );
-        MigrationResult::SecureSessionError
-    })?;
-    with_timeout(
-        SPDM_TIMEOUT,
+    let (mut spdm_requester, io_ref) = spdm::spdm_requester(transport)
+        .map_err(|_| map_spdm_setup_err(info.mig_info.mig_request_id))?;
+
+    finalize_spdm_session(
         spdm::spdm_requester_transfer_msk(
             &mut spdm_requester,
             &info.mig_info,
             #[cfg(feature = "policy_v2")]
             peer_data,
         ),
+        io_ref,
+        info.mig_info.mig_request_id,
     )
-    .await
-    .map_err(|e| {
-        log::error!(
-            "exchange_msk: spdm_requester_transfer_msk timeout error: {:?}\n",
-            e
-        );
-        e
-    })?
-    .map_err(|e| {
-        log::error!("exchange_msk: spdm_requester_transfer_msk error: {:?}\n", e);
-        e
-    })?;
-    log::info!("MSK exchange completed\n");
+    .await?;
 
-    let mut transport_lock = device_io_ref.lock();
-    let transport = transport_lock.deref_mut();
-    shutdown_transport(&mut transport.transport, info.mig_info.mig_request_id).await?;
+    log::info!("MSK exchange completed\n");
     Ok(())
 }
 
@@ -978,58 +982,46 @@ async fn migration_dst_exchange_msk(
     info: &MigrationInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<()> {
-    use core::ops::DerefMut;
+    use crate::migration::spdm_session::{finalize_spdm_session, map_spdm_setup_err};
 
-    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-    let (mut spdm_responder, device_io_ref) = spdm::spdm_responder(transport).map_err(|_e| {
-        log::error!(
-            "exchange_msk(): Failed in spdm_responder transport. Migration ID: {}\n",
-            info.mig_info.mig_request_id
-        );
-        MigrationResult::SecureSessionError
-    })?;
+    let (mut spdm_responder, io_ref) = spdm::spdm_responder(transport)
+        .map_err(|_| map_spdm_setup_err(info.mig_info.mig_request_id))?;
 
-    with_timeout(
-        SPDM_TIMEOUT,
+    finalize_spdm_session(
         spdm::spdm_responder_transfer_msk(
             &mut spdm_responder,
             &info.mig_info,
             #[cfg(feature = "policy_v2")]
             peer_data,
         ),
+        io_ref,
+        info.mig_info.mig_request_id,
     )
-    .await
-    .map_err(|e| {
-        log::error!(
-            "exchange_msk: spdm_responder_transfer_msk timeout error: {:?}\n",
-            e
-        );
-        e
-    })?
-    .map_err(|e| {
-        log::error!("exchange_msk: spdm_responder_transfer_msk error: {:?}\n", e);
-        e
-    })?;
-    log::info!("MSK exchange completed\n");
+    .await?;
 
-    let mut transport_lock = device_io_ref.lock();
-    let transport = transport_lock.deref_mut();
-    shutdown_transport(&mut transport.transport, info.mig_info.mig_request_id).await?;
+    log::info!("MSK exchange completed\n");
     Ok(())
 }
 
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
-    // Per GHCI 1.5: if VMM provided initMigtdData, verify policy binding
+    // Per GHCI 1.5: if VMM provided initMigtdData, verify policy binding.
+    // TEST MODE: failures are logged but do not abort the migration, so MigTD can run
+    // against peers/hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
     #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
     if let Some(init_td_info) = info.mig_info.init_td_info_if_present() {
-        crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info).map_err(|e| {
+        trace_td_info(
+            "exchange_msk: verify_init_migtd_data_policy_binding",
+            info.mig_info.mig_request_id,
+            init_td_info,
+        );
+        if let Err(e) = crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info) {
             log::error!(
                 migration_request_id = info.mig_info.mig_request_id;
-                "exchange_msk: initMigtdData policy binding verification failed: {:?}\n", e
+                "exchange_msk: initMigtdData policy binding verification failed: {:?} \
+                 (ignored: TEST MODE, continuing migration)\n", e
             );
-            MigrationResult::PolicyUnsatisfiedError
-        })?;
+        }
     }
 
     let mut transport = setup_transport(

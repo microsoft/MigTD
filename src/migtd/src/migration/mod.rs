@@ -12,6 +12,8 @@ pub mod rebinding;
 pub mod servtd_ext;
 #[cfg(feature = "main")]
 pub mod session;
+#[cfg(feature = "spdm_attestation")]
+pub mod spdm_session;
 #[cfg(feature = "main")]
 pub mod transport;
 
@@ -177,6 +179,34 @@ pub fn td_info_mrownerconfig(td_info: &[u8; TD_INFO_SIZE]) -> &[u8; TD_INFO_OWNE
         [TD_INFO_MROWNERCONFIG_OFFSET..TD_INFO_MROWNERCONFIG_OFFSET + TD_INFO_OWNER_FIELD_SIZE])
         .try_into()
         .expect("static slice bounds")
+}
+
+/// Trace-dump a raw TDINFO_STRUCT buffer.
+///
+/// Emits `trace`-level lines tagged with the migration request ID covering
+/// the full 512-byte buffer and its embedded `mrowner` / `mrownerconfig`
+/// fields. Only active at trace log level; no effect at default level.
+#[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+pub fn trace_td_info(context: &str, mig_request_id: u64, td_info: &[u8; TD_INFO_SIZE]) {
+    log::trace!(
+        migration_request_id = mig_request_id;
+        "{}: init_td_info ({} bytes) = {:02x?}\n",
+        context,
+        TD_INFO_SIZE,
+        &td_info[..]
+    );
+    log::trace!(
+        migration_request_id = mig_request_id;
+        "{}: init_td_info.mrowner = {:02x?}\n",
+        context,
+        td_info_mrowner(td_info)
+    );
+    log::trace!(
+        migration_request_id = mig_request_id;
+        "{}: init_td_info.mrownerconfig = {:02x?}\n",
+        context,
+        td_info_mrownerconfig(td_info)
+    );
 }
 
 /// Fetch the local MigTD's TDINFO_STRUCT bytes via `tdcall_report`.
