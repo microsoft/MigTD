@@ -32,22 +32,22 @@ pub(super) fn map_spdm_setup_err(mig_request_id: u64) -> MigrationResult {
 }
 
 /// Run an SPDM session `body` under [`SPDM_TIMEOUT`], then shut down the
-/// transport associated with `io_ref`.
+/// transport associated with `io_ref`. Returns any value produced by `body`.
 ///
 /// `body` is the already-constructed future returned by an SPDM exchange
 /// function (e.g. `spdm_requester_transfer_msk`, `spdm_responder_rebind_new`).
 /// The caller owns the SPDM context that `body` borrows; this helper only
 /// drives `body` to completion and then takes the device-IO lock to invoke
 /// `shutdown_transport`.
-pub(super) async fn finalize_spdm_session<Fut>(
+pub(super) async fn finalize_spdm_session<Fut, T>(
     body: Fut,
     io_ref: SpdmDeviceIoArc<TransportType>,
     mig_request_id: u64,
-) -> Result<()>
+) -> Result<T>
 where
-    Fut: Future<Output = core::result::Result<(), SpdmStatus>>,
+    Fut: Future<Output = core::result::Result<T, SpdmStatus>>,
 {
-    with_timeout(SPDM_TIMEOUT, body)
+    let value = with_timeout(SPDM_TIMEOUT, body)
         .await
         .map_err(|e| {
             log::error!(
@@ -66,5 +66,7 @@ where
 
     let mut transport_lock = io_ref.lock();
     let transport = transport_lock.deref_mut();
-    shutdown_transport(&mut transport.transport, mig_request_id).await
+    shutdown_transport(&mut transport.transport, mig_request_id).await?;
+
+    Ok(value)
 }
