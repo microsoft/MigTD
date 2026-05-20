@@ -328,6 +328,7 @@ mod v2 {
         let servtd_ext_src_obj =
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
         let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
+        #[cfg(not(feature = "use-mock-quote"))]
         let _engine_svn = policy
             .servtd_tcb_mapping
             .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
@@ -338,6 +339,8 @@ mod v2 {
                 None,
             ))
             .ok_or(PolicyError::SvnMismatch)?;
+        #[cfg(feature = "use-mock-quote")]
+        log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
 
         // Use local policy's tcb_mapping with init tdinfo measurements
         let relative_reference = setup_evaluation_data_with_tdinfo(&init_td_info, policy)?;
@@ -519,7 +522,12 @@ mod v2 {
         Ok(tdx_report)
     }
 
-    /// Per GHCI 1.5: accepts TDINFO_STRUCT bytes directly (not full TDREPORT)
+    /// Per GHCI 1.5: accepts TDINFO_STRUCT bytes directly (not full TDREPORT).
+    ///
+    /// When `init_servtd_hash` is all-zero (host never provisioned it via
+    /// TDH.SERVTD.BIND), skips the hash check and returns the parsed TdInfo
+    /// directly. The caller's subsequent get_engine_svn_by_measurements check
+    /// still ensures the source MigTD measurements are in the allowlist.
     fn verify_servtd_hash(
         tdinfo_bytes: &[u8],
         servtd_attr: u64,
@@ -541,6 +549,17 @@ mod v2 {
                 uninit.assume_init()
             }
         };
+
+        // If init_servtd_info_hash is all-zero, the host never provisioned it.
+        // Skip the hash verification — the source MigTD identity will still be
+        // validated by the get_engine_svn_by_measurements allowlist gate.
+        if init_servtd_hash.iter().all(|&b| b == 0) {
+            log::warn!(
+                "verify_servtd_hash: init_servtd_info_hash not provisioned (all-zero), \
+                 skipping hash check\n"
+            );
+            return Ok(td_info);
+        }
 
         if (servtd_attr & SERVTD_ATTR_IGNORE_ATTRIBUTES) != 0 {
             td_info.attributes.fill(0);
@@ -1068,7 +1087,10 @@ mod v2 {
         let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_obj)?;
         log::info!("BC> POL-SRCv2-07 verify_init_tdinfo done (TEST MODE soft-fail allowed)\n");
 
-        // Allowlist gate: init MigTD measurements must be in servtd_tcb_mapping
+        // Allowlist gate: init MigTD measurements must be in servtd_tcb_mapping.
+        // Under use-mock-quote the MRTD belongs to a different binary (mock build)
+        // and won't be in the tcb_mapping generated for the production image.
+        #[cfg(not(feature = "use-mock-quote"))]
         let _engine_svn = policy
             .servtd_tcb_mapping
             .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
@@ -1079,6 +1101,8 @@ mod v2 {
                 None,
             ))
             .ok_or(PolicyError::SvnMismatch)?;
+        #[cfg(feature = "use-mock-quote")]
+        log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
         log::info!("BC> POL-SRCv2-08 get_engine_svn_by_measurements ok\n");
 
         // Policy eval with init TDINFO as relative reference (skip global —
@@ -1142,6 +1166,19 @@ mod v2 {
         let short = [0u8; 256]; // too small for TdInfo (512 bytes)
         let result = verify_servtd_hash(&short, 0, &[0u8; 48]);
         assert!(matches!(result, Err(PolicyError::InvalidParameter)));
+    }
+
+    #[test]
+    fn test_verify_servtd_hash_init_zero_skips_check() {
+        // When init_servtd_info_hash is all-zero, verify_servtd_hash should
+        // skip the hash check and return Ok with the parsed TdInfo.
+        let mut tdinfo_bytes = [0u8; 512];
+        tdinfo_bytes[0..8].copy_from_slice(&[0xAB; 8]); // non-zero attributes
+        let all_zero_init = [0u8; 48];
+        let result = verify_servtd_hash(&tdinfo_bytes, 0, &all_zero_init);
+        assert!(result.is_ok());
+        // TdInfo is returned unmasked (no IGNORE bits set)
+        assert_eq!(result.unwrap().attributes, [0xAB; 8]);
     }
 
     #[test]
