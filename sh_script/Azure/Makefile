@@ -7,15 +7,14 @@ LOG_LEVEL ?= trace
 # Common features for IGVM images
 IGVM_FEATURES_BASE ?= vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation
 IGVM_FEATURES_GET_QUOTE ?= $(IGVM_FEATURES_BASE),igvm-attest
-# test_disable_ra_and_accept_all feature disables remote attestation and skips policy verification, bypassing RATLS security
-# test feature skips the compilation of attestation library when the remote attestation is not enabled or needed
 IGVM_MANIFEST ?= config/Azure/servtd_info.json
 
-.PHONY: generate-policy-accept generate-hash-accept build-igvm-accept build-igvm-accept-all
-.PHONY: pre-build build-igvm generate-hash build-igvm-all
-.PHONY: build-igvm-reject build-igvm-reject-all
-.PHONY: generate-hash-verbose generate-hash-accept-verbose
-.PHONY: build-igvm-get-quote build-igvm-get-quote-all generate-hash-get-quote
+.PHONY: pre-build generate-hash generate-hash-v2 generate-hash-v2-verbose generate-hash-verbose
+.PHONY: generate-hash-accept generate-hash-get-quote
+.PHONY: generate-policy-accept build-igvm-accept build-igvm-accept-all
+.PHONY: generate-policy-reject build-igvm-reject build-igvm-reject-all test-reject
+.PHONY: build-igvm build-igvm-all build-igvm-v2-mock
+.PHONY: build-igvm-get-quote build-igvm-get-quote-all
 .PHONY: build-igvm-mock-quote generate-policy-mock-quote
 .PHONY: build-igvm-mock-quote-allow-all generate-policy-mock-quote-allow-all
 
@@ -25,8 +24,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build-igvm-all                  - Build IGVM"
 	@echo "  build-igvm-accept-all           - Build IGVM with allow-all v2 policy using mock quote data"
-	@echo "  build-igvm-reject               - Build IGVM with v1 policy which will be rejected because on empty quote generation."
-	@echo "  build-igvm-reject-all           - Build IGVM with v1 policy which will be rejected because on empty quote generation."
+	@echo "  build-igvm-reject-all           - Build IGVM with bad-FMSPC v2 policy (migration will be rejected)"
 	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy which will call getquote durining initialization."
 	@echo "  build-igvm-mock-quote           - Build IGVM with v2 policy using mock quote data for testing."
 	@echo "  build-igvm-mock-quote-allow-all - Build IGVM with allow-all v2 policy using mock quote data."
@@ -49,15 +47,36 @@ pre-build:
 	chmod +x ../../sh_script/preparation.sh
 	cd ../../ && ./sh_script/preparation.sh
 
-generate-policy-accept:
-	chmod +x ./build_azure_mock_test.sh
-	./build_azure_mock_test.sh --allow-all
-	@if [ $$? -ne 0 ]; then \
-		echo "Failed to generate allow-all policy with mock report"; \
-		exit 1; \
-	fi
+# --- Hash generation (shared) ---
 
-build-igvm-accept:
+generate-hash:
+	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST) --policy-v2
+
+generate-hash-verbose:
+	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST) --verbose --policy-v2
+
+generate-hash-v2: generate-hash
+
+generate-hash-accept: generate-hash-v2
+
+generate-hash-get-quote: generate-hash-v2
+
+generate-hash-v2-verbose: generate-hash-verbose
+
+# --- Default (same as get-quote) ---
+
+build-igvm:
+	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
+	 --image-format igvm --output $(IGVM_FILE) --debug \
+	 --policy-v2 --policy config/templates/policy_v2_signed.json \
+	 --policy-issuer-chain config/templates/policy_issuer_chain.pem \
+	 --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
+
+build-igvm-all: pre-build build-igvm generate-hash-v2
+
+# --- Shared v2 mock-quote IGVM build (used by accept, reject, mock-quote targets) ---
+
+build-igvm-v2-mock:
 	cd ../../ && cargo image --policy-v2 --debug \
 	 --image-format igvm \
 	 --no-default-features \
@@ -67,43 +86,65 @@ build-igvm-accept:
 	 --policy config/Azure/policy_v2_signed.json \
 	 --output $(IGVM_FILE)
 
-generate-hash-accept:
-	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST) --policy-v2
+# --- Accept-all (allow-all v2 policy + mock quote) ---
 
-generate-hash-accept-verbose:
-	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --verbose --policy-v2
+generate-policy-accept:
+	chmod +x ./build_azure_mock_test.sh
+	./build_azure_mock_test.sh --allow-all
+	@if [ $$? -ne 0 ]; then \
+		echo "Failed to generate allow-all policy with mock report"; \
+		exit 1; \
+	fi
 
-build-igvm-accept-all: pre-build generate-policy-accept build-igvm-accept generate-hash-accept
+build-igvm-accept: pre-build generate-policy-accept build-igvm-v2-mock
 
-generate-hash:
-	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST)
+build-igvm-accept-all: build-igvm-accept generate-hash-v2
 
-build-igvm:
-	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
-	 --image-format igvm --output $(IGVM_FILE) --debug
+# --- Reject-all (bad-FMSPC v2 policy + mock quote) ---
 
-build-igvm-all: pre-build build-igvm generate-hash
+generate-policy-reject:
+	chmod +x ./build_azure_mock_test.sh
+	./build_azure_mock_test.sh --reject --skip-test
+	@if [ $$? -ne 0 ]; then \
+		echo "Failed to generate reject policy with mock report"; \
+		exit 1; \
+	fi
 
-build-igvm-reject:
-	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_BASE) --log-level $(LOG_LEVEL) \
-	 --image-format igvm --output $(IGVM_FILE) --debug
+build-igvm-reject: pre-build generate-policy-reject build-igvm-v2-mock
 
-build-igvm-reject-all: pre-build build-igvm-reject generate-hash
+build-igvm-reject-all: build-igvm-reject test-reject generate-hash-v2
 
-generate-hash-verbose:
-	cd ../../ && cargo run -p migtd-hash -- --image $(IGVM_FILE) --verbose --manifest $(IGVM_MANIFEST)
+test-reject:
+	@echo "Running reject test (expecting migration failure with code 8)..."
+	cd ../../ && ./migtdemu.sh --policy-v2 \
+	 --policy-file config/Azure/policy_v2_signed.json \
+	 --policy-issuer-chain-file config/Azure/policy_issuer_chain.pem \
+	 --mock-report --both --no-sudo --log-level info; \
+	EXIT_CODE=$$?; \
+	if [ $$EXIT_CODE -eq 0 ]; then \
+		echo "ERROR: Migration succeeded but should have been rejected!"; \
+		exit 1; \
+	fi; \
+	if grep -q "code.* 8\|code: 8" migtd_migration_source.log 2>/dev/null; then \
+		echo "✓ Reject test passed: migration correctly rejected with code 8"; \
+	else \
+		echo "ERROR: Migration failed but not with expected code 8"; \
+		grep -i "failed\|error" migtd_migration_source.log 2>/dev/null | tail -5; \
+		exit 1; \
+	fi
 
-build-igvm-get-quote:
+# --- Get-quote (v2 policy with real quote) ---
+
+build-igvm-get-quote: pre-build
 	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
 	 --image-format igvm --output $(IGVM_FILE) --debug \
 	 --policy-v2 --policy config/templates/policy_v2_signed.json \
 	 --policy-issuer-chain config/templates/policy_issuer_chain.pem \
 	 --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
 
-generate-hash-get-quote:
-	cd ../../ && cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST) --policy-v2
+build-igvm-get-quote-all: build-igvm-get-quote generate-hash-v2
 
-build-igvm-get-quote-all: pre-build build-igvm-get-quote generate-hash-get-quote
+# --- Mock-quote (v2 policy + mock quote for testing) ---
 
 generate-policy-mock-quote:
 	chmod +x ./build_azure_mock_test.sh
@@ -113,15 +154,9 @@ generate-policy-mock-quote:
 		exit 1; \
 	fi
 
-build-igvm-mock-quote: pre-build generate-policy-mock-quote
-	cd ../../ && cargo image --policy-v2 --debug \
-	 --image-format igvm \
-	 --no-default-features \
-	 --features $(IGVM_FEATURES_BASE),use-mock-quote \
-	 --log-level $(LOG_LEVEL) \
-	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
-	 --policy config/Azure/policy_v2_signed.json \
-	 --output $(IGVM_FILE)
+build-igvm-mock-quote: pre-build generate-policy-mock-quote build-igvm-v2-mock
+
+# --- Mock-quote allow-all ---
 
 generate-policy-mock-quote-allow-all:
 	chmod +x ./build_azure_mock_test.sh
@@ -131,13 +166,4 @@ generate-policy-mock-quote-allow-all:
 		exit 1; \
 	fi
 
-build-igvm-mock-quote-allow-all: pre-build generate-policy-mock-quote-allow-all
-	cd ../../ && cargo image --policy-v2 --debug \
-	 --image-format igvm \
-	 --no-default-features \
-	 --features $(IGVM_FEATURES_BASE),use-mock-quote \
-	 --log-level $(LOG_LEVEL) \
-	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
-	 --policy config/Azure/policy_v2_signed.json \
-	 --output $(IGVM_FILE)
-
+build-igvm-mock-quote-allow-all: pre-build generate-policy-mock-quote-allow-all build-igvm-v2-mock
