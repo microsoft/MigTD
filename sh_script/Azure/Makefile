@@ -9,10 +9,9 @@ IGVM_FEATURES_BASE ?= vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,
 IGVM_FEATURES_GET_QUOTE ?= $(IGVM_FEATURES_BASE),igvm-attest
 # test_disable_ra_and_accept_all feature disables remote attestation and skips policy verification, bypassing RATLS security
 # test feature skips the compilation of attestation library when the remote attestation is not enabled or needed
-IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL ?= $(IGVM_FEATURES_BASE),test_disable_ra_and_accept_all
 IGVM_MANIFEST ?= config/Azure/servtd_info.json
 
-.PHONY: generate-hash-accept build-igvm-accept build-igvm-accept-all
+.PHONY: generate-policy-accept generate-hash-accept build-igvm-accept build-igvm-accept-all
 .PHONY: pre-build build-igvm generate-hash build-igvm-all
 .PHONY: build-igvm-reject build-igvm-reject-all
 .PHONY: generate-hash-verbose generate-hash-accept-verbose
@@ -25,7 +24,7 @@ IGVM_MANIFEST ?= config/Azure/servtd_info.json
 help:
 	@echo "Available targets:"
 	@echo "  build-igvm-all                  - Build IGVM"
-	@echo "  build-igvm-accept-all           - Build IGVM with disabled RA and accept all policy with TLS"
+	@echo "  build-igvm-accept-all           - Build IGVM with allow-all v2 policy using mock quote data"
 	@echo "  build-igvm-reject               - Build IGVM with v1 policy which will be rejected because on empty quote generation."
 	@echo "  build-igvm-reject-all           - Build IGVM with v1 policy which will be rejected because on empty quote generation."
 	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy which will call getquote durining initialization."
@@ -50,19 +49,31 @@ pre-build:
 	chmod +x ../../sh_script/preparation.sh
 	cd ../../ && ./sh_script/preparation.sh
 
+generate-policy-accept:
+	chmod +x ./build_azure_mock_test.sh
+	./build_azure_mock_test.sh --allow-all
+	@if [ $$? -ne 0 ]; then \
+		echo "Failed to generate allow-all policy with mock report"; \
+		exit 1; \
+	fi
+
 build-igvm-accept:
-	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_DISABLE_RA_AND_ACCEPT_ALL) \
-	 --log-level $(LOG_LEVEL) --image-format igvm --output $(IGVM_FILE) --debug
+	cd ../../ && cargo image --policy-v2 --debug \
+	 --image-format igvm \
+	 --no-default-features \
+	 --features $(IGVM_FEATURES_BASE),use-mock-quote \
+	 --log-level $(LOG_LEVEL) \
+	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
+	 --policy config/Azure/policy_v2_signed.json \
+	 --output $(IGVM_FILE)
 
 generate-hash-accept:
-	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --test-disable-ra-and-accept-all \
-	 --manifest $(IGVM_MANIFEST)
+	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST) --policy-v2
 
 generate-hash-accept-verbose:
-	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --test-disable-ra-and-accept-all \
-	 --verbose
+	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --verbose --policy-v2
 
-build-igvm-accept-all: pre-build build-igvm-accept generate-hash-accept
+build-igvm-accept-all: pre-build generate-policy-accept build-igvm-accept generate-hash-accept
 
 generate-hash:
 	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST)
