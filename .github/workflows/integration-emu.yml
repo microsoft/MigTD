@@ -189,6 +189,14 @@ jobs:
           chmod +x ./migtdemu.sh
           chmod +x ./sh_script/build_AzCVMEmu_policy_and_test.sh
 
+      - name: Generate policy files
+        if: matrix.install-jq == 'true'
+        run: |
+          echo "Generating AzCVMEmu policy files with mock measurements..."
+          ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report --skip-test
+          echo "Policy files generated:"
+          ls -la config/AzCVMEmu/policy_v2_signed*.json config/AzCVMEmu/policy_issuer_chain*.pem
+
       - name: Run test
         id: test_run
         run: |

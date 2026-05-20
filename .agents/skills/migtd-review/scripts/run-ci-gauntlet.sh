@@ -188,15 +188,11 @@ fi
 if stage_should_run emu; then
     banner emu
 
-    # Ensure tracked policy artefacts exist (CI starts from a fresh checkout).
-    for f in config/AzCVMEmu/policy_v2_signed.json \
-             config/AzCVMEmu/policy_v2_raw.json \
-             config/AzCVMEmu/policy_issuer_chain.pem; do
-        if [ ! -f "$f" ]; then
-            echo "  [emu] restoring tracked $f via git checkout" | tee -a "$SUMMARY"
-            git checkout -- "$f"
-        fi
-    done
+    # Generate policy files from mock measurements (replaces tracked files)
+    if [ ! -f config/AzCVMEmu/policy_v2_signed.json ]; then
+        echo "  [emu] generating policy files with mock measurements" | tee -a "$SUMMARY"
+        step policy-gen ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report --skip-test
+    fi
 
     # 1. skip-ra
     step skip-ra__build cargo build --release \
