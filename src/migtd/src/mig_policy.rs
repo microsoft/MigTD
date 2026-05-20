@@ -326,6 +326,7 @@ mod v2 {
         let servtd_ext_src_obj =
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
         let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
+        #[cfg(not(feature = "use-mock-quote"))]
         let _engine_svn = policy
             .servtd_tcb_mapping
             .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
@@ -336,6 +337,8 @@ mod v2 {
                 None,
             ))
             .ok_or(PolicyError::SvnMismatch)?;
+        #[cfg(feature = "use-mock-quote")]
+        log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
 
         // If backward policy exists, evaluate the migration src based on it.
         let relative_reference = get_local_tcb_evaluation_info()?;
@@ -941,7 +944,10 @@ mod v2 {
                 ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
             let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_obj)?;
 
-            // Allowlist gate: init MigTD measurements must be in servtd_tcb_mapping
+            // Allowlist gate: init MigTD measurements must be in servtd_tcb_mapping.
+            // Under use-mock-quote the MRTD belongs to a different binary (mock build)
+            // and won't be in the tcb_mapping generated for the production image.
+            #[cfg(not(feature = "use-mock-quote"))]
             let _engine_svn = policy
                 .servtd_tcb_mapping
                 .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
@@ -952,6 +958,8 @@ mod v2 {
                     None,
                 ))
                 .ok_or(PolicyError::SvnMismatch)?;
+            #[cfg(feature = "use-mock-quote")]
+            log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
         }
 
         Ok(suppl_data)
