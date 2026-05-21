@@ -1,5 +1,7 @@
 # Init_TDINFO and ServtdExt Usage Summary
 
+*Last updated after commit `bae6f54` (feat: verify init_TDINFO integrity and policy on migration destination) and subsequent patches.*
+
 ## Definitions
 
 ### TDINFO_STRUCT (512 bytes) — `TdInfo`
@@ -46,20 +48,25 @@ Metadata stored in the target TD's TDCS, read by the *current* MigTD via `TDG.SE
 2. Obtains Init_TDINFO from VMM or local fallback.
 3. Sends both as VDM elements to the destination.
 
-**Destination side** (`spdm_rsp`):
+**Destination side** (`spdm_rsp` → `authenticate_migration_source_with_init_tdinfo`):
 1. Receives ServtdExt and Init_TDINFO from wire.
 2. Stores ServtdExt in responder context for later use.
-3. **Init_TDINFO cross-check**: calls `verify_peer_init_tdinfo_against_suppl_data()` — extracts `mrowner` and `mrownerconfig` from the source's *verified quote supplemental data*, then checks:
+3. **Standard policy checks** (POL-SRCv2-01..04): `authenticate_remote_common` (quote verification, event log, policy signature) → `evaluate_policy_common` + `evaluate_policy_backward` with local TCB as relative reference.
+4. **Init_TDINFO cross-check** (POL-SRCv2-05): calls `verify_peer_init_tdinfo_against_suppl_data()` — extracts `mrowner` and `mrownerconfig` from the source's *verified quote supplemental data*, then checks:
    - Init_TDINFO's `mrowner` == source's quote `mrowner` (same policy signer)
    - Init_TDINFO's `mrownerconfig[0..4]` (init policy SVN) ≤ source's quote `mrownerconfig[0..4]` (current policy SVN)
    - Both `mrownerconfig[4..48]` must be all zeros
-   - ⚠️ **TEST MODE**: failures are logged but do not abort.
-4. **Does NOT** verify Init_TDINFO against `ServtdExt.init_servtd_info_hash`.
-5. **Does NOT** use Init_TDINFO measurements for policy evaluation.
-6. **SERVTD_ATTR check** (at MSK exchange, `exchange_msk` in `session.rs`): both source and destination call `verify_servtd_attr()` on their own bound target TD. This reads two fields from the target TD's TDCS via `TDG.SERVTD.RD` and checks:
+   - ⚠️ **REVERT_ME TEST MODE**: failures are logged but do not abort.
+5. **Init_TDINFO integrity verification** (POL-SRCv2-06..07): calls `verify_init_tdinfo()` → `verify_servtd_hash()`:
+   - If `init_servtd_info_hash` is **all-zero** (host never provisioned it): skips hash check, returns parsed `TdInfo`. The allowlist gate in step 6 still validates the measurements.
+   - Otherwise: computes `SHA384(SHA384(masked_tdinfo) || SERVTD_TYPE || init_attr)` and compares to `init_servtd_info_hash`.
+   - ⚠️ **REVERT_ME TEST MODE**: hash mismatch is logged but returns `Ok` (soft-fail).
+   - **Enforced**: parse failure or all-zero bypass is hard-fail on malformed input.
+6. **Allowlist gate** (POL-SRCv2-08): `get_engine_svn_by_measurements()` — init MigTD's `mrtd`, `rtmr0`, `rtmr1` must be in `servtd_tcb_mapping`. **Enforced** (hard-fail on `SvnMismatch`). Skipped under `use-mock-quote` feature (mock binary has different MRTD).
+7. **Policy eval with init reference** (POL-SRCv2-09..10): `setup_evaluation_data_with_tdinfo()` → `evaluate_policy_common(eval_data_src, init_reference, skip_global=true)`. **Enforced** — policy failure aborts.
+8. **SERVTD_ATTR check** (at MSK exchange, `exchange_msk` in `session.rs`): both source and destination call `verify_servtd_attr()` on their own bound target TD. Reads `CURR_SERVTD_ATTR` from TDCS via `TDG.SERVTD.RD` and checks:
    - `cur_servtd_attr == EXPECTED_SERVTD_ATTR` (hardcoded `0x0`) — ensures the VMM wrote the correct SERVTD_ATTR value (since SERVTD_ATTR is written by the untrusted VMM)
-   - `cur_servtd_attr == init_attr` (current attr matches initial attr) — ensures SERVTD_ATTR hasn't changed since first binding
-7. **Approved hash write**: after MSK exchange, destination computes `SHA384(ServtdExt with cur_servtd_info_hash and cur_servtd_attr zeroed)` and writes it to `APPROVED_SERVTD_EXT_HASH` in TDCS.
+9. **Approved hash write**: after MSK exchange, destination computes `SHA384(ServtdExt with cur_servtd_info_hash and cur_servtd_attr zeroed)` and writes it to `APPROVED_SERVTD_EXT_HASH` in TDCS.
 
 ### Rebinding (old MigTD → new MigTD)
 
@@ -71,54 +78,64 @@ Metadata stored in the target TD's TDCS, read by the *current* MigTD via `TDG.SE
 **New MigTD side** (SPDM responder, `spdm_rsp`):
 1. Receives ServtdExt and Init_TDINFO from wire.
 2. Calls `authenticate_rebinding_old()` which does:
-   - **Init_TDINFO cross-check against TDREPORT**: calls `verify_peer_init_tdinfo_against_owner()` — uses `mrowner` and `mrownerconfig` from the old MigTD's *verified TDREPORT* (not quote supplemental data). Same checks as migration: mrowner match + init SVN ≤ current SVN. ⚠️ **TEST MODE**: logged, non-fatal.
-   - **Init_TDINFO integrity verification against ServtdExt**: calls `verify_init_tdinfo()` → `verify_servtd_hash()`. This:
-     1. Parses Init_TDINFO into a `TdInfo` struct.
-     2. Zeros any TDINFO fields flagged by `ServtdExt.init_attr` IGNORE bits (e.g., bit 32 → zero `attributes`; bit 34 → zero `mrtd`; etc.).
-     3. Computes `SHA384(SHA384(modified_tdinfo) || SERVTD_TYPE(0u16) || init_attr(u64))`.
-     4. Compares result to `ServtdExt.init_servtd_info_hash` — **must match, enforced (not TEST MODE)**.
-     5. Returns the parsed `TdInfo` on success.
+   - **Init_TDINFO cross-check against TDREPORT**: calls `verify_peer_init_tdinfo_against_owner()` — uses `mrowner` and `mrownerconfig` from the old MigTD's *verified TDREPORT* (not quote supplemental data). Same checks as migration: mrowner match + init SVN ≤ current SVN. ⚠️ **REVERT_ME TEST MODE**: logged, non-fatal.
+   - **Init_TDINFO integrity verification against ServtdExt**: calls `verify_init_tdinfo()` → `verify_servtd_hash()`. Same logic as migration (all-zero bypass + TEST MODE soft-fail on mismatch). See migration step 5 above.
+   - **Allowlist gate**: same `get_engine_svn_by_measurements()` check as migration step 6.
    - **Policy evaluation using Init_TDINFO as relative reference**: see [detailed breakdown below](#policy-evaluation-with-init_tdinfo-as-relative-reference).
 3. Stores ServtdExt in responder context.
 4. **Approved hash write**: same as migration — computes `SHA384(ServtdExt with cur fields zeroed)` and writes to `APPROVED_SERVTD_EXT_HASH`.
-5. **Rebind attr write**: additionally writes `ServtdExt.cur_servtd_attr` via `write_servtd_rebind_attr()` — this is rebinding-specific and not done in migration.
+5. **Rebind attr write**: additionally writes `ServtdExt.cur_servtd_attr` via `write_servtd_rebind_attr()` — rebind-specific, not done in migration. For migration, MigTD only reads and verifies `cur_servtd_attr == 0x0` (hardcoded). For rebind, the new MigTD writes the expected value and the TDX module enforces that the actual SERVTD_ATTR matches what the MigTD wrote.
 
 ---
 
-## Discrepancies between migration and rebinding
+## Differences between migration and rebinding
 
 | Check | Migration (destination) | Rebinding (new MigTD) |
 |---|---|---|
-| Init_TDINFO integrity vs `ServtdExt.init_servtd_info_hash` | ❌ Not done | ✅ Enforced (`verify_init_tdinfo`) |
+| Init_TDINFO integrity vs `ServtdExt.init_servtd_info_hash` | ✅ `verify_init_tdinfo` (TEST MODE soft-fail) | ✅ `verify_init_tdinfo` (TEST MODE soft-fail) |
 | Init_TDINFO cross-check (mrowner + SVN) | ✅ Against quote suppl data (TEST MODE) | ✅ Against TDREPORT (TEST MODE) |
-| Init_TDINFO used as policy eval reference | ❌ Not done | ✅ `servtd_tcb_mapping` lookup → `evaluate_policy_common` reference |
-| `verify_servtd_attr` (cur==hardcoded, cur==init) | ✅ Both sides, at MSK exchange | ✅ Old side at MSK exchange; new side reads full ServtdExt (which internally checks cur==hardcoded and cur==init_attr) |
+| Init_TDINFO used as policy eval reference | ✅ `evaluate_policy_common` with `skip_global=true` | ✅ Same |
+| Allowlist gate (`get_engine_svn_by_measurements`) | ✅ Enforced (skipped under `use-mock-quote`) | ✅ Same |
+| `verify_servtd_attr` (cur==hardcoded) | ✅ Both sides, at MSK exchange | ✅ Old side at MSK exchange; new side reads full ServtdExt |
 | `write_approved_servtd_ext_hash` | ✅ Destination writes | ✅ New MigTD writes |
-| `write_servtd_rebind_attr` | ❌ Not done | ✅ New MigTD writes `cur_servtd_attr` |
+| `write_servtd_rebind_attr` | ❌ Not needed (MigTD verifies `cur == 0x0`) | ✅ New MigTD writes `cur_servtd_attr`; TDX module enforces match |
 
-The main gap is on the **migration destination**: it receives Init_TDINFO and ServtdExt but never verifies Init_TDINFO against the hardware-attested `init_servtd_info_hash`, and never uses Init_TDINFO measurements as the policy evaluation reference. In rebinding, both checks are fully enforced.
+After commit `bae6f54`, migration and rebinding are **nearly symmetric** for Init_TDINFO verification. The only structural difference is `write_servtd_rebind_attr` (rebinding-only) and the cross-check data source (quote suppl data vs TDREPORT).
+
+### REVERT_ME / TEST MODE summary
+
+Several checks are currently soft-fail to enable testing against hosts that haven't been fully updated:
+
+| Check | Status | Notes |
+|---|---|---|
+| `verify_peer_init_tdinfo_against_suppl_data` / `_against_owner` | ⚠️ Soft-fail | MROWNER/MROWNERCONFIG may not be provisioned yet |
+| `verify_servtd_hash` (hash mismatch) | ⚠️ Soft-fail | Returns `Ok` on mismatch with diagnostic dump |
+| `verify_servtd_hash` (all-zero init hash) | Bypass | Skips check entirely, relies on allowlist gate |
+| `verify_init_tdinfo` (parse + dispatch) | Enforced | Malformed input is a hard error |
+| `get_engine_svn_by_measurements` | Enforced | Hard-fail on `SvnMismatch` (skipped under `use-mock-quote`) |
+| `evaluate_policy_common` (init reference) | Enforced | Policy failure aborts migration |
 
 ---
 
 ## Policy evaluation with Init_TDINFO as relative reference
 
-This section details how `evaluate_policy_common()` uses Init_TDINFO-derived values as the relative reference when authenticating the old MigTD during rebinding (`authenticate_rebinding_old()`).
+This section details how `evaluate_policy_common()` uses Init_TDINFO-derived values as the relative reference. This applies to both migration destination (`authenticate_migration_source_with_init_tdinfo`) and rebinding (`authenticate_rebinding_old`).
 
-### Step 1: Build the old MigTD's evaluation data (`evaluation_data_src`)
+### Step 1: Build the peer MigTD's evaluation data (`evaluation_data_src`)
 
-Built from the old MigTD's verified TDREPORT + event log via `authenticate_rebinding_common()`. Contains the old MigTD's *current* TCB info: `migtd_isvsvn`, `migtd_tcb_date`, `migtd_tcb_status`, platform `tee_tcb_svn`, `fmspc`, etc. This is the **subject** being evaluated.
+Built from the peer's verified quote/TDREPORT + event log via `authenticate_remote_common()` (migration) or `authenticate_rebinding_common()` (rebinding). Contains the peer's *current* TCB info: `migtd_isvsvn`, `migtd_tcb_date`, `migtd_tcb_status`, platform `tee_tcb_svn`, `fmspc`, etc. This is the **subject** being evaluated.
 
 ### Step 2: Build the relative reference from Init_TDINFO (`setup_evaluation_data_with_tdinfo`)
 
 ```
 Init_TDINFO.mrtd + rtmr0 + rtmr1
     → servtd_tcb_mapping.get_engine_svn_by_measurements()
-    → engine_svn (u16)
+    → engine_svn (Option<u16>)
     → servtd_identity.get_tcb_level_by_svn(svn)
-    → tcb_date, tcb_status
+    → tcb_date, tcb_status (Option)
 ```
 
-This produces a `PolicyEvaluationInfo` with only three fields populated:
+This produces a `PolicyEvaluationInfo` with only three fields populated (all `Option` — `None` if lookup fails):
 - `migtd_isvsvn`: the SVN of the *initial* MigTD
 - `migtd_tcb_date`: the TCB date for that SVN level
 - `migtd_tcb_status`: the TCB status for that SVN level
@@ -137,31 +154,45 @@ Each policy rule has an `operation` and a `reference`. The reference determines 
 ```json
 { "operation": "greater-or-equal", "reference": 3 }
 ```
-Evaluates `old_migtd_svn >= 3`. The `relative_reference` (Init_TDINFO-derived values) is **completely ignored**.
+Evaluates `peer_migtd_svn >= 3`. The `relative_reference` (Init_TDINFO-derived values) is **completely ignored**.
 
 **Relative rule** — reference is `"self"` or `"init"`:
 ```json
 { "operation": "greater-or-equal", "reference": "init" }
 ```
-Evaluates `old_migtd_svn >= init_migtd_svn`. The Init_TDINFO-derived SVN from the relative reference is used as the comparison target.
+Evaluates `peer_migtd_svn >= init_migtd_svn`. The Init_TDINFO-derived SVN from the relative reference is used as the comparison target.
 
 ### What happens with only absolute rules?
 
 If the policy contains only absolute rules, the Init_TDINFO-derived relative reference values are **never read** during the actual policy comparison. However, Init_TDINFO still has an effect:
 
-1. **The SVN lookup is itself a gate** (line 331-340 of `mig_policy.rs`): `servtd_tcb_mapping.get_engine_svn_by_measurements()` must find the Init_TDINFO's measurements (`mrtd`, `rtmr0`, `rtmr1`) in the mapping table. If the initial MigTD's measurements are not in the allowlist, this fails with `SvnMismatch` regardless of what policy rules exist. This acts as an **identity allowlist check** on the initial MigTD.
+1. **The allowlist gate** (step 6 in migration, before policy eval): `get_engine_svn_by_measurements()` must find the Init_TDINFO's measurements (`mrtd`, `rtmr0`, `rtmr1`) in the mapping table. If the initial MigTD's measurements are not in the allowlist, this fails with `SvnMismatch` regardless of what policy rules exist. This acts as an **identity allowlist check** on the initial MigTD.
 
-2. The actual policy comparison (`value >= 3`) runs against the old MigTD's current evaluation data and succeeds or fails based solely on the absolute threshold.
+2. The actual policy comparison (`value >= 3`) runs against the peer MigTD's current evaluation data and succeeds or fails based solely on the absolute threshold.
 
 **Bottom line**: with purely absolute policy rules, Init_TDINFO's role during policy evaluation reduces to a gatekeeper — its measurements must be recognized in `servtd_tcb_mapping`. The relative reference comparison only activates when the policy uses `"reference": "self"` or `"reference": "init"`.
 
 ### Why the cross-check and policy evaluation are not redundant
 
-The Init_TDINFO cross-check (`verify_peer_init_tdinfo_against_owner`) and the policy evaluation's SVN lookup (`get_engine_svn_by_measurements`) verify **different aspects** of the initial MigTD's identity:
+The Init_TDINFO cross-check (`verify_peer_init_tdinfo_against_owner` / `_against_suppl_data`) and the allowlist gate (`get_engine_svn_by_measurements`) verify **different aspects** of the initial MigTD's identity:
 
 | Check | What it verifies | TDINFO fields used |
 |---|---|---|
-| `verify_peer_init_tdinfo_against_owner` | **Policy signer identity + policy SVN ordering**: the init MigTD had the same policy signer as the old MigTD, and init policy SVN ≤ current policy SVN | `mrowner` (policy signer hash), `mrownerconfig[0..4]` (policy SVN) |
-| Policy eval SVN lookup (`get_engine_svn_by_measurements`) | **MigTD binary identity**: the init MigTD's code measurements are in the known-good allowlist | `mrtd`, `rtmr0`, `rtmr1` (code measurements) |
+| `verify_peer_init_tdinfo_against_{owner,suppl_data}` | **Policy signer identity + policy SVN ordering**: the init MigTD had the same policy signer, and init policy SVN ≤ current policy SVN | `mrowner` (policy signer hash), `mrownerconfig[0..4]` (policy SVN) |
+| Allowlist gate (`get_engine_svn_by_measurements`) | **MigTD binary identity**: the init MigTD's code measurements are in the known-good allowlist | `mrtd`, `rtmr0`, `rtmr1` (code measurements) |
 
 These are orthogonal: a MigTD could have the correct policy signer (`mrowner`) but be running an unauthorized binary (`mrtd`/`rtmr` not in the allowlist), or vice versa. Both checks are needed to fully validate the initial MigTD's identity.
+
+---
+
+## Historical notes — commit origins
+
+| Check | Function | Commit | Author |
+|---|---|---|---|
+| Startup self-check: `MROWNER==signer`, `MROWNERCONFIG==SVN` | `verify_own_tdinfo()` | `67b49e5` feat: support tdinfo_init | Michal Tarnacki |
+| Init MigTDData binding: `MROWNER==signer`, `SVN<=my SVN` | `verify_init_migtd_data_policy_binding()` | `67b49e5` (same) | Michal Tarnacki |
+| Peer cross-check against TDREPORT owner fields | `verify_peer_init_tdinfo_against_owner()` | `ccfd611` refactor: move init-TDINFO cross-check into policy layer | Haitao Huang |
+| Peer cross-check against quote suppl data | `verify_peer_init_tdinfo_against_suppl_data()` | `ccfd611` (same) | Haitao Huang |
+| Destination-side init_TDINFO integrity + policy eval | `authenticate_migration_source_with_init_tdinfo()` | `bae6f54` feat: verify init_TDINFO integrity and policy on migration destination | Haitao Huang |
+| `SERVTD_ATTR` hardcoded check (`cur == 0x0`) | `verify_servtd_attr()` | `a7c6ac0` feat: verify SERVTD_ATTR using SERVTD.RD api | Michal Tarnacki |
+| `SERVTD_ATTR` vs `INIT_ATTR` check (`cur == init`) | `verify_servtd_attr()` | `d4336bb` fix: verify SERVTD_ATTR against INIT_ATTR (PR [#832](https://github.com/intel/MigTD/pull/832), issue [#831](https://github.com/intel/MigTD/issues/831), no review comments). **Reverted** — after rebind, `CURR_SERVTD_ATTR` can legitimately differ from `INIT_ATTR` | Stanislaw Grams |
