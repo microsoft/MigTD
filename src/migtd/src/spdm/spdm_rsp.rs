@@ -518,7 +518,7 @@ pub fn handle_exchange_mig_attest_info_req(
         .take(vdm_element.length as usize)
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
 
-    // SERVTD_EXT from src
+    // SERVTD_EXT from src — zero-length means source's target TD has no SERVTD_EXT
     let vdm_element = VdmMessageElement::read(reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     if vdm_element.element_type != VdmMessageElementType::SerVtdExt {
         error!(
@@ -533,11 +533,15 @@ pub fn handle_exchange_mig_attest_info_req(
     #[cfg(feature = "policy_v2")]
     let servtd_ext_bytes_vec = servtd_ext_bytes.to_vec();
 
-    // Store SERVTD_EXT in ResponderContextEx for later use during MSK exchange
+    // Store SERVTD_EXT in ResponderContextEx for later use during MSK exchange.
+    // None when source's target TD does not support SERVTD_EXT.
     #[cfg(feature = "policy_v2")]
     unsafe {
         let spdm_responder_ex = upcast_mut(responder_context);
-        spdm_responder_ex.servtd_ext =
+        spdm_responder_ex.servtd_ext = if servtd_ext_bytes.is_empty() {
+            log::info!("Source target TD has no SERVTD_EXT, skipping init_tdinfo verification\n");
+            None
+        } else {
             Some(ServtdExt::read_from_bytes(servtd_ext_bytes).ok_or_else(|| {
                 error!(
                     "Failed to parse SERVTD_EXT: length {} < expected {}\n",
@@ -545,10 +549,11 @@ pub fn handle_exchange_mig_attest_info_req(
                     core::mem::size_of::<ServtdExt>()
                 );
                 SPDM_STATUS_INVALID_MSG_SIZE
-            })?);
+            })?)
+        };
     };
 
-    // Init TDINFO from src (used for SERVTD_HASH verification)
+    // Init TDINFO from src — zero-length when SERVTD_EXT not supported
     let vdm_element = VdmMessageElement::read(reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     if vdm_element.element_type != VdmMessageElementType::TdReportInit {
         error!(
@@ -558,9 +563,9 @@ pub fn handle_exchange_mig_attest_info_req(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
     #[cfg(feature = "policy_v2")]
-    if vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
+    if vdm_element.length != 0 && vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
         error!(
-            "Invalid VDM message TdReportInit length: {} (expected {})\n",
+            "Invalid VDM message TdReportInit length: {} (expected 0 or {})\n",
             vdm_element.length,
             crate::migration::TD_INFO_SIZE
         );
@@ -753,28 +758,46 @@ fn rsp_verify_peer_attestation_v2(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
-    // 2. Authenticate remote, verify init TDINFO integrity against ServtdExt,
-    //    and evaluate policy with init TDINFO as reference.
+    // 2. Authenticate remote. If init TDINFO and ServtdExt are available,
+    //    also verify init TDINFO integrity and evaluate policy with init reference.
+    //    When SERVTD_EXT is unsupported (zero-length wire elements), skip init
+    //    verification — the standard quote/policy checks still run.
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
-        let verified_report_peer = match mig_policy::authenticate_migration_source_with_init_tdinfo(
-            quote_peer,
-            peer_data,
-            event_log_peer,
-            peer_init_td_info,
-            servtd_ext_peer,
-        ) {
-            Err(e) => {
-                error!("Policy v2 check failed, below is the detail information:\n");
-                error!("{:x?}\n", e);
-                let session = responder_context
-                    .common
-                    .get_session_via_id(session_id)
-                    .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
-                session.teardown();
-                return Err(SpdmStatus::from(MigrationResult::PolicyUnsatisfiedError));
+        let verified_report_peer = if !peer_init_td_info.is_empty() && !servtd_ext_peer.is_empty() {
+            match mig_policy::authenticate_migration_source_with_init_tdinfo(
+                quote_peer,
+                peer_data,
+                event_log_peer,
+                peer_init_td_info,
+                servtd_ext_peer,
+            ) {
+                Err(e) => {
+                    error!("Policy v2 check failed, below is the detail information:\n");
+                    error!("{:x?}\n", e);
+                    let session = responder_context
+                        .common
+                        .get_session_via_id(session_id)
+                        .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                    session.teardown();
+                    return Err(SpdmStatus::from(MigrationResult::PolicyUnsatisfiedError));
+                }
+                Ok(s) => s,
             }
-            Ok(s) => s,
+        } else {
+            log::info!("No SERVTD_EXT/init_tdinfo — using standard policy check only\n");
+            match mig_policy::authenticate_remote(false, quote_peer, peer_data, event_log_peer) {
+                Err(e) => {
+                    error!("Policy v2 check failed (no init_tdinfo): {:x?}\n", e);
+                    let session = responder_context
+                        .common
+                        .get_session_via_id(session_id)
+                        .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                    session.teardown();
+                    return Err(SpdmStatus::from(MigrationResult::PolicyUnsatisfiedError));
+                }
+                Ok(s) => s,
+            }
         };
 
         // 3. Verify REPORTDATA binding using supplemental data from authenticate_remote
@@ -1111,7 +1134,7 @@ pub fn handle_exchange_rebind_attest_info_req(
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     let mig_policy_hash_src_vec = mig_policy_hash_src.to_vec();
 
-    // SERVTD_EXT
+    // SERVTD_EXT — zero-length means source's target TD has no SERVTD_EXT
     let vdm_element = VdmMessageElement::read(reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     if vdm_element.element_type != VdmMessageElementType::SerVtdExt {
         error!(
@@ -1125,7 +1148,7 @@ pub fn handle_exchange_rebind_attest_info_req(
         .ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     let servtd_ext_vec = servtd_ext.to_vec();
 
-    // TD report init
+    // TD report init — zero-length when SERVTD_EXT not supported
     let vdm_element = VdmMessageElement::read(reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     if vdm_element.element_type != VdmMessageElementType::TdReportInit {
         error!(
@@ -1134,9 +1157,9 @@ pub fn handle_exchange_rebind_attest_info_req(
         );
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     };
-    if vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
+    if vdm_element.length != 0 && vdm_element.length as usize != crate::migration::TD_INFO_SIZE {
         error!(
-            "Invalid VDM message TdReportInit length: {} (expected {})\n",
+            "Invalid VDM message TdReportInit length: {} (expected 0 or {})\n",
             vdm_element.length,
             crate::migration::TD_INFO_SIZE
         );
@@ -1353,7 +1376,8 @@ pub fn handle_exchange_rebind_info_req(
     };
 
     write_rebinding_session_token(&token)?;
-    write_approved_servtd_ext_hash(&servtd_ext.calculate_approved_servtd_ext_hash()?)?;
+    let approved_hash = servtd_ext.calculate_approved_servtd_ext_hash()?;
+    write_approved_servtd_ext_hash(Some(approved_hash.as_slice()))?;
     write_servtd_rebind_attr(&servtd_ext.cur_servtd_attr)?;
     token.zeroize();
 

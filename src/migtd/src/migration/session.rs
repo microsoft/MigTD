@@ -1072,8 +1072,12 @@ async fn migration_dst_exchange_msk(
     })?;
 
     #[cfg(feature = "policy_v2")]
-    if let Some(servtd_ext) = spdm_responder.servtd_ext {
-        write_approved_servtd_ext_hash(&servtd_ext.calculate_approved_servtd_ext_hash()?)?;
+    {
+        let hash = match spdm_responder.servtd_ext {
+            Some(ext) => Some(ext.calculate_approved_servtd_ext_hash()?),
+            None => None,
+        };
+        write_approved_servtd_ext_hash(hash.as_deref())?;
     }
 
     log::info!(migration_request_id = info.mig_info.mig_request_id; "Set MSK and report status\n");

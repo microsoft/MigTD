@@ -219,7 +219,7 @@ async fn rebinding_old_prepare(
     data: &mut Vec<u8>,
     peer_data: Vec<u8>,
 ) -> Result<(), MigrationResult> {
-    let servtd_ext = read_servtd_ext(info.binding_handle, &info.target_td_uuid)?;
+    let servtd_ext_opt = read_servtd_ext(info.binding_handle, &info.target_td_uuid)?;
 
     // Resolve the initial TDINFO_STRUCT: use VMM-provided bytes when present,
     // otherwise fall back to the local MigTD's self-report.
@@ -251,9 +251,16 @@ async fn rebinding_old_prepare(
     // Use mrowner directly as the init_policy_hash equivalent.
     let init_policy_hash = crate::migration::td_info_mrowner(init_td_info).to_vec();
 
-    // Per GHCI 1.5: init_tdinfo replaces the old init_report (full TDREPORT).
-    // The TDINFO_STRUCT contains all the measurement fields needed for verification.
-    let init_tdinfo: &[u8] = init_td_info;
+    // When SERVTD_EXT is not supported, send empty init_tdinfo — it cannot be
+    // verified without init_servtd_info_hash.
+    let init_tdinfo: &[u8] = if servtd_ext_opt.is_some() {
+        init_td_info
+    } else {
+        log::info!("SERVTD_EXT not supported, skipping init_tdinfo in rebind cert\n");
+        &[]
+    };
+    let empty_ext: ServtdExt = unsafe { core::mem::zeroed() };
+    let servtd_ext_ref = servtd_ext_opt.as_ref().unwrap_or(&empty_ext);
 
     // TLS client
     let mut ratls_client = ratls::client_rebinding(
@@ -261,7 +268,7 @@ async fn rebinding_old_prepare(
         peer_data,
         &init_policy_hash,
         init_tdinfo,
-        &servtd_ext,
+        &servtd_ext_ref,
     )
     .map_err(|_| {
         #[cfg(feature = "vmcall-raw")]
@@ -315,13 +322,25 @@ async fn rebinding_new_prepare(
 
     let rebind_token = tls_receive_rebind_token(&mut ratls_server).await?;
 
-    // The TLS session is established; we can now extract servtd_ext from the peer certificates.
+    // The TLS session is established; extract servtd_ext from the peer certificates.
+    // When the old MigTD's target TD had no SERVTD_EXT, the cert contains a zeroed
+    // ServtdExt — skip TDCS writes in that case.
     let mut servtd_ext = get_servtd_ext_from_cert(&ratls_server.peer_certs())?;
+    let has_servtd_ext = !servtd_ext.init_servtd_info_hash.iter().all(|&b| b == 0)
+        || !servtd_ext.cur_servtd_info_hash.iter().all(|&b| b == 0);
+
     write_rebinding_session_token(&rebind_token.token)?;
-    write_servtd_rebind_attr(&servtd_ext.cur_servtd_attr)?;
-    servtd_ext.cur_servtd_info_hash.fill(0);
-    servtd_ext.cur_servtd_attr.fill(0);
-    write_approved_servtd_ext_hash(&servtd_ext.calculate_approved_servtd_ext_hash()?)?;
+    if has_servtd_ext {
+        write_servtd_rebind_attr(&servtd_ext.cur_servtd_attr)?;
+        servtd_ext.cur_servtd_info_hash.fill(0);
+        servtd_ext.cur_servtd_attr.fill(0);
+        write_approved_servtd_ext_hash(Some(
+            servtd_ext.calculate_approved_servtd_ext_hash()?.as_slice(),
+        ))?;
+    } else {
+        log::info!("SERVTD_EXT not supported by peer, skipping TDCS writes\n");
+        write_approved_servtd_ext_hash(None)?;
+    }
 
     shutdown_transport(ratls_server.transport_mut(), info.mig_request_id).await?;
     Ok(())

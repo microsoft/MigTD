@@ -422,57 +422,84 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         .extend_from_slice(&mig_policy_src_hash)
         .ok_or(SPDM_STATUS_BUFFER_FULL)?;
 
-    // SERVTD_EXT: read from target TD via TDG.SERVTD.RD and send to peer
+    // SERVTD_EXT: read from target TD via TDG.SERVTD.RD and send to peer.
+    // Returns None if the target TD does not support SERVTD_EXT.
+    let has_servtd_ext;
     {
         use crate::migration::servtd_ext::read_servtd_ext;
 
         let servtd_ext = read_servtd_ext(mig_info.binding_handle, &mig_info.target_td_uuid)
             .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        has_servtd_ext = servtd_ext.is_some();
+        let ext_bytes = servtd_ext.map(|e| e.as_bytes().to_vec());
         let servtd_ext_element = VdmMessageElement {
             element_type: VdmMessageElementType::SerVtdExt,
-            length: servtd_ext.as_bytes().len() as u32,
+            length: ext_bytes.as_ref().map_or(0, |b| b.len()) as u32,
         };
         cnt += servtd_ext_element
             .encode(&mut writer)
             .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-        cnt += writer
-            .extend_from_slice(servtd_ext.as_bytes())
-            .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        if let Some(ref bytes) = ext_bytes {
+            cnt += writer
+                .extend_from_slice(bytes)
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        }
     }
 
-    // Init TDINFO: use VMM-provided init_td_info if available, otherwise local
+    // Misconfiguration check: if VMM provided init_tdinfo but target TD does not
+    // support SERVTD_EXT, the init_tdinfo cannot be integrity-verified by the
+    // destination (no init_servtd_info_hash). Reject early on sender side.
+    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+    if !has_servtd_ext && mig_info.init_td_info_if_present().is_some() {
+        log::error!("Misconfiguration: VMM provided init_tdinfo but target TD has no SERVTD_EXT\n");
+        return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
+    }
+
+    // Init TDINFO: send zero-length if target TD has no SERVTD_EXT (init_tdinfo
+    // cannot be verified without init_servtd_info_hash). Otherwise use VMM-provided
+    // init_td_info if available, or fall back to local tdcall_report.
     {
         #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
         let tdinfo_init_local;
-        #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-        let tdinfo_init: &[u8] = if let Some(td_info) = mig_info.init_td_info_if_present() {
-            log::trace!(
-                migration_request_id = mig_info.mig_request_id;
-                "send_and_receive_sdm_migration_attest_info: using VMM-provided init_td_info\n"
-            );
-            crate::migration::trace_td_info(
-                "send_and_receive_sdm_migration_attest_info",
-                mig_info.mig_request_id,
-                td_info,
-            );
-            td_info
+        #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
+        let tdinfo_init_owned: alloc::vec::Vec<u8>;
+
+        let tdinfo_init: &[u8] = if !has_servtd_ext {
+            &[]
         } else {
-            log::trace!(
-                migration_request_id = mig_info.mig_request_id;
-                "send_and_receive_sdm_migration_attest_info: VMM omitted init_td_info, falling back to local tdcall_report\n"
-            );
-            tdinfo_init_local = crate::migration::local_init_td_info()
-                .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            &tdinfo_init_local
+            #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
+            {
+                if let Some(td_info) = mig_info.init_td_info_if_present() {
+                    log::trace!(
+                        migration_request_id = mig_info.mig_request_id;
+                        "send_and_receive_sdm_migration_attest_info: using VMM-provided init_td_info\n"
+                    );
+                    crate::migration::trace_td_info(
+                        "send_and_receive_sdm_migration_attest_info",
+                        mig_info.mig_request_id,
+                        td_info,
+                    );
+                    td_info
+                } else {
+                    log::trace!(
+                        migration_request_id = mig_info.mig_request_id;
+                        "send_and_receive_sdm_migration_attest_info: VMM omitted init_td_info, falling back to local tdcall_report\n"
+                    );
+                    tdinfo_init_local = crate::migration::local_init_td_info()
+                        .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                    &tdinfo_init_local
+                }
+            }
+            #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
+            {
+                tdinfo_init_owned = {
+                    let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
+                        .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+                    report.td_info.as_bytes().to_vec()
+                };
+                &tdinfo_init_owned
+            }
         };
-        #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
-        let tdinfo_init_owned = {
-            let report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
-                .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
-            report.td_info.as_bytes().to_vec()
-        };
-        #[cfg(not(all(feature = "vmcall-raw", feature = "policy_v2")))]
-        let tdinfo_init: &[u8] = &tdinfo_init_owned;
         let tdinfo_init_element = VdmMessageElement {
             element_type: VdmMessageElementType::TdReportInit,
             length: tdinfo_init.len() as u32,
@@ -480,9 +507,11 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         cnt += tdinfo_init_element
             .encode(&mut writer)
             .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-        cnt += writer
-            .extend_from_slice(tdinfo_init)
-            .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        if !tdinfo_init.is_empty() {
+            cnt += writer
+                .extend_from_slice(tdinfo_init)
+                .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+        }
     }
 
     spdm_requester.common.reset_buffer_via_request_code(
@@ -1105,22 +1134,27 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
 
     let servtd_ext = read_servtd_ext(binding_handle, target_td_uuid)
         .map_err(|_| SPDM_STATUS_INVALID_STATE_LOCAL)?;
+    let has_servtd_ext = servtd_ext.is_some();
 
+    let ext_bytes = servtd_ext.map(|e| e.as_bytes().to_vec());
     let servtd_ext_element = VdmMessageElement {
         element_type: VdmMessageElementType::SerVtdExt,
-        length: servtd_ext.as_bytes().len() as u32,
+        length: ext_bytes.as_ref().map_or(0, |b| b.len()) as u32,
     };
     cnt += servtd_ext_element
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-    cnt += writer
-        .extend_from_slice(servtd_ext.as_bytes())
-        .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+    if let Some(ref bytes) = ext_bytes {
+        cnt += writer
+            .extend_from_slice(bytes)
+            .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+    }
 
     //TD info init (per GHCI 1.5: TDINFO_STRUCT)
     // NOTE: VdmMessageElementType::TdReportInit name retained for wire compatibility;
     // payload is now TDINFO_STRUCT, not full TDREPORT.
-    let tdinfo_init: &[u8] = init_td_info;
+    // Send zero-length if target TD has no SERVTD_EXT.
+    let tdinfo_init: &[u8] = if has_servtd_ext { init_td_info } else { &[] };
     let tdreport_init_element = VdmMessageElement {
         element_type: VdmMessageElementType::TdReportInit,
         length: tdinfo_init.len() as u32,
@@ -1128,9 +1162,11 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
     cnt += tdreport_init_element
         .encode(&mut writer)
         .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-    cnt += writer
-        .extend_from_slice(tdinfo_init)
-        .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+    if !tdinfo_init.is_empty() {
+        cnt += writer
+            .extend_from_slice(tdinfo_init)
+            .ok_or(SPDM_STATUS_BUFFER_FULL)?;
+    }
 
     spdm_requester.common.reset_buffer_via_request_code(
         SpdmRequestResponseCode::SpdmRequestVendorDefinedRequest,
