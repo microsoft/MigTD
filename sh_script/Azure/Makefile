@@ -1,12 +1,15 @@
 #
 # Copyright (C) 2011-2021 Intel Corporation. All rights reserved.
 #
+# all targets in this Makefile are for building IGVM images for testing only.
 
 IGVM_FILE ?= target/release/migtd.igvm
 LOG_LEVEL ?= trace
 # Common features for IGVM images
 IGVM_FEATURES_BASE ?= vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation
-IGVM_FEATURES_GET_QUOTE ?= $(IGVM_FEATURES_BASE),igvm-attest
+IGVM_FEATURES_GET_QUOTE = $(IGVM_FEATURES_BASE),igvm-attest
+IGVM_FEATURES_MOCK_QUOTE = $(IGVM_FEATURES_BASE),use-mock-quote
+IGVM_FEATURES_GET_QUOTE_TEST = $(IGVM_FEATURES_GET_QUOTE),test-get-quote
 IGVM_MANIFEST ?= config/Azure/servtd_info.json
 
 .PHONY: pre-build generate-hash generate-hash-v2 generate-hash-v2-verbose generate-hash-verbose
@@ -25,7 +28,7 @@ help:
 	@echo "  build-igvm-all                  - Build IGVM"
 	@echo "  build-igvm-accept-all           - Build IGVM with allow-all v2 policy using mock quote data"
 	@echo "  build-igvm-reject-all           - Build IGVM with bad-FMSPC v2 policy (migration will be rejected)"
-	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy which will call getquote durining initialization."
+	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy to test the getquote during initialization.(no successful migration expected)"
 	@echo "  build-igvm-mock-quote           - Build IGVM with v2 policy using mock quote data for testing."
 	@echo "  build-igvm-mock-quote-allow-all - Build IGVM with allow-all v2 policy using mock quote data."
 
@@ -63,7 +66,7 @@ generate-hash-get-quote: generate-hash-v2
 
 generate-hash-v2-verbose: generate-hash-verbose
 
-# --- Default (same as get-quote) ---
+# --- Default (same as get-quote, kept for pipeline) ---
 
 build-igvm:
 	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
@@ -80,7 +83,7 @@ build-igvm-v2-mock:
 	cd ../../ && cargo image --policy-v2 --debug \
 	 --image-format igvm \
 	 --no-default-features \
-	 --features $(IGVM_FEATURES_BASE),use-mock-quote \
+	 --features $(IGVM_FEATURES_MOCK_QUOTE) \
 	 --log-level $(LOG_LEVEL) \
 	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
 	 --policy config/Azure/policy_v2_signed.json \
@@ -135,8 +138,9 @@ test-reject:
 
 # --- Get-quote (v2 policy with real quote) ---
 
+# For testing getquote during initialization, no successful migration is expected.
 build-igvm-get-quote: pre-build
-	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
+	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE_TEST) --log-level $(LOG_LEVEL) \
 	 --image-format igvm --output $(IGVM_FILE) --debug \
 	 --policy-v2 --policy config/templates/policy_v2_signed.json \
 	 --policy-issuer-chain config/templates/policy_issuer_chain.pem \
