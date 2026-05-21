@@ -107,9 +107,18 @@ mod v2 {
         attestation::root_ca::set_ca(root_ca_der.as_ref())
             .map_err(|_| PolicyError::InvalidCollateral)?;
 
-        VERIFIED_POLICY
+        let version = VERIFIED_POLICY
             .try_call_once(|| Ok(verified_policy))
-            .map(|p| p.get_version().to_string())
+            .map(|p| p.get_version().to_string())?;
+
+        #[cfg(feature = "test-get-quote")]
+        {
+            log::info!("test-get-quote: testing quote generation during init\n");
+            let _info = get_local_tcb_evaluation_info()?;
+            log::info!("test-get-quote: quote generation and verification succeeded\n");
+        }
+
+        Ok(version)
     }
 
     /// Generate a fresh local TCB evaluation info on demand by creating a
