@@ -489,12 +489,22 @@ pub fn migtd_vdm_msg_rsp_dispatcher_ex<'a>(
     if let Ok(vdm_payload_size) = vdm_payload_size {
         vdm_rsp_payload.rsp_length = vdm_payload_size as u32;
     } else {
-        responder_context.write_spdm_error(SpdmErrorCode::SpdmErrorUnspecified, 0, &mut writer);
-        let used = writer.used();
-        return (
-            Err(vdm_payload_size.err().unwrap()),
-            Some(&rsp_bytes[..used]),
+        let err = vdm_payload_size.err().unwrap();
+        // Encode application-layer error code in the SPDM ERROR response's
+        // error_data byte (param2) when the error is a VDM-encoded MigrationResult.
+        // This allows the requester to extract the real error from the wire.
+        let error_data = if let StatusCode::VDM(vdm) = err.status_code {
+            vdm.vdm_error_code as u8
+        } else {
+            0 // Non-VDM errors: no app-layer code to propagate
+        };
+        responder_context.write_spdm_error(
+            SpdmErrorCode::SpdmErrorVendorDefined,
+            error_data,
+            &mut writer,
         );
+        let used = writer.used();
+        return (Err(err), Some(&rsp_bytes[..used]));
     };
 
     let res = response_header.encode(&mut writer);

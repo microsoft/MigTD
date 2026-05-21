@@ -1038,6 +1038,8 @@ async fn migration_dst_exchange_msk(
     .await?;
 
     let remote_information = spdm_responder.remote_information.take().ok_or_else(|| {
+        // Responder loop completed but attestation handler was never invoked
+        // (e.g. requester closed session before MigInfo exchange).
         log::error!(migration_request_id = info.mig_info.mig_request_id;
             "exchange_msk: missing remote_information after SPDM responder loop\n");
         MigrationResult::SecureSessionError
