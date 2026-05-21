@@ -439,13 +439,31 @@ echo
 # Make sure no ending newline is added (important for signing)
 #
 echo -e "${BLUE}=== Step 3: Updating TD Identity Template ===${NC}"
-# Set tcbDate and issueDate to current time so they satisfy the policy's
-# servtd tcbDate reference (which uses an absolute date).
-CURRENT_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Conditionally update tcbDate and issueDate only when they are behind the
+# policy's servtd tcbDate reference (greater-or-equal check).
+POLICY_TCB_REF=$(jq -r '
+  [.policy[] | .servtd.migtdIdentity.tcbDate.reference // empty] |
+  map(select(. != "")) | max // empty
+' "$ACTIVE_POLICY_DATA_RAW" 2>/dev/null)
+
+DATE_UPDATES=""
+if [ -n "$POLICY_TCB_REF" ]; then
+    CURRENT_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    TEMPLATE_TCB_DATE=$(jq -r '.tcbLevels[0].tcbDate' "$TD_IDENTITY_TEMPLATE")
+    TEMPLATE_ISSUE_DATE=$(jq -r '.issueDate' "$TD_IDENTITY_TEMPLATE")
+    if [[ "$TEMPLATE_TCB_DATE" < "$POLICY_TCB_REF" ]]; then
+        DATE_UPDATES="$DATE_UPDATES | .tcbLevels[0].tcbDate = \"$CURRENT_UTC\""
+        echo -e "  Updating tcbDate: $TEMPLATE_TCB_DATE -> $CURRENT_UTC (reference: $POLICY_TCB_REF)"
+    fi
+    if [[ "$TEMPLATE_ISSUE_DATE" < "$POLICY_TCB_REF" ]]; then
+        DATE_UPDATES="$DATE_UPDATES | .issueDate = \"$CURRENT_UTC\""
+        echo -e "  Updating issueDate: $TEMPLATE_ISSUE_DATE -> $CURRENT_UTC (reference: $POLICY_TCB_REF)"
+    fi
+fi
+
 jq -c ".xfam = \"$XFAM\" | .attributes = \"$ATTRIBUTES\" | .mrConfigId = \"$MR_CONFIG_ID\" | \
 .mrOwner = \"$MR_OWNER\" | .mrOwnerConfig = \"$MR_OWNER_CONFIG\" | .mrsigner = \"$MRSIGNER\" | \
-.isvProdId = $ISV_PROD_ID | .tcbLevels[0].tcb.isvsvn = $ISVSVN | \
-.tcbLevels[0].tcbDate = \"$CURRENT_UTC\" | .issueDate = \"$CURRENT_UTC\"" \
+.isvProdId = $ISV_PROD_ID | .tcbLevels[0].tcb.isvsvn = $ISVSVN $DATE_UPDATES" \
 "$TD_IDENTITY_TEMPLATE" | tr -d '\n' > "$TD_IDENTITY_UPDATED"
 
 echo -e "${GREEN}✓ TD Identity updated: $TD_IDENTITY_UPDATED${NC}"
