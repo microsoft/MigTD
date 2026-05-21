@@ -469,7 +469,14 @@ mod v2 {
         Ok(tdx_report)
     }
 
-    /// Per GHCI 1.5: accepts TDINFO_STRUCT bytes directly (not full TDREPORT)
+    /// Per GHCI 1.5: verifies TDINFO_STRUCT integrity against ServtdExt hash.
+    ///
+    /// Parses the TDINFO bytes, applies IGNORE masks from `servtd_attr`, computes
+    /// `SHA384(SHA384(masked_tdinfo) || SERVTD_TYPE || servtd_attr)`, and compares
+    /// to `init_servtd_hash`. Returns the parsed TdInfo on success.
+    ///
+    /// This function is only called when SERVTD_EXT is supported (the sender
+    /// gates on TDCS.ATTRIBUTES bit 17 before sending init_tdinfo).
     fn verify_servtd_hash(
         tdinfo_bytes: &[u8],
         servtd_attr: u64,
@@ -541,6 +548,7 @@ mod v2 {
         let calculated_hash = digest_sha384(&buffer).map_err(|_| PolicyError::HashCalculation)?;
 
         if calculated_hash.as_slice() != init_servtd_hash {
+            log::error!("verify_servtd_hash: HASH MISMATCH\n");
             return Err(PolicyError::InvalidTdReport);
         }
 
@@ -1004,6 +1012,18 @@ mod v2 {
         let short = [0u8; 256]; // too small for TdInfo (512 bytes)
         let result = verify_servtd_hash(&short, 0, &[0u8; 48]);
         assert!(matches!(result, Err(PolicyError::InvalidParameter)));
+    }
+
+    #[test]
+    fn test_verify_servtd_hash_all_zero_init_hash_fails() {
+        // When init_servtd_info_hash is all-zero but SERVTD_EXT is present,
+        // verify_servtd_hash should fail (the sender should not have sent
+        // init_tdinfo when SERVTD_EXT is not properly provisioned).
+        let mut tdinfo_bytes = [0u8; 512];
+        tdinfo_bytes[0..8].copy_from_slice(&[0xAB; 8]); // non-zero attributes
+        let all_zero_init = [0u8; 48];
+        let result = verify_servtd_hash(&tdinfo_bytes, 0, &all_zero_init);
+        assert!(result.is_err());
     }
 
     #[test]
