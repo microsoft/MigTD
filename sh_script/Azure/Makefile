@@ -119,6 +119,8 @@ build-igvm-reject-all: build-igvm-reject test-reject generate-hash-v2
 
 test-reject:
 	@echo "Running reject test (expecting migration failure with code 8)..."
+	@echo "Note: PolicyUnsatisfiedError (code 8) propagates via VDM error encoding"
+	@echo "      through the SPDM transport layer. See spdm_vdm.rs for details."
 	cd ../../ && ./migtdemu.sh --policy-v2 \
 	 --policy-file config/Azure/policy_v2_signed.json \
 	 --policy-issuer-chain-file config/Azure/policy_issuer_chain.pem \
@@ -133,6 +135,10 @@ test-reject:
 	else \
 		echo "ERROR: Migration failed but not with expected code 8"; \
 		grep -i "failed\|error" migtd_migration_source.log 2>/dev/null | tail -5; \
+		echo "✓ Reject test passed: migration correctly rejected with code 8 (PolicyUnsatisfiedError)"; \
+	else \
+		echo "ERROR: Migration failed but not with expected code 8"; \
+		grep -i "failed\|error\|code" migtd_migration_source.log 2>/dev/null | tail -5; \
 		exit 1; \
 	fi
 

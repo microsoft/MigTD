@@ -10,6 +10,7 @@ use core::future::Future;
 use core::ops::DerefMut;
 use core::time::Duration;
 use spdmlib::error::SpdmStatus;
+use spdmlib::message::SpdmErrorCode;
 
 use super::transport::{shutdown_transport, TransportType};
 use super::MigrationResult;
@@ -61,6 +62,21 @@ where
                 migration_request_id = mig_request_id;
                 "finalize_spdm_session: body error: {e:?}\n"
             );
+            // Extract application error from SpdmStatus:
+            // 1. Destination (local): error is VDM-encoded in status_code directly.
+            let result = MigrationResult::from(e);
+            if result != MigrationResult::SecureSessionError {
+                return result; // VDM decode succeeded — local (destination) error
+            }
+            // 2. Source (remote): peer's error arrives as raw SPDM ERROR response
+            //    stored in error_data. Extract app code from param2 byte.
+            if let Some(ref ed) = e.error_data {
+                if ed.length >= 4 && ed.data[2] == SpdmErrorCode::SpdmErrorVendorDefined.get_u8() {
+                    if let Ok(mig_result) = MigrationResult::try_from(ed.data[3]) {
+                        return mig_result;
+                    }
+                }
+            }
             MigrationResult::SecureSessionError
         })?;
 
