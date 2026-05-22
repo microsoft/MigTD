@@ -1,5 +1,4 @@
-// Tests require std features (format!, sys::decode_error_kind) unavailable in this no_std stub
-#[cfg(all(test, feature = "std_tests"))]
+#[cfg(test)]
 mod tests;
 
 use crate::error;
