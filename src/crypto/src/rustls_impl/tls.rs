@@ -530,6 +530,41 @@ pub(crate) mod connection {
         received_app_data: ChunkVecBuffer,
     }
 
+    // T22: zero-progress read/write helpers for the TLS unbuffered driver.
+    // The TLS state machine repeatedly calls `transport.read(..)` / `transport.write(..)`
+    // and then `input.consume(N)` / `output.reset()` regardless of the returned
+    // length. Without these helpers, a VMM-mediated transport that returns
+    // `Ok(0)` from `read` produces an internal handshake livelock, and a
+    // `transport.write` that does not fully send `output.used()` silently
+    // drops ciphertext (because `output.reset()` clears the buffer before the
+    // next attempt). See
+    // docs/threat_model/T22-policyv2-ratls-internal-zero-progress-livelock.md.
+    async fn transport_read_progress<T: AsyncRead + AsyncWrite + Unpin>(
+        transport: &mut T,
+        buf: &mut [u8],
+    ) -> Result<usize, TlsConnectionError> {
+        let n = transport.read(buf).await?;
+        if n == 0 {
+            return Err(TlsConnectionError::Transport);
+        }
+        Ok(n)
+    }
+
+    async fn transport_write_all<T: AsyncRead + AsyncWrite + Unpin>(
+        transport: &mut T,
+        data: &[u8],
+    ) -> Result<(), TlsConnectionError> {
+        let mut sent = 0;
+        while sent < data.len() {
+            let n = transport.write(&data[sent..]).await?;
+            if n == 0 {
+                return Err(TlsConnectionError::Transport);
+            }
+            sent += n;
+        }
+        Ok(())
+    }
+
     impl<T: AsyncRead + AsyncWrite + Unpin> TlsServerConnection<T> {
         pub fn new(config: Arc<ServerConfig>, transport: T) -> Result<Self, TlsConnectionError> {
             Ok(Self {
@@ -575,7 +610,9 @@ pub(crate) mod connection {
                         return Ok(read);
                     }
                     ConnectionState::WriteTraffic(..) => {
-                        let size = self.transport.read(self.input.unused_mut()).await?;
+                        let size =
+                            transport_read_progress(&mut self.transport, self.input.unused_mut())
+                                .await?;
                         self.input.consume(size);
                     }
                     _ => return Err(TlsConnectionError::UnexpectedState),
@@ -616,16 +653,7 @@ pub(crate) mod connection {
                             |out_buffer| state.encrypt(data, out_buffer),
                             map_err,
                         )?;
-                        // Write all output bytes to transport (handle short writes)
-                        let total = self.output.used().len();
-                        let mut written = 0;
-                        while written < total {
-                            let n = self.transport.write(&self.output.used()[written..]).await?;
-                            if n == 0 {
-                                return Err(TlsConnectionError::UnexpectedState);
-                            }
-                            written += n;
-                        }
+                        transport_write_all(&mut self.transport, self.output.used()).await?;
                         self.output.reset();
                         break;
                     }
@@ -656,12 +684,16 @@ pub(crate) mod connection {
                             )?;
                         }
                         ConnectionState::TransmitTlsData(state) => {
-                            self.transport.write(self.output.used()).await?;
+                            transport_write_all(&mut self.transport, self.output.used()).await?;
                             self.output.reset();
                             state.done();
                         }
                         ConnectionState::BlockedHandshake { .. } => {
-                            let size = self.transport.read(self.input.unused_mut()).await?;
+                            let size = transport_read_progress(
+                                &mut self.transport,
+                                self.input.unused_mut(),
+                            )
+                            .await?;
                             self.input.consume(size);
                         }
                         ConnectionState::ReadTraffic(mut state) => {
@@ -710,7 +742,7 @@ pub(crate) mod connection {
                         },
                     )?;
 
-                    self.transport.write(self.output.used()).await?;
+                    transport_write_all(&mut self.transport, self.output.used()).await?;
                     self.output.reset();
                     Ok(())
                 }
@@ -863,7 +895,9 @@ pub(crate) mod connection {
                         return Ok(read);
                     }
                     ConnectionState::WriteTraffic(..) => {
-                        let size = self.transport.read(self.input.unused_mut()).await?;
+                        let size =
+                            transport_read_progress(&mut self.transport, self.input.unused_mut())
+                                .await?;
                         self.input.consume(size);
                     }
                     _ => return Err(TlsConnectionError::UnexpectedState),
@@ -904,16 +938,7 @@ pub(crate) mod connection {
                             |out_buffer| state.encrypt(data, out_buffer),
                             map_err,
                         )?;
-                        // Write all output bytes to transport (handle short writes)
-                        let total = self.output.used().len();
-                        let mut written = 0;
-                        while written < total {
-                            let n = self.transport.write(&self.output.used()[written..]).await?;
-                            if n == 0 {
-                                return Err(TlsConnectionError::UnexpectedState);
-                            }
-                            written += n;
-                        }
+                        transport_write_all(&mut self.transport, self.output.used()).await?;
                         self.output.reset();
                         break;
                     }
@@ -944,12 +969,16 @@ pub(crate) mod connection {
                             )?;
                         }
                         ConnectionState::TransmitTlsData(state) => {
-                            self.transport.write(self.output.used()).await?;
+                            transport_write_all(&mut self.transport, self.output.used()).await?;
                             self.output.reset();
                             state.done();
                         }
                         ConnectionState::BlockedHandshake { .. } => {
-                            let size = self.transport.read(self.input.unused_mut()).await?;
+                            let size = transport_read_progress(
+                                &mut self.transport,
+                                self.input.unused_mut(),
+                            )
+                            .await?;
                             self.input.consume(size);
                         }
                         ConnectionState::ReadTraffic(mut state) => {
@@ -997,7 +1026,7 @@ pub(crate) mod connection {
                             }
                         },
                     )?;
-                    self.transport.write(self.output.used()).await?;
+                    transport_write_all(&mut self.transport, self.output.used()).await?;
                     self.output.reset();
                     Ok(())
                 }
