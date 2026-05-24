@@ -342,8 +342,8 @@ mod v2 {
                 &init_td_info.mrtd,
                 &init_td_info.rtmr0,
                 &init_td_info.rtmr1,
-                None,
-                None,
+                Some(&init_td_info.rtmr2),
+                Some(&init_td_info.rtmr3),
             ))
             .ok_or(PolicyError::SvnMismatch)?;
         #[cfg(feature = "use-mock-quote")]
@@ -660,8 +660,8 @@ mod v2 {
                 &tdreport.td_info.mrtd,
                 &tdreport.td_info.rtmr0,
                 &tdreport.td_info.rtmr1,
-                None,
-                None,
+                Some(&tdreport.td_info.rtmr2),
+                Some(&tdreport.td_info.rtmr3),
             ),
         );
 
@@ -963,8 +963,8 @@ mod v2 {
                     &init_td_info.mrtd,
                     &init_td_info.rtmr0,
                     &init_td_info.rtmr1,
-                    None,
-                    None,
+                    Some(&init_td_info.rtmr2),
+                    Some(&init_td_info.rtmr3),
                 ))
                 .ok_or(PolicyError::SvnMismatch)?;
             #[cfg(feature = "use-mock-quote")]
