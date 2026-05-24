@@ -460,6 +460,13 @@ async fn tls_session_write_all(
             .write(&data[sent..])
             .await
             .map_err(|_| MigrationResult::SecureSessionError)?;
+        // T21: fail-closed on zero-length transport write to avoid a
+        // livelock in policy_v2-without-spdm_attestation rebinding builds.
+        // See docs/threat_model/T21-policyv2-tls-rebinding-zero-progress-livelock.md.
+        if n == 0 {
+            log::error!("tls_session_write_all: zero-length transport write\n");
+            return Err(MigrationResult::SecureSessionError);
+        }
         sent += n;
     }
     Ok(())

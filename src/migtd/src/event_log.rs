@@ -28,6 +28,13 @@ pub const TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT: &[u8] = b"test_disable_ra_and_ac
 pub const TAGGED_EVENT_ID_POLICY: u32 = 0x1;
 pub const TAGGED_EVENT_ID_ROOT_CA: u32 = 0x2;
 pub const TAGGED_EVENT_ID_POLICY_ISSUER_CHAIN: u32 = 0x3;
+/// Single RTMR2 extend for v2 policy: canonical bytes of `policyData` with
+/// `servtdCollateral.servtdTcbMapping` removed
+/// (see `docs/tcb_mapping_redesign.md`). Replaces the prior six per-field
+/// extends (`TAGGED_EVENT_ID_POLICY_VERSION/_ID/_SVN/_COLLATERALS`,
+/// `TAGGED_EVENT_ID_SERVTD_IDENTITY`, and the `policy[]`-only use of
+/// `TAGGED_EVENT_ID_POLICY = 0x1`).
+pub const TAGGED_EVENT_ID_POLICY_DATA: u32 = 0x9;
 pub const TAGGED_EVENT_ID_TEST: u32 = 0x32;
 
 // MR index the event will be measured into
@@ -220,6 +227,8 @@ pub(crate) fn parse_events(event_log: &[u8]) -> Option<BTreeMap<EventName, CcEve
                         EventName::MigTdPolicySigner,
                         CcEvent::new(event_header, None),
                     );
+                } else if tag_id == TAGGED_EVENT_ID_POLICY_DATA {
+                    map.insert(EventName::MigTdPolicyData, CcEvent::new(event_header, None));
                 }
             }
             _ => {}

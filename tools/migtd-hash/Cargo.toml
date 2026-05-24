@@ -11,8 +11,16 @@ clap = { version = "4.0", features = ["derive"] }
 crypto = { path = "../../src/crypto" }
 env_logger = "0.10"
 igvm = "0.3.4"
+hex = "0.4"
 log = "0.4"
-migtd = { path = "../../src/migtd", default-features = false }
+# NOTE: We intentionally do NOT depend on the `migtd` crate here. Depending on
+# `migtd` with `policy_v2` enabled drags in `attestation/attest-lib-ext`, which
+# in turn builds the SGX `servtd_attest` C library — and that requires a
+# special host link step (defining `__ImageBase`) to produce a working host
+# binary. migtd-hash only needs a handful of constants (CFV size, FFS GUIDs,
+# the test-disable-RA event tag), which are inlined in src/migtd_consts.rs.
+policy = { path = "../../src/policy", default-features = false, features = ["policy_v2"] }
+r-efi = "3.2.0"
 serde_json = "1.0"
 td-layout = { path = "../../deps/td-shim/td-layout" }
 td-shim-tools = { path = "../../deps/td-shim/td-shim-tools", default-features = false, features = ["tee"] }

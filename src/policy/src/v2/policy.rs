@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{self, value::RawValue};
 
 use crate::{
-    v2::{bytes_to_hex_string, hex_string_to_bytes, policy, verify_event_hash},
+    v2::{
+        bytes_to_hex_string, hex_string_to_bytes, measurement::extract_canonical_policy_data_bytes,
+        policy, verify_event_hash,
+    },
     CcEvent, Collaterals, EventName, PolicyError, ServtdCollateral, TdIdentity, TdTcbMapping,
 };
 
@@ -192,7 +195,14 @@ pub fn check_policy_integrity(
     policy: &[u8],
     events: &BTreeMap<EventName, CcEvent>,
 ) -> Result<(), PolicyError> {
-    if !verify_event_hash(events, &EventName::MigTdPolicy, policy)? {
+    // RTMR2 is extended once with the canonical bytes of `policyData` with
+    // `servtdCollateral.servtdTcbMapping` removed. See
+    // `docs/tcb_mapping_redesign.md` for the rationale. The verifier
+    // recomputes those exact bytes via the same helper used by the runtime
+    // extender (`get_policy_and_measure`) and `migtd-hash` (offline RTMR2
+    // simulator), then asserts the event-log entry's recorded digest matches.
+    let policy_data_bytes = extract_canonical_policy_data_bytes(policy)?;
+    if !verify_event_hash(events, &EventName::MigTdPolicyData, &policy_data_bytes)? {
         return Err(PolicyError::PolicyHashMismatch);
     }
 
