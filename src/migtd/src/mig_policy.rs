@@ -315,6 +315,27 @@ mod v2 {
             )?;
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
+        // When SERVTD_EXT is not supported (empty wire elements), skip init_tdinfo
+        // verification — it cannot be verified without init_servtd_info_hash.
+        // Fall back to standard policy evaluation using current tdreport data.
+        if servtd_ext_src.is_empty() || init_tdinfo.is_empty() {
+            log::info!(
+                "No SERVTD_EXT/init_tdinfo — skipping init verification in rebind-old\n"
+            );
+            let relative_reference = get_local_tcb_evaluation_info()?;
+            policy.policy_data.evaluate_policy_common(
+                &evaluation_data_src,
+                &relative_reference,
+                true,
+            )?;
+            policy.policy_data.evaluate_policy_backward(
+                &evaluation_data_src,
+                &relative_reference,
+                true,
+            )?;
+            return Ok(tdx_report.as_bytes().to_vec());
+        }
+
         // Per GHCI 1.5: cross-check the peer's wire-claimed init TDINFO against
         // the peer's verified TDREPORT — init policy signer and init SVN must
         // be consistent with the peer's current self-report.

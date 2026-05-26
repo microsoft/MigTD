@@ -1305,6 +1305,7 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
 
         // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
         let verified_report_peer = policy_check_result.unwrap();
+        #[cfg(not(any(feature = "AzCVMEmu", feature = "test_mock_report")))]
         if verify_tdreport_data_binding(&verified_report_peer, b"MigTDRsp", &th1).is_err() {
             error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = spdm_requester
@@ -1314,6 +1315,8 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
             session.teardown();
             return Err(SpdmStatus::from(MigrationResult::MutualAttestationError));
         }
+        #[cfg(any(feature = "AzCVMEmu", feature = "test_mock_report"))]
+        let _ = (&th1, &verified_report_peer);
     }
 
     let vdm_attest_info_src_hash =

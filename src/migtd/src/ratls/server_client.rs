@@ -998,10 +998,16 @@ mod verify {
         // Per GHCI 1.5: init_policy_hash is mrowner from TDINFO — compare directly
         // (no longer a hash of a policy blob)
         if init_policy_hash != init_tdinfo.get(112..160).unwrap_or(&[]) {
-            log::error!("Invalid init policy hash (mrowner mismatch).\n");
-            return Err(CryptoError::TlsVerifyPeerCert(
-                INVALID_MIG_POLICY_ERROR.to_string(),
-            ));
+            if cfg!(feature = "AzCVMEmu") {
+                log::warn!(
+                    "AzCVMEmu mode: Skipping mrowner verification in rebind cert. This is NOT secure for production use.\n"
+                );
+            } else {
+                log::error!("Invalid init policy hash (mrowner mismatch).\n");
+                return Err(CryptoError::TlsVerifyPeerCert(
+                    INVALID_MIG_POLICY_ERROR.to_string(),
+                ));
+            }
         }
 
         let policy_check_result = mig_policy::authenticate_rebinding_old(

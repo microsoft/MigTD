@@ -1204,6 +1204,7 @@ pub fn handle_exchange_rebind_attest_info_req(
 
         // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
         let verified_report_peer = policy_check_result.unwrap();
+        #[cfg(not(any(feature = "AzCVMEmu", feature = "test_mock_report")))]
         if verify_tdreport_data_binding(&verified_report_peer, b"MigTDReq", &th1).is_err() {
             error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = responder_context
@@ -1213,11 +1214,15 @@ pub fn handle_exchange_rebind_attest_info_req(
             session.teardown();
             return Err(SpdmStatus::from(MigrationResult::MutualAttestationError));
         }
+        #[cfg(any(feature = "AzCVMEmu", feature = "test_mock_report"))]
+        let _ = (&th1, &verified_report_peer);
     }
 
     unsafe {
         let spdm_responder_ex = upcast_mut(responder_context);
-        spdm_responder_ex.servtd_ext =
+        spdm_responder_ex.servtd_ext = if servtd_ext_vec.is_empty() {
+            None
+        } else {
             Some(ServtdExt::read_from_bytes(&servtd_ext_vec).ok_or_else(|| {
                 error!(
                     "Failed to parse SERVTD_EXT: length {} < expected {}\n",
@@ -1225,7 +1230,8 @@ pub fn handle_exchange_rebind_attest_info_req(
                     core::mem::size_of::<ServtdExt>()
                 );
                 SPDM_STATUS_INVALID_MSG_SIZE
-            })?);
+            })?)
+        };
     };
 
     let mut writer = Writer::init(vendor_defined_rsp_payload);
