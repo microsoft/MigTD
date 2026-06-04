@@ -204,6 +204,36 @@ pub fn spdm_verify_quote(#[allow(unused_variables)] quote: &[u8]) -> SpdmResult<
     })
 }
 
+/// Tear down the SPDM session identified by `session_id` (if it still
+/// exists) and return `status` unchanged.
+///
+/// Use this on every security-relevant error path that runs after key
+/// exchange.  Without teardown the keyed session lingers in the
+/// `SpdmContext`:
+/// * On the responder, `rsp_handle_message` only breaks out of its dispatch
+///   loop when the session disappears or the handler returns a
+///   `StatusCode::VDM(_)` / `SPDM_STATUS_INVALID_STATE_LOCAL` error.  Any
+///   other `CORE(_)` status (e.g. `INVALID_MSG_FIELD`, `INVALID_MSG_SIZE`,
+///   `BUFFER_FULL`, `CRYPTO_ERROR`) is silently swallowed and the loop
+///   keeps polling on the *still-keyed* session.
+/// * On the requester, the caller typically drops the context on `Err`, but
+///   tearing the session down explicitly zeroes the established secrets
+///   immediately and matches the responder convention.
+///
+/// The function is a no-op if `session_id` no longer maps to a live
+/// session (idempotent), so it is safe to call after another teardown or
+/// on pre-keying error paths.
+fn fail_with_teardown(
+    ctx: &mut spdmlib::common::SpdmContext,
+    session_id: u32,
+    status: SpdmStatus,
+) -> SpdmStatus {
+    if let Some(s) = ctx.get_session_via_id(session_id) {
+        s.teardown();
+    }
+    status
+}
+
 /// Verify that the peer's REPORTDATA is bound to the expected prefix and TH1.
 pub fn verify_report_data_binding(
     supplemental_data: &[u8],
