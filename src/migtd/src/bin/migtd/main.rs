@@ -74,7 +74,7 @@ fn dump_td_info_and_hash() {
     hasher.update(td_report.td_info.as_bytes());
 
     let hash = hasher.finalize();
-    debug!("TD Info Hash: {:x}\n", hash);
+    info!("TD Info Hash: {:x}\n", hash);
 }
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -140,7 +140,7 @@ pub fn runtime_main() {
     #[cfg(feature = "vmcall-raw")]
     {
         log::info!("log::max_level() = {}\n", log::max_level());
-        if log::max_level() >= Level::Debug {
+        if log::log_enabled!(Level::Info) {
             dump_td_info_and_hash();
         }
     }
