@@ -189,6 +189,24 @@ pub enum EventName {
     MigTdPolicy,
     SgxRootKey,
     MigTdPolicySigner,
+    /// `policyData.version` measured into RTMR2 (extend #1 of the 6-extend
+    /// RTMR2 scheme). Tag ID `TAGGED_EVENT_ID_POLICY_VERSION = 0x5`.
+    MigTdPolicyVersion,
+    /// `policyData.id` measured into RTMR2 (extend #2). Tag ID
+    /// `TAGGED_EVENT_ID_POLICY_ID = 0x6`.
+    MigTdPolicyId,
+    /// `policyData.policySvn` measured into RTMR2 (extend #3). Tag ID
+    /// `TAGGED_EVENT_ID_POLICY_SVN = 0x7`.
+    MigTdPolicySvn,
+    /// `policyData.collaterals` measured into RTMR2 (extend #5). Tag ID
+    /// `TAGGED_EVENT_ID_POLICY_COLLATERALS = 0x8`.
+    MigTdPolicyCollaterals,
+    /// Signed servtdIdentity blob measured into RTMR2 (extend #6 of the
+    /// 6-extend RTMR2 scheme) per `docs/tcb_mapping_redesign.md`. Binding
+    /// the signed identity prevents an attacker from booting a malicious
+    /// peer with an obsolete-but-still-issuer-signed servtdIdentity that
+    /// downgrades old SVNs' TCB status.
+    ServtdIdentity,
     Unknown,
 }
 
@@ -201,6 +219,11 @@ impl From<&str> for EventName {
             "Digest.MigTdCoreSvn" => Self::MigTdCoreSvn,
             "Digest.MigTdPolicy" => Self::MigTdPolicy,
             "Digest.MigTdSgxRootKey" => Self::SgxRootKey,
+            "Digest.MigTdPolicyVersion" => Self::MigTdPolicyVersion,
+            "Digest.MigTdPolicyId" => Self::MigTdPolicyId,
+            "Digest.MigTdPolicySvn" => Self::MigTdPolicySvn,
+            "Digest.MigTdPolicyCollaterals" => Self::MigTdPolicyCollaterals,
+            "Digest.ServtdIdentity" => Self::ServtdIdentity,
             _ => Self::Unknown,
         }
     }

@@ -11,6 +11,8 @@ mod collaterals;
 pub use collaterals::*;
 mod policy;
 pub use policy::*;
+pub mod measurement;
+pub use measurement::*;
 
 impl<'a> Report<'a> {
     pub fn new(report: &'a [u8]) -> Result<Self, PolicyError> {

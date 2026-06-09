@@ -89,6 +89,24 @@ mod v2 {
 
     const SERVTD_TYPE_MIGTD: u16 = 0;
 
+    /// Compute the outer `tdinfo_hash` (attr=0) for the TD described by a
+    /// `TdInfo` returned by `TDG.MR.REPORT`. This is the canonical lookup key
+    /// for `servtd_tcb_mapping` after the TCB-mapping redesign.
+    fn tdinfo_hash_from_td_info(td: &TdInfo) -> Result<[u8; SHA384_DIGEST_SIZE], PolicyError> {
+        policy::compute_tdinfo_hash_from_fields(
+            &td.attributes,
+            &td.xfam,
+            &td.mrtd,
+            &td.mrconfig_id,
+            &td.mrowner,
+            &td.mrownerconfig,
+            &td.rtmr0,
+            &td.rtmr1,
+            &td.rtmr2,
+            &td.rtmr3,
+        )
+    }
+
     lazy_static! {
         pub static ref VERIFIED_POLICY: Once<VerifiedPolicy<'static>> = Once::new();
     }
@@ -319,9 +337,7 @@ mod v2 {
         // verification — it cannot be verified without init_servtd_info_hash.
         // Fall back to standard policy evaluation using current tdreport data.
         if servtd_ext_src.is_empty() || init_tdinfo.is_empty() {
-            log::info!(
-                "No SERVTD_EXT/init_tdinfo — skipping init verification in rebind-old\n"
-            );
+            log::info!("No SERVTD_EXT/init_tdinfo — skipping init verification in rebind-old\n");
             let relative_reference = get_local_tcb_evaluation_info()?;
             policy.policy_data.evaluate_policy_common(
                 &evaluation_data_src,
@@ -359,18 +375,15 @@ mod v2 {
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
         let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
         #[cfg(not(feature = "use-mock-quote"))]
-        let _engine_svn = policy
-            .servtd_tcb_mapping
-            .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
-                &init_td_info.mrtd,
-                &init_td_info.rtmr0,
-                &init_td_info.rtmr1,
-                None,
-                None,
-            ))
-            .ok_or(PolicyError::SvnMismatch)?;
+        let _engine_svn = {
+            let tdinfo_hash = tdinfo_hash_from_td_info(&init_td_info)?;
+            policy
+                .servtd_tcb_mapping
+                .get_engine_svn_by_tdinfo_hash(&tdinfo_hash)
+                .ok_or(PolicyError::SvnMismatch)?
+        };
         #[cfg(feature = "use-mock-quote")]
-        log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
+        log::warn!("use-mock-quote: skipping get_engine_svn_by_tdinfo_hash allowlist check\n");
 
         // Use local policy's tcb_mapping with init tdinfo measurements
         let relative_reference = setup_evaluation_data_with_tdinfo(&init_td_info, policy)?;
@@ -666,15 +679,13 @@ mod v2 {
         td_info: &TdInfo,
         policy: &VerifiedPolicy,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
-        let migtd_svn = policy.servtd_tcb_mapping.get_engine_svn_by_measurements(
-            &Measurements::new_from_bytes(
-                &td_info.mrtd,
-                &td_info.rtmr0,
-                &td_info.rtmr1,
-                None,
-                None,
-            ),
-        );
+        // Build the canonical TDINFO_STRUCT bytes from the TDR's TdInfo and
+        // derive the outer tdinfo_hash, mirroring what the SEAM module
+        // computes for SERVTD_INFO_HASH (attr=0).
+        let tdinfo_hash = tdinfo_hash_from_td_info(td_info)?;
+        let migtd_svn = policy
+            .servtd_tcb_mapping
+            .get_engine_svn_by_tdinfo_hash(&tdinfo_hash);
 
         let migtd_tcb = migtd_svn.and_then(|svn| policy.servtd_identity.get_tcb_level_by_svn(svn));
 
@@ -731,15 +742,10 @@ mod v2 {
         tdreport: &TdxReport,
         policy: &VerifiedPolicy,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
-        let migtd_svn = policy.servtd_tcb_mapping.get_engine_svn_by_measurements(
-            &Measurements::new_from_bytes(
-                &tdreport.td_info.mrtd,
-                &tdreport.td_info.rtmr0,
-                &tdreport.td_info.rtmr1,
-                None,
-                None,
-            ),
-        );
+        let tdinfo_hash = tdinfo_hash_from_td_info(&tdreport.td_info)?;
+        let migtd_svn = policy
+            .servtd_tcb_mapping
+            .get_engine_svn_by_tdinfo_hash(&tdinfo_hash);
 
         let migtd_tcb = migtd_svn.and_then(|svn| policy.servtd_identity.get_tcb_level_by_svn(svn));
 
@@ -1040,19 +1046,16 @@ mod v2 {
         // Under use-mock-quote the MRTD belongs to a different binary (mock build)
         // and won't be in the tcb_mapping generated for the production image.
         #[cfg(not(feature = "use-mock-quote"))]
-        let _engine_svn = policy
-            .servtd_tcb_mapping
-            .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
-                &init_td_info.mrtd,
-                &init_td_info.rtmr0,
-                &init_td_info.rtmr1,
-                None,
-                None,
-            ))
-            .ok_or(PolicyError::SvnMismatch)?;
+        let _engine_svn = {
+            let tdinfo_hash = tdinfo_hash_from_td_info(&init_td_info)?;
+            policy
+                .servtd_tcb_mapping
+                .get_engine_svn_by_tdinfo_hash(&tdinfo_hash)
+                .ok_or(PolicyError::SvnMismatch)?
+        };
         #[cfg(feature = "use-mock-quote")]
-        log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
-        log::info!("BC> POL-SRCv2-07 get_engine_svn_by_measurements ok\n");
+        log::warn!("use-mock-quote: skipping get_engine_svn_by_tdinfo_hash allowlist check\n");
+        log::info!("BC> POL-SRCv2-07 get_engine_svn_by_tdinfo_hash ok\n");
 
         // Policy eval with init TDINFO as relative reference (skip global —
         // platform checks already done above with skip_global=false)

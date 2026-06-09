@@ -152,7 +152,7 @@ name = "async_runtime"
 version = "0.1.0"
 dependencies = [
  "futures-task",
- "spin 0.10.0",
+ "spin 0.11.0",
 ]
 
 [[package]]
@@ -1375,9 +1375,12 @@ dependencies = [
  "clap",
  "crypto",
  "env_logger",
+ "hex",
  "log",
- "migtd",
+ "policy",
+ "r-efi 3.2.0",
  "serde_json",
+ "td-layout",
  "td-shim-interface",
  "td-shim-tools",
 ]
@@ -2263,18 +2266,12 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
-dependencies = [
- "lock_api",
-]
-
-[[package]]
-name = "spin"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "783f3f6f6b01e295a669edfc402133a5f2553d1f0e81284b3ba4594e80bdd4a2"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spinning_top"

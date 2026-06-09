@@ -372,6 +372,9 @@ cargo build --release -p servtd-collateral-generator 2>&1 | grep -E "(Compiling|
 echo "Building migtd-policy-generator..."
 cargo build --release -p migtd-policy-generator 2>&1 | grep -E "(Compiling|Finished|error)" || true
 
+echo "Building migtd-hash..."
+cargo build --release -p migtd-hash 2>&1 | grep -E "(Compiling|Finished|error)" || true
+
 # Verify tools exist
 # Note: azcvm-extract-report is in a different location
 if [ ! -f "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/release/azcvm-extract-report" ]; then
@@ -379,7 +382,7 @@ if [ ! -f "$PROJECT_ROOT/deps/td-shim-AzCVMEmu/azcvm-extract-report/target/relea
     exit 1
 fi
 
-for tool in json-signer servtd-collateral-generator migtd-policy-generator; do
+for tool in json-signer servtd-collateral-generator migtd-policy-generator migtd-hash; do
     if [ ! -f "$TOOLS_DIR/$tool" ]; then
         echo -e "${RED}Error: Tool '$tool' not found at $TOOLS_DIR/$tool${NC}" >&2
         exit 1
@@ -470,17 +473,31 @@ echo -e "${GREEN}✓ TD Identity updated: $TD_IDENTITY_UPDATED${NC}"
 echo
 
 #
-# Step 4: Update tcb_mapping.json with extracted measurements
+# Step 4: Update tcb_mapping.json with the v2 tdinfo_hash
 # Make sure no ending newline is added (important for signing)
 #
+# Per docs/tcb_mapping_redesign.md, the v2 schema uses a single
+# `tdinfo_hash = SHA384(SHA384(unmasked_TDINFO_512) || u16_LE(0) || u64_LE(0))`.
+# We delegate the hash computation to the `migtd-hash --from-report` mode so
+# the math stays in one place (tools/migtd-hash/src/lib.rs::calculate_tdinfo_hash)
+# and the mock-quote flow is guaranteed byte-identical to the release pipeline.
+#
 echo -e "${BLUE}=== Step 4: Updating TCB Mapping Template ===${NC}"
-jq -c ".svnMappings[0].tdMeasurements.mrtd = \"$MRTD\" | \
-.svnMappings[0].tdMeasurements.rtmr0 = \"$RTMR0\" | \
-.svnMappings[0].tdMeasurements.rtmr1 = \"$RTMR1\" | \
+
+TDINFO_HASH_FILE="$TEMP_DIR/tdinfo_hash.hex"
+"$TOOLS_DIR/migtd-hash" \
+    --policy-v2 \
+    --from-report "$REPORT_DATA_FILE" \
+    --output-tdinfo-hash "$TDINFO_HASH_FILE"
+# Uppercase to match the convention used by signed policies.
+TDINFO_HASH=$(tr 'a-z' 'A-Z' < "$TDINFO_HASH_FILE")
+
+jq -c ".svnMappings[0].tdMeasurements = {\"tdinfo_hash\": \"$TDINFO_HASH\"} | \
 .svnMappings[0].isvsvn = $ISVSVN" \
 "$TCB_MAPPING_TEMPLATE" | tr -d '\n' > "$TCB_MAPPING_UPDATED"
 
 echo -e "${GREEN}✓ TCB Mapping updated: $TCB_MAPPING_UPDATED${NC}"
+echo -e "  tdinfo_hash = $TDINFO_HASH"
 echo
 
 #
