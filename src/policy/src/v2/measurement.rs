@@ -10,21 +10,28 @@
 //!
 //! ## RTMR2 measurement scheme
 //!
-//! Six independent extends into RTMR2 (`mr_index = 0x3`), in this fixed order:
+//! RTMR2 (`mr_index = 0x3`) is extended **once** with the canonical JSON bytes
+//! of `policyData` with `servtdCollateral.servtdTcbMapping` removed.
 //!
 //! | # | Field | Helper | Tag ID | EventName |
 //! |---|-------|--------|--------|-----------|
-//! | 1 | `policyData.version`            | `extract_policy_version_bytes`      | `0x5` | `MigTdPolicyVersion` |
-//! | 2 | `policyData.id`                 | `extract_policy_id_bytes`           | `0x6` | `MigTdPolicyId` |
-//! | 3 | `policyData.policySvn`          | `extract_policy_svn_bytes`          | `0x7` | `MigTdPolicySvn` |
-//! | 4 | `policyData.policy`             | `extract_policy_rules_bytes`        | `0x1` | `MigTdPolicy` |
-//! | 5 | `policyData.collaterals`        | `extract_policy_collaterals_bytes`  | `0x8` | `MigTdPolicyCollaterals` |
-//! | 6 | `policyData.servtdCollateral.servtdIdentity` | `extract_signed_servtd_identity_bytes` | `0x4` | `ServtdIdentity` |
+//! | 1 | `policyData` (redacted: `servtdCollateral.servtdTcbMapping` omitted) | `extract_canonical_policy_data_bytes` | `0x9` | `MigTdPolicyData` |
 //!
-//! Each helper returns the **canonical** JSON bytes of its field value
-//! including the field's natural delimiters (`"…"` for strings, `[…]` for
-//! arrays, `{…}` for objects, digits only for numbers). Canonical means:
-//! object keys sorted alphabetically, recursively, no whitespace.
+//! `servtdCollateral.servtdTcbMapping` is the **only** field excluded because
+//! it must remain updateable after the IGVM is published (re-signed by the
+//! issuer without re-releasing the image). Every other field of `policyData`
+//! — including `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
+//! `backwardPolicy`, `collaterals`, `servtdCollateral.majorVersion`,
+//! `servtdCollateral.minorVersion`, `servtdCollateral.servtdIdentity` (with
+//! its signature), `servtdCollateral.servtdIdentityIssuerChain`, and
+//! `servtdCollateral.servtdTcbMappingIssuerChain` — is bound into RTMR2 by
+//! virtue of being inside `policyData`.
+//!
+//! ## Canonicalization
+//!
+//! "Canonical" means: object keys sorted alphabetically at every nesting
+//! level, no whitespace between tokens, array element order preserved, and
+//! scalar values rendered by `serde_json` (RFC 8259 JSON literal form).
 //!
 //! Canonicalization is implemented manually by [`canonical_value_bytes`] and
 //! does **not** rely on `serde_json::to_vec`'s ordering, because other crates
@@ -40,9 +47,10 @@
 //! `A` is the value extended into RTMR1 (replacing the old "hash the full
 //! policy issuer chain PEM bytes" scheme).
 //!
-//! Together they break the circular dependency that previously prevented
-//! `svnMappings[].tdMeasurements` from being a stable, pre-signing-computable
-//! function of the build inputs.
+//! Together, the single-extend RTMR2 (with `servtdTcbMapping` redacted) and
+//! the RTMR1 signer anchor break the circular dependency that previously
+//! prevented `svnMappings[].tdMeasurements` from being a stable, pre-signing
+//! computable function of the build inputs.
 
 use alloc::{string::String, vec::Vec};
 use crypto::{
@@ -153,7 +161,7 @@ pub fn canonical_value_bytes(v: &Value) -> Result<Vec<u8>, PolicyError> {
 }
 
 // ---------------------------------------------------------------------------
-// policyData field extraction
+// policyData extraction (single redacted extend)
 // ---------------------------------------------------------------------------
 
 /// Parse `policy_input` and return the `policyData` value. Accepts both:
@@ -174,100 +182,42 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
     Ok(policy_data)
 }
 
-/// Canonical JSON bytes of `policyData.version` (a JSON string), INCLUDING
-/// the surrounding quotes. Errors if missing, null, or wrong type. Used for
-/// RTMR2 extend #1 (`TAGGED_EVENT_ID_POLICY_VERSION`).
-pub fn extract_policy_version_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
-    let pd = parse_policy_data(policy_input)?;
-    let v = pd.get("version").ok_or(PolicyError::InvalidPolicy)?;
-    if !v.is_string() {
-        return Err(PolicyError::InvalidPolicy);
-    }
-    canonical_value_bytes(v)
-}
-
-/// Canonical JSON bytes of `policyData.id` (a JSON string), INCLUDING the
-/// surrounding quotes. Errors if missing, null, or wrong type. Used for
-/// RTMR2 extend #2 (`TAGGED_EVENT_ID_POLICY_ID`).
-pub fn extract_policy_id_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
-    let pd = parse_policy_data(policy_input)?;
-    let v = pd.get("id").ok_or(PolicyError::InvalidPolicy)?;
-    if !v.is_string() {
-        return Err(PolicyError::InvalidPolicy);
-    }
-    canonical_value_bytes(v)
-}
-
-/// Canonical JSON bytes of `policyData.policySvn` (a JSON unsigned integer),
-/// which is just the digit characters. Floats and negatives are rejected to
-/// avoid representation ambiguity (`1` vs `1.0` vs `-0`). Errors if missing,
-/// null, or wrong type. Used for RTMR2 extend #3 (`TAGGED_EVENT_ID_POLICY_SVN`).
-pub fn extract_policy_svn_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
-    let pd = parse_policy_data(policy_input)?;
-    let v = pd.get("policySvn").ok_or(PolicyError::InvalidPolicy)?;
-    match v {
-        Value::Number(n) if n.is_u64() => canonical_value_bytes(v),
-        _ => Err(PolicyError::InvalidPolicy),
-    }
-}
-
-/// Canonical JSON bytes of `policyData.policy` (a JSON array), INCLUDING the
-/// outer `[` / `]`. Errors if missing, null, or not an array. Used for RTMR2
-/// extend #4 (`TAGGED_EVENT_ID_POLICY`).
+/// Canonical JSON bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
+/// removed, INCLUDING the outer `{` / `}`.
 ///
-/// Note: only the `policy` field is bound here. The `forwardPolicy` and
-/// `backwardPolicy` fields, if present, are NOT measured by this helper.
-pub fn extract_policy_rules_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
-    let pd = parse_policy_data(policy_input)?;
-    let v = pd.get("policy").ok_or(PolicyError::InvalidPolicy)?;
-    if !v.is_array() {
-        return Err(PolicyError::InvalidPolicy);
-    }
-    canonical_value_bytes(v)
-}
-
-/// Canonical JSON bytes of `policyData.collaterals` (a JSON object), INCLUDING
-/// the outer `{` / `}`. Errors if missing, null, or not an object. Used for
-/// RTMR2 extend #5 (`TAGGED_EVENT_ID_POLICY_COLLATERALS`).
-pub fn extract_policy_collaterals_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
-    let pd = parse_policy_data(policy_input)?;
-    let v = pd.get("collaterals").ok_or(PolicyError::InvalidPolicy)?;
-    if !v.is_object() {
-        return Err(PolicyError::InvalidPolicy);
-    }
-    canonical_value_bytes(v)
-}
-
-/// Canonical JSON bytes of the signed `servtdIdentity` blob embedded at
-/// `policyData.servtdCollateral.servtdIdentity`, INCLUDING the outer `{`/`}`.
-/// Errors if missing, null, or the structural shape doesn't include both
-/// `tdIdentity` and `signature` fields.
+/// This is the single buffer extended into RTMR2 by the runtime and by
+/// `migtd-hash` (tag `TAGGED_EVENT_ID_POLICY_DATA = 0x9`, event name
+/// `MigTdPolicyData`). The redaction is what breaks the circular dependency
+/// between `svnMappings[].tdMeasurements.tdinfo_hash` and RTMR2: every other
+/// `policyData` field is included by virtue of being part of the canonical
+/// object bytes, so the measurement automatically protects future field
+/// additions without manual whitelist maintenance.
 ///
-/// Used for RTMR2 extend #6 (`TAGGED_EVENT_ID_SERVTD_IDENTITY`). See
-/// `docs/tcb_mapping_redesign.md` §"Servtd identity binding" for the threat
-/// model (defeats playback / TCB-downgrade attacks via obsolete signed
-/// identities).
+/// `servtdCollateral.servtdTcbMapping` is the only field redacted because the
+/// release pipeline must be able to re-issue (re-sign) the TCB mapping with
+/// updated `svnMappings[]` entries without rebuilding the IGVM image. Any
+/// other field — `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
+/// `backwardPolicy`, `collaterals`, `servtdCollateral.majorVersion`,
+/// `servtdCollateral.minorVersion`, `servtdCollateral.servtdIdentity` (with
+/// its signature), `servtdCollateral.servtdIdentityIssuerChain`, and
+/// `servtdCollateral.servtdTcbMappingIssuerChain` — is bound into RTMR2.
 ///
-/// The hash covers the full signed object including its `signature` field.
-/// That means re-signing byte-identical inner content with a fresh signature
-/// changes RTMR2 — intentional, so operators must rebuild the IGVM image
-/// whenever the issuer re-signs `servtdIdentity`.
-pub fn extract_signed_servtd_identity_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
-    let pd = parse_policy_data(policy_input)?;
+/// The redaction is a no-op if `servtdCollateral` is absent or not an object
+/// (e.g. malformed input); the function never errors on a missing field
+/// because the runtime policy parser performs its own structural validation
+/// downstream, and a malformed policy will simply produce a tdinfo_hash that
+/// does not match any `svnMappings[]` entry and so fails attestation.
+pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
+    let mut policy_data = parse_policy_data(policy_input)?;
 
-    let collateral = pd
-        .get("servtdCollateral")
-        .ok_or(PolicyError::InvalidPolicy)?;
-    let identity = collateral
-        .get("servtdIdentity")
-        .ok_or(PolicyError::InvalidPolicy)?;
-
-    let obj = identity.as_object().ok_or(PolicyError::InvalidPolicy)?;
-    if !obj.contains_key("tdIdentity") || !obj.contains_key("signature") {
-        return Err(PolicyError::InvalidPolicy);
+    if let Some(coll) = policy_data
+        .get_mut("servtdCollateral")
+        .and_then(|v| v.as_object_mut())
+    {
+        coll.remove("servtdTcbMapping");
     }
 
-    canonical_value_bytes(identity)
+    canonical_value_bytes(&policy_data)
 }
 
 /// Compute the RTMR1 signer anchor `A` from its component digests.
@@ -376,12 +326,14 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // extract_policy_*_bytes (typed)
+    // extract_canonical_policy_data_bytes
     // ------------------------------------------------------------------
 
-    /// Minimal bare-policyData with every field the 6-extend scheme uses.
+    /// Minimal bare-policyData with every nested field the redaction scheme
+    /// must handle: top-level fields, plus `servtdCollateral` containing both
+    /// `servtdIdentity` (measured) and `servtdTcbMapping` (redacted).
     fn sample_bare_policy_data() -> &'static str {
-        r#"{"id":"X-uuid","version":"2.0","policySvn":7,"policy":[{"global":{"tcb":{"tcbDate":{"reference":"2023","operation":"ge"}}}},{"servtd":{"x":1}}],"collaterals":{"majorVersion":1,"minorVersion":0,"teeType":129},"servtdCollateral":{"majorVersion":1,"minorVersion":0,"servtdIdentityIssuerChain":"chain","servtdIdentity":{"tdIdentity":{"id":"identity-1","version":1,"tcbLevels":[]},"signature":"deadbeef"},"servtdTcbMappingIssuerChain":"chain","servtdTcbMapping":{}}}"#
+        r#"{"id":"X-uuid","version":"2.0","policySvn":7,"policy":[{"global":{"tcb":{"tcbDate":{"reference":"2023","operation":"ge"}}}},{"servtd":{"x":1}}],"collaterals":{"majorVersion":1,"minorVersion":0,"teeType":129},"servtdCollateral":{"majorVersion":1,"minorVersion":0,"servtdIdentityIssuerChain":"chain","servtdIdentity":{"tdIdentity":{"id":"identity-1","version":1,"tcbLevels":[]},"signature":"deadbeef"},"servtdTcbMappingIssuerChain":"mapping-chain","servtdTcbMapping":{"svnMappings":[{"isvsvn":1}]}}}"#
     }
 
     fn sample_wrapped_policy() -> alloc::string::String {
@@ -392,285 +344,138 @@ mod tests {
     }
 
     #[test]
-    fn extract_version_returns_quoted_canonical_string() {
-        let out = extract_policy_version_bytes(sample_bare_policy_data().as_bytes()).unwrap();
-        assert_eq!(&out, br#""2.0""#);
-    }
-
-    #[test]
-    fn extract_id_returns_quoted_canonical_string() {
-        let out = extract_policy_id_bytes(sample_bare_policy_data().as_bytes()).unwrap();
-        assert_eq!(&out, br#""X-uuid""#);
-    }
-
-    #[test]
-    fn extract_svn_returns_digits_only() {
-        let out = extract_policy_svn_bytes(sample_bare_policy_data().as_bytes()).unwrap();
-        assert_eq!(&out, b"7");
-    }
-
-    #[test]
-    fn extract_rules_returns_array_with_brackets() {
-        let out = extract_policy_rules_bytes(sample_bare_policy_data().as_bytes()).unwrap();
-        assert_eq!(out.first(), Some(&b'['));
-        assert_eq!(out.last(), Some(&b']'));
-        // Inner objects canonical: keys sorted at every level.
-        let expected = br#"[{"global":{"tcb":{"tcbDate":{"operation":"ge","reference":"2023"}}}},{"servtd":{"x":1}}]"#;
-        assert_eq!(&out, expected);
-    }
-
-    #[test]
-    fn extract_collaterals_returns_object_with_braces() {
-        let out = extract_policy_collaterals_bytes(sample_bare_policy_data().as_bytes()).unwrap();
-        assert_eq!(out.first(), Some(&b'{'));
-        assert_eq!(out.last(), Some(&b'}'));
-        // Keys sorted: majorVersion, minorVersion, teeType.
-        let expected = br#"{"majorVersion":1,"minorVersion":0,"teeType":129}"#;
-        assert_eq!(&out, expected);
-    }
-
-    /// Every typed extractor accepts both the signed-wrapper form and the
-    /// bare `policyData` form and produces identical bytes.
-    #[test]
-    fn extractors_accept_signed_wrapper_and_match_bare() {
-        let bare = sample_bare_policy_data().as_bytes();
-        let wrapped_owned = sample_wrapped_policy();
-        let wrapped = wrapped_owned.as_bytes();
-
-        for (name, bare_out, wrapped_out) in [
-            (
-                "version",
-                extract_policy_version_bytes(bare).unwrap(),
-                extract_policy_version_bytes(wrapped).unwrap(),
-            ),
-            (
-                "id",
-                extract_policy_id_bytes(bare).unwrap(),
-                extract_policy_id_bytes(wrapped).unwrap(),
-            ),
-            (
-                "svn",
-                extract_policy_svn_bytes(bare).unwrap(),
-                extract_policy_svn_bytes(wrapped).unwrap(),
-            ),
-            (
-                "rules",
-                extract_policy_rules_bytes(bare).unwrap(),
-                extract_policy_rules_bytes(wrapped).unwrap(),
-            ),
-            (
-                "collaterals",
-                extract_policy_collaterals_bytes(bare).unwrap(),
-                extract_policy_collaterals_bytes(wrapped).unwrap(),
-            ),
-            (
-                "identity",
-                extract_signed_servtd_identity_bytes(bare).unwrap(),
-                extract_signed_servtd_identity_bytes(wrapped).unwrap(),
-            ),
-        ] {
-            assert_eq!(bare_out, wrapped_out, "field {name} bare/wrapped mismatch");
-        }
-    }
-
-    #[test]
-    fn extractors_are_canonical_across_key_order() {
-        let order_a = r#"{"version":"2.0","id":"X","policySvn":7,"policy":[{"b":2,"a":1}],"collaterals":{"teeType":129,"majorVersion":1,"minorVersion":0},"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"version":1,"id":"i"},"signature":"aa"}}}"#;
-        let order_b = r#"{"policy":[{"a":1,"b":2}],"id":"X","policySvn":7,"version":"2.0","servtdCollateral":{"servtdIdentity":{"signature":"aa","tdIdentity":{"id":"i","version":1}}},"collaterals":{"minorVersion":0,"majorVersion":1,"teeType":129}}"#;
-
-        for (a, b) in [
-            (
-                extract_policy_version_bytes(order_a.as_bytes()).unwrap(),
-                extract_policy_version_bytes(order_b.as_bytes()).unwrap(),
-            ),
-            (
-                extract_policy_id_bytes(order_a.as_bytes()).unwrap(),
-                extract_policy_id_bytes(order_b.as_bytes()).unwrap(),
-            ),
-            (
-                extract_policy_svn_bytes(order_a.as_bytes()).unwrap(),
-                extract_policy_svn_bytes(order_b.as_bytes()).unwrap(),
-            ),
-            (
-                extract_policy_rules_bytes(order_a.as_bytes()).unwrap(),
-                extract_policy_rules_bytes(order_b.as_bytes()).unwrap(),
-            ),
-            (
-                extract_policy_collaterals_bytes(order_a.as_bytes()).unwrap(),
-                extract_policy_collaterals_bytes(order_b.as_bytes()).unwrap(),
-            ),
-            (
-                extract_signed_servtd_identity_bytes(order_a.as_bytes()).unwrap(),
-                extract_signed_servtd_identity_bytes(order_b.as_bytes()).unwrap(),
-            ),
-        ] {
-            assert_eq!(a, b);
-        }
-    }
-
-    // ---------- type / presence rejections ----------
-
-    #[test]
-    fn extract_version_rejects_non_string_or_missing() {
-        // missing
-        assert!(extract_policy_version_bytes(
-            br#"{"id":"x","policySvn":0,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        // wrong type
-        assert!(extract_policy_version_bytes(
-            br#"{"version":2,"id":"x","policySvn":0,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        // null
-        assert!(extract_policy_version_bytes(
-            br#"{"version":null,"id":"x","policySvn":0,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn extract_id_rejects_non_string_or_missing() {
-        assert!(extract_policy_id_bytes(
-            br#"{"version":"2.0","policySvn":0,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        assert!(extract_policy_id_bytes(
-            br#"{"version":"2.0","id":42,"policySvn":0,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        assert!(extract_policy_id_bytes(
-            br#"{"version":"2.0","id":null,"policySvn":0,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn extract_svn_rejects_non_unsigned_integer_or_missing() {
-        // missing
-        assert!(extract_policy_svn_bytes(
-            br#"{"version":"2.0","id":"x","policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        // negative (integer but not unsigned)
-        assert!(extract_policy_svn_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":-1,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        // float
-        assert!(extract_policy_svn_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":1.0,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        // string
-        assert!(extract_policy_svn_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":"1","policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-        // null
-        assert!(extract_policy_svn_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":null,"policy":[],"collaterals":{}}"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn extract_rules_rejects_non_array_or_missing() {
-        assert!(extract_policy_rules_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":0,"collaterals":{}}"#
-        )
-        .is_err());
-        assert!(extract_policy_rules_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":0,"policy":{"a":1},"collaterals":{}}"#
-        )
-        .is_err());
-        assert!(extract_policy_rules_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":0,"policy":null,"collaterals":{}}"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn extract_rules_accepts_empty_array_with_brackets() {
-        let input = br#"{"version":"2.0","id":"x","policySvn":0,"policy":[],"collaterals":{}}"#;
-        let out = extract_policy_rules_bytes(input).unwrap();
-        assert_eq!(&out, b"[]");
-    }
-
-    #[test]
-    fn extract_collaterals_rejects_non_object_or_missing() {
-        assert!(extract_policy_collaterals_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":0,"policy":[]}"#
-        )
-        .is_err());
-        assert!(extract_policy_collaterals_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":0,"policy":[],"collaterals":[]}"#
-        )
-        .is_err());
-        assert!(extract_policy_collaterals_bytes(
-            br#"{"version":"2.0","id":"x","policySvn":0,"policy":[],"collaterals":null}"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn extract_collaterals_accepts_empty_object_with_braces() {
-        let input = br#"{"version":"2.0","id":"x","policySvn":0,"policy":[],"collaterals":{}}"#;
-        let out = extract_policy_collaterals_bytes(input).unwrap();
-        assert_eq!(&out, b"{}");
-    }
-
-    // ------------------------------------------------------------------
-    // extract_signed_servtd_identity_bytes
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn extract_servtd_identity_returns_canonical_object_with_braces() {
+    fn extract_returns_outer_braces() {
         let out =
-            extract_signed_servtd_identity_bytes(sample_bare_policy_data().as_bytes()).unwrap();
+            extract_canonical_policy_data_bytes(sample_bare_policy_data().as_bytes()).unwrap();
         assert_eq!(out.first(), Some(&b'{'));
         assert_eq!(out.last(), Some(&b'}'));
-        let expected = br#"{"signature":"deadbeef","tdIdentity":{"id":"identity-1","tcbLevels":[],"version":1}}"#;
-        assert_eq!(&out, expected);
     }
 
     #[test]
-    fn extract_servtd_identity_includes_signature_bytes() {
+    fn extract_redacts_servtd_tcb_mapping() {
+        // Two policies that differ ONLY in servtdCollateral.servtdTcbMapping
+        // must produce identical canonical bytes (the redaction is what makes
+        // tcbMapping updateable post-IGVM-build).
+        let a = r#"{"id":"X","version":"2","policySvn":1,"policy":[],"collaterals":{},"servtdCollateral":{"majorVersion":1,"minorVersion":0,"servtdIdentityIssuerChain":"c","servtdIdentity":{"tdIdentity":{"id":"i"},"signature":"aa"},"servtdTcbMappingIssuerChain":"c","servtdTcbMapping":{"svnMappings":[{"isvsvn":1}]}}}"#;
+        let b = r#"{"id":"X","version":"2","policySvn":1,"policy":[],"collaterals":{},"servtdCollateral":{"majorVersion":1,"minorVersion":0,"servtdIdentityIssuerChain":"c","servtdIdentity":{"tdIdentity":{"id":"i"},"signature":"aa"},"servtdTcbMappingIssuerChain":"c","servtdTcbMapping":{"svnMappings":[{"isvsvn":99},{"isvsvn":100}]}}}"#;
+        let out_a = extract_canonical_policy_data_bytes(a.as_bytes()).unwrap();
+        let out_b = extract_canonical_policy_data_bytes(b.as_bytes()).unwrap();
+        assert_eq!(out_a, out_b);
+        // And the redacted bytes must NOT contain the substring of either
+        // svnMappings payload.
+        assert!(!out_a
+            .windows(b"svnMappings".len())
+            .any(|w| w == b"svnMappings"));
+    }
+
+    #[test]
+    fn extract_redacts_only_servtd_tcb_mapping() {
+        // Two policies that differ in servtdCollateral.servtdIdentity MUST
+        // produce different canonical bytes — servtdIdentity (with its
+        // signature) is measured, defeating obsolete-identity playback.
         let a = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"aa"}}}"#;
         let b = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"bb"}}}"#;
-        let out_a = extract_signed_servtd_identity_bytes(a.as_bytes()).unwrap();
-        let out_b = extract_signed_servtd_identity_bytes(b.as_bytes()).unwrap();
+        let out_a = extract_canonical_policy_data_bytes(a.as_bytes()).unwrap();
+        let out_b = extract_canonical_policy_data_bytes(b.as_bytes()).unwrap();
         assert_ne!(out_a, out_b);
     }
 
     #[test]
-    fn extract_servtd_identity_rejects_missing_collateral() {
-        let input = r#"{"id":"x","version":"2.0","policySvn":0,"policy":[]}"#;
-        assert!(extract_signed_servtd_identity_bytes(input.as_bytes()).is_err());
+    fn extract_protects_issuer_chains() {
+        // Substituting servtdCollateral.servtdIdentityIssuerChain or
+        // servtdCollateral.servtdTcbMappingIssuerChain MUST flip the extend
+        // bytes — these chains gate the runtime signature verification of the
+        // identity and tcb mapping artifacts respectively.
+        let a = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-A"}}"#;
+        let b = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-B","servtdTcbMappingIssuerChain":"chain-A"}}"#;
+        let c = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-B"}}"#;
+        let out_a = extract_canonical_policy_data_bytes(a.as_bytes()).unwrap();
+        let out_b = extract_canonical_policy_data_bytes(b.as_bytes()).unwrap();
+        let out_c = extract_canonical_policy_data_bytes(c.as_bytes()).unwrap();
+        assert_ne!(out_a, out_b);
+        assert_ne!(out_a, out_c);
+        assert_ne!(out_b, out_c);
     }
 
     #[test]
-    fn extract_servtd_identity_rejects_missing_identity_field() {
-        let input = r#"{"policy":[],"servtdCollateral":{"servtdTcbMapping":{}}}"#;
-        assert!(extract_signed_servtd_identity_bytes(input.as_bytes()).is_err());
+    fn extract_accepts_signed_wrapper_and_matches_bare() {
+        // Extracting from `{"policyData": {...}, "signature": "..."}` must
+        // produce identical bytes to extracting from the bare object form.
+        let bare = sample_bare_policy_data();
+        let wrapped = sample_wrapped_policy();
+        let out_bare = extract_canonical_policy_data_bytes(bare.as_bytes()).unwrap();
+        let out_wrapped = extract_canonical_policy_data_bytes(wrapped.as_bytes()).unwrap();
+        assert_eq!(out_bare, out_wrapped);
     }
 
     #[test]
-    fn extract_servtd_identity_rejects_missing_signature() {
-        let input = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"}}}}"#;
-        assert!(extract_signed_servtd_identity_bytes(input.as_bytes()).is_err());
+    fn extract_is_canonical_across_key_order() {
+        // The same policy serialised with different key orders must produce
+        // identical bytes after redaction + canonicalization.
+        let order_a = r#"{"version":"2.0","id":"X","policySvn":7,"policy":[{"b":2,"a":1}],"collaterals":{"teeType":129,"majorVersion":1,"minorVersion":0},"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"version":1,"id":"i"},"signature":"aa"},"servtdTcbMapping":{"x":1}}}"#;
+        let order_b = r#"{"policy":[{"a":1,"b":2}],"id":"X","policySvn":7,"version":"2.0","servtdCollateral":{"servtdTcbMapping":{"x":1},"servtdIdentity":{"signature":"aa","tdIdentity":{"id":"i","version":1}}},"collaterals":{"minorVersion":0,"majorVersion":1,"teeType":129}}"#;
+        let out_a = extract_canonical_policy_data_bytes(order_a.as_bytes()).unwrap();
+        let out_b = extract_canonical_policy_data_bytes(order_b.as_bytes()).unwrap();
+        assert_eq!(out_a, out_b);
     }
 
     #[test]
-    fn extract_servtd_identity_rejects_missing_td_identity_body() {
-        let input = r#"{"servtdCollateral":{"servtdIdentity":{"signature":"aa"}}}"#;
-        assert!(extract_signed_servtd_identity_bytes(input.as_bytes()).is_err());
+    fn extract_rejects_non_object_top_level() {
+        assert!(extract_canonical_policy_data_bytes(b"\"just-a-string\"").is_err());
+        assert!(extract_canonical_policy_data_bytes(b"[]").is_err());
+        assert!(extract_canonical_policy_data_bytes(b"null").is_err());
+        assert!(extract_canonical_policy_data_bytes(b"42").is_err());
     }
 
     #[test]
-    fn extract_servtd_identity_rejects_non_object_identity() {
-        let input = r#"{"servtdCollateral":{"servtdIdentity":"not-an-object"}}"#;
-        assert!(extract_signed_servtd_identity_bytes(input.as_bytes()).is_err());
+    fn extract_rejects_malformed_json() {
+        assert!(extract_canonical_policy_data_bytes(b"{not-json").is_err());
+    }
+
+    #[test]
+    fn extract_handles_missing_servtd_collateral() {
+        // A policy without servtdCollateral simply isn't redacted; the
+        // function returns canonical bytes of the input policyData verbatim.
+        let input = br#"{"version":"2.0","id":"X","policySvn":1,"policy":[],"collaterals":{}}"#;
+        let out = extract_canonical_policy_data_bytes(input).unwrap();
+        let expected = br#"{"collaterals":{},"id":"X","policy":[],"policySvn":1,"version":"2.0"}"#;
+        assert_eq!(&out, expected);
+    }
+
+    #[test]
+    fn extract_handles_servtd_collateral_without_tcb_mapping() {
+        // Already-absent servtdTcbMapping is a no-op redaction; bytes match
+        // a policy that originally had servtdTcbMapping present.
+        let with_mapping = r#"{"servtdCollateral":{"a":1,"servtdTcbMapping":{"big":"payload"}}}"#;
+        let without_mapping = r#"{"servtdCollateral":{"a":1}}"#;
+        let out_with = extract_canonical_policy_data_bytes(with_mapping.as_bytes()).unwrap();
+        let out_without = extract_canonical_policy_data_bytes(without_mapping.as_bytes()).unwrap();
+        assert_eq!(out_with, out_without);
+    }
+
+    #[test]
+    fn extract_measures_forward_and_backward_policy() {
+        // Stripping forwardPolicy / backwardPolicy from a policy that has
+        // them MUST change the extend bytes — otherwise an attacker who can
+        // ship policy through ESRP could strip migration restrictions
+        // without changing the measured RTMR2.
+        let with_fwd_bwd =
+            r#"{"policy":[],"forwardPolicy":[{"deny":"all"}],"backwardPolicy":[{"deny":"all"}]}"#;
+        let without = r#"{"policy":[]}"#;
+        let out_with = extract_canonical_policy_data_bytes(with_fwd_bwd.as_bytes()).unwrap();
+        let out_without = extract_canonical_policy_data_bytes(without.as_bytes()).unwrap();
+        assert_ne!(out_with, out_without);
+    }
+
+    #[test]
+    fn extract_sample_policy_canonical_bytes() {
+        // Pin the canonical bytes for the sample policy as a regression
+        // fixture: any unintended change to canonicalization (key order,
+        // whitespace, redaction scope) will fail this assertion.
+        let out =
+            extract_canonical_policy_data_bytes(sample_bare_policy_data().as_bytes()).unwrap();
+        let expected = br#"{"collaterals":{"majorVersion":1,"minorVersion":0,"teeType":129},"id":"X-uuid","policy":[{"global":{"tcb":{"tcbDate":{"operation":"ge","reference":"2023"}}}},{"servtd":{"x":1}}],"policySvn":7,"servtdCollateral":{"majorVersion":1,"minorVersion":0,"servtdIdentity":{"signature":"deadbeef","tdIdentity":{"id":"identity-1","tcbLevels":[],"version":1}},"servtdIdentityIssuerChain":"chain","servtdTcbMappingIssuerChain":"mapping-chain"},"version":"2.0"}"#;
+        assert_eq!(&out, expected);
     }
 
     // ------------------------------------------------------------------

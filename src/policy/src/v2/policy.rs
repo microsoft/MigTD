@@ -12,12 +12,7 @@ use serde_json::{self, value::RawValue};
 
 use crate::{
     v2::{
-        bytes_to_hex_string, hex_string_to_bytes,
-        measurement::{
-            extract_policy_collaterals_bytes, extract_policy_id_bytes, extract_policy_rules_bytes,
-            extract_policy_svn_bytes, extract_policy_version_bytes,
-            extract_signed_servtd_identity_bytes,
-        },
+        bytes_to_hex_string, hex_string_to_bytes, measurement::extract_canonical_policy_data_bytes,
         policy, verify_event_hash,
     },
     CcEvent, Collaterals, EventName, PolicyError, ServtdCollateral, TdIdentity, TdTcbMapping,
@@ -199,50 +194,14 @@ pub fn check_policy_integrity(
     policy: &[u8],
     events: &BTreeMap<EventName, CcEvent>,
 ) -> Result<(), PolicyError> {
-    // RTMR2 is now extended six times in a fixed order, one per top-level
-    // `policyData` field (plus the signed `servtdIdentity`). See
-    // `docs/tcb_mapping_redesign.md` for the full table. The verifier MUST
-    // mirror that order — for each event we recompute the exact bytes the
-    // runtime hashed via the matching `extract_*` helper, and reject any
-    // event-log mismatch.
-    //
-    // 1) policyData.version
-    let version_bytes = extract_policy_version_bytes(policy)?;
-    if !verify_event_hash(events, &EventName::MigTdPolicyVersion, &version_bytes)? {
-        return Err(PolicyError::PolicyHashMismatch);
-    }
-
-    // 2) policyData.id
-    let id_bytes = extract_policy_id_bytes(policy)?;
-    if !verify_event_hash(events, &EventName::MigTdPolicyId, &id_bytes)? {
-        return Err(PolicyError::PolicyHashMismatch);
-    }
-
-    // 3) policyData.policySvn
-    let svn_bytes = extract_policy_svn_bytes(policy)?;
-    if !verify_event_hash(events, &EventName::MigTdPolicySvn, &svn_bytes)? {
-        return Err(PolicyError::PolicyHashMismatch);
-    }
-
-    // 4) policyData.policy (canonical array bytes *including* outer `[`/`]`)
-    let raw_rules = extract_policy_rules_bytes(policy)?;
-    if !verify_event_hash(events, &EventName::MigTdPolicy, &raw_rules)? {
-        return Err(PolicyError::PolicyHashMismatch);
-    }
-
-    // 5) policyData.collaterals (canonical object bytes including `{`/`}`)
-    let collaterals_bytes = extract_policy_collaterals_bytes(policy)?;
-    if !verify_event_hash(
-        events,
-        &EventName::MigTdPolicyCollaterals,
-        &collaterals_bytes,
-    )? {
-        return Err(PolicyError::PolicyHashMismatch);
-    }
-
-    // 6) Signed servtdIdentity blob (full JSON object including signature)
-    let identity_bytes = extract_signed_servtd_identity_bytes(policy)?;
-    if !verify_event_hash(events, &EventName::ServtdIdentity, &identity_bytes)? {
+    // RTMR2 is extended once with the canonical bytes of `policyData` with
+    // `servtdCollateral.servtdTcbMapping` removed. See
+    // `docs/tcb_mapping_redesign.md` for the rationale. The verifier
+    // recomputes those exact bytes via the same helper used by the runtime
+    // extender (`get_policy_and_measure`) and `migtd-hash` (offline RTMR2
+    // simulator), then asserts the event-log entry's recorded digest matches.
+    let policy_data_bytes = extract_canonical_policy_data_bytes(policy)?;
+    if !verify_event_hash(events, &EventName::MigTdPolicyData, &policy_data_bytes)? {
         return Err(PolicyError::PolicyHashMismatch);
     }
 
