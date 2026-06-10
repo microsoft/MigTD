@@ -213,53 +213,21 @@ fn rtmr2(cfv: &[u8], is_ra_disabled: bool, is_policy_v2: bool) -> Result<Vec<u8>
             .ok_or(anyhow!("Unable to get policy from image"))?;
 
         if is_policy_v2 {
-            // v2 (six-extend RTMR2): one extend per top-level `policyData`
-            // field plus the signed `servtdIdentity`. The order MUST match
-            // the runtime (`get_policy_and_measure`) and
-            // `check_policy_integrity`, otherwise the offline tdinfo_hash
-            // will not match the runtime's RTMR2 and migration will fail.
+            // v2 (single-extend RTMR2): one extend over the canonical bytes
+            // of `policyData` with `servtdCollateral.servtdTcbMapping`
+            // removed. See docs/tcb_mapping_redesign.md. The exact same
+            // helper is used by the runtime (`get_policy_and_measure`) and
+            // the integrity verifier (`check_policy_integrity`), so a
+            // mismatch here would also break runtime attestation — there is
+            // no separate "offline format".
             //
-            // All six measured fields are taken straight from the CFV's
-            // enrolled policy bytes. The release pipeline injects the
-            // production-signed policy via `td-shim-enroll` before this
-            // function is called, so what we measure here is what the
-            // shipped IGVM will produce at runtime.
-
-            // 1) policyData.version
-            let version_bytes = policy::extract_policy_version_bytes(policy)
-                .map_err(|e| anyhow!("Failed to extract policyData.version: {:?}", e))?;
-            rtmr2.extend_with_raw_data(&version_bytes)?;
-
-            // 2) policyData.id
-            let id_bytes = policy::extract_policy_id_bytes(policy)
-                .map_err(|e| anyhow!("Failed to extract policyData.id: {:?}", e))?;
-            rtmr2.extend_with_raw_data(&id_bytes)?;
-
-            // 3) policyData.policySvn
-            let svn_bytes = policy::extract_policy_svn_bytes(policy)
-                .map_err(|e| anyhow!("Failed to extract policyData.policySvn: {:?}", e))?;
-            rtmr2.extend_with_raw_data(&svn_bytes)?;
-
-            // 4) policyData.policy — canonical array bytes *including* the
-            // outer `[` and `]`. (Earlier versions stripped them; the
-            // bytes hashed here are no longer compatible with
-            // pre-six-extend tdinfo_hash values.)
-            let raw_rules = policy::extract_policy_rules_bytes(policy)
-                .map_err(|e| anyhow!("Failed to extract raw policy rules: {:?}", e))?;
-            rtmr2.extend_with_raw_data(&raw_rules)?;
-
-            // 5) policyData.collaterals — canonical object bytes including
-            // the outer `{` and `}`.
-            let collaterals_bytes = policy::extract_policy_collaterals_bytes(policy)
-                .map_err(|e| anyhow!("Failed to extract policyData.collaterals: {:?}", e))?;
-            rtmr2.extend_with_raw_data(&collaterals_bytes)?;
-
-            // 6) Signed servtdIdentity — full canonical JSON object
-            // including the `signature` field. See
-            // docs/tcb_mapping_redesign.md §"Servtd identity binding".
-            let identity_bytes = policy::extract_signed_servtd_identity_bytes(policy)
-                .map_err(|e| anyhow!("Failed to extract signed servtdIdentity: {:?}", e))?;
-            rtmr2.extend_with_raw_data(&identity_bytes)?;
+            // The bytes are taken straight from the CFV's enrolled policy;
+            // the release pipeline injects the production-signed policy via
+            // `td-shim-enroll` before this function is called, so what we
+            // measure here is what the shipped IGVM will produce at runtime.
+            let policy_data_bytes = policy::extract_canonical_policy_data_bytes(policy)
+                .map_err(|e| anyhow!("Failed to extract canonical policyData bytes: {:?}", e))?;
+            rtmr2.extend_with_raw_data(&policy_data_bytes)?;
         } else {
             rtmr2.extend_with_raw_data(policy)?;
             let root_ca =

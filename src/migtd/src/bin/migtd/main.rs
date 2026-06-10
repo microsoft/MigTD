@@ -278,179 +278,44 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
 
     let event_data = version.as_bytes();
 
-    // Per docs/tcb_mapping_redesign.md: RTMR2 is extended six times in a
-    // fixed order, one per top-level `policyData` field plus the signed
-    // `servtdIdentity`. Each extend uses a distinct tag ID so the verifier
-    // can recompute exactly what was hashed. We hash each field's canonical
-    // bytes (typed extractors guarantee schema-correct, key-sorted output)
-    // while the event log payload stays small (`version.as_bytes()`) to
-    // keep CCEL bounded.
+    // Per docs/tcb_mapping_redesign.md: RTMR2 is extended ONCE with the
+    // canonical bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
+    // removed. The redaction is what makes `servtdTcbMapping` updateable
+    // after the IGVM is published; every other `policyData` field — including
+    // `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
+    // `backwardPolicy`, `collaterals`, and the rest of `servtdCollateral`
+    // (with the signed `servtdIdentity` and both issuer chains) — is
+    // protected by virtue of being inside the canonical object bytes. The
+    // event-log entry's `tagged_event_data` payload stays small
+    // (`version.as_bytes()`) to keep CCEL bounded; the full canonical bytes
+    // are only fed into the digest.
     //
-    // Order MUST match `policy::v2::policy::check_policy_integrity` and
-    // `migtd-hash` (offline RTMR2 simulator), otherwise valid peers fail
-    // event-log integrity verification.
-
-    // 1) policyData.version
-    let version_bytes = match migtd::policy::extract_policy_version_bytes(policy) {
+    // The buffer hashed here MUST be byte-identical to what
+    // `policy::v2::policy::check_policy_integrity` and `migtd-hash` (offline
+    // RTMR2 simulator) compute, otherwise valid peers fail event-log
+    // integrity verification.
+    let policy_data_bytes = match migtd::policy::extract_canonical_policy_data_bytes(policy) {
         Ok(bytes) => bytes,
         Err(e) => {
-            log::error!("Failed to extract policyData.version: {:?}\n", e);
+            log::error!("Failed to extract canonical policyData bytes: {:?}\n", e);
             panic_with_guest_crash_reg_report(
                 MigrationResult::InvalidPolicyError as u64,
-                b"Failed to extract policyData.version",
+                b"Failed to extract canonical policyData bytes",
             );
         }
     };
     let _ = event_log::write_tagged_event_log(
         event_log,
         MR_INDEX_POLICY,
-        &version_bytes,
-        TAGGED_EVENT_ID_POLICY_VERSION,
+        &policy_data_bytes,
+        TAGGED_EVENT_ID_POLICY_DATA,
         event_data,
     )
     .map_err(|e| {
-        log::error!("Failed to log policyData.version: {:?}\n", e);
+        log::error!("Failed to log policyData: {:?}\n", e);
         panic_with_guest_crash_reg_report(
             MigrationResult::InitializationError as u64,
-            b"Failed to log policyData.version",
-        );
-    });
-
-    // 2) policyData.id
-    let id_bytes = match migtd::policy::extract_policy_id_bytes(policy) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            log::error!("Failed to extract policyData.id: {:?}\n", e);
-            panic_with_guest_crash_reg_report(
-                MigrationResult::InvalidPolicyError as u64,
-                b"Failed to extract policyData.id",
-            );
-        }
-    };
-    let _ = event_log::write_tagged_event_log(
-        event_log,
-        MR_INDEX_POLICY,
-        &id_bytes,
-        TAGGED_EVENT_ID_POLICY_ID,
-        event_data,
-    )
-    .map_err(|e| {
-        log::error!("Failed to log policyData.id: {:?}\n", e);
-        panic_with_guest_crash_reg_report(
-            MigrationResult::InitializationError as u64,
-            b"Failed to log policyData.id",
-        );
-    });
-
-    // 3) policyData.policySvn
-    let svn_bytes = match migtd::policy::extract_policy_svn_bytes(policy) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            log::error!("Failed to extract policyData.policySvn: {:?}\n", e);
-            panic_with_guest_crash_reg_report(
-                MigrationResult::InvalidPolicyError as u64,
-                b"Failed to extract policyData.policySvn",
-            );
-        }
-    };
-    let _ = event_log::write_tagged_event_log(
-        event_log,
-        MR_INDEX_POLICY,
-        &svn_bytes,
-        TAGGED_EVENT_ID_POLICY_SVN,
-        event_data,
-    )
-    .map_err(|e| {
-        log::error!("Failed to log policyData.policySvn: {:?}\n", e);
-        panic_with_guest_crash_reg_report(
-            MigrationResult::InitializationError as u64,
-            b"Failed to log policyData.policySvn",
-        );
-    });
-
-    // 4) policyData.policy (canonical array bytes *including* outer `[`/`]`).
-    // Semantic note: pre-six-extend versions stripped the brackets — the
-    // bytes hashed by this build are not bit-compatible with older
-    // tdinfo_hash entries; svnMappings[].tdMeasurements MUST be regenerated.
-    let raw_rules = match migtd::policy::extract_policy_rules_bytes(policy) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            log::error!("Failed to extract raw policy rules: {:?}\n", e);
-            panic_with_guest_crash_reg_report(
-                MigrationResult::InvalidPolicyError as u64,
-                b"Failed to extract raw policy rules",
-            );
-        }
-    };
-    let _ = event_log::write_tagged_event_log(
-        event_log,
-        MR_INDEX_POLICY,
-        &raw_rules,
-        TAGGED_EVENT_ID_POLICY,
-        event_data,
-    )
-    .map_err(|e| {
-        log::error!("Failed to log migration policy: {:?}\n", e);
-        panic_with_guest_crash_reg_report(
-            MigrationResult::InitializationError as u64,
-            b"Failed to log migration policy",
-        );
-    });
-
-    // 5) policyData.collaterals (canonical object bytes including `{`/`}`)
-    let collaterals_bytes = match migtd::policy::extract_policy_collaterals_bytes(policy) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            log::error!("Failed to extract policyData.collaterals: {:?}\n", e);
-            panic_with_guest_crash_reg_report(
-                MigrationResult::InvalidPolicyError as u64,
-                b"Failed to extract policyData.collaterals",
-            );
-        }
-    };
-    let _ = event_log::write_tagged_event_log(
-        event_log,
-        MR_INDEX_POLICY,
-        &collaterals_bytes,
-        TAGGED_EVENT_ID_POLICY_COLLATERALS,
-        event_data,
-    )
-    .map_err(|e| {
-        log::error!("Failed to log policyData.collaterals: {:?}\n", e);
-        panic_with_guest_crash_reg_report(
-            MigrationResult::InitializationError as u64,
-            b"Failed to log policyData.collaterals",
-        );
-    });
-
-    // 6) Signed servtdIdentity blob (full JSON object including signature).
-    // Binds the running MigTD to a specific issuer-signed `servtdIdentity`,
-    // so a peer that boots with an obsolete-but-still-signed identity
-    // (claiming old SVNs are `UpToDate`) gets a different RTMR2 and so a
-    // different tdinfo_hash, falls outside the current svnMappings[] entry
-    // list, and cannot migrate. Defeats playback / TCB-downgrade attacks.
-    let identity_bytes = match migtd::policy::extract_signed_servtd_identity_bytes(policy) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            log::error!("Failed to extract signed servtdIdentity: {:?}\n", e);
-            panic_with_guest_crash_reg_report(
-                MigrationResult::InvalidPolicyError as u64,
-                b"Failed to extract signed servtdIdentity",
-            );
-        }
-    };
-    let _ = event_log::write_tagged_event_log(
-        event_log,
-        MR_INDEX_POLICY,
-        &identity_bytes,
-        TAGGED_EVENT_ID_SERVTD_IDENTITY,
-        event_data,
-    )
-    .map_err(|e| {
-        log::error!("Failed to log servtdIdentity: {:?}\n", e);
-        panic_with_guest_crash_reg_report(
-            MigrationResult::InitializationError as u64,
-            b"Failed to log servtdIdentity",
+            b"Failed to log policyData",
         );
     });
 }
