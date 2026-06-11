@@ -497,6 +497,26 @@ mod tests {
     }
 
     #[test]
+    fn extract_empty_tcb_mapping_object_is_equivalent_to_post_redaction() {
+        // T13 regression pin: the release pipeline's pre-final policy
+        // template carries `"servtdTcbMapping": {}` so the strict
+        // redaction in extract_canonical_policy_data_bytes accepts it
+        // (an empty object satisfies the present-and-then-removed
+        // contract). Under canonical redaction the result MUST be
+        // byte-equal to a final policy whose `servtdTcbMapping`
+        // contains the real signed mapping, because the redacted
+        // bytes contain neither either way. The CI gate at
+        // run_release_pipeline_locally.sh proves this invariant for
+        // the production policy; this unit test pins it at the helper
+        // boundary so the gate cannot diverge from the helper.
+        let pre_final = r#"{"servtdCollateral":{"majorVersion":1,"servtdIdentity":{"tdIdentity":{"id":"i"},"signature":"aa"},"servtdTcbMapping":{}}}"#;
+        let final_pol = r#"{"servtdCollateral":{"majorVersion":1,"servtdIdentity":{"tdIdentity":{"id":"i"},"signature":"aa"},"servtdTcbMapping":{"svnMappings":[{"isvsvn":7,"tdMeasurements":{"tdinfo_hash":"deadbeef"}}],"signature":"bb"}}}"#;
+        let out_pre = extract_canonical_policy_data_bytes(pre_final.as_bytes()).unwrap();
+        let out_final = extract_canonical_policy_data_bytes(final_pol.as_bytes()).unwrap();
+        assert_eq!(out_pre, out_final);
+    }
+
+    #[test]
     fn extract_measures_forward_and_backward_policy() {
         // Stripping forwardPolicy / backwardPolicy from a policy that has
         // them MUST change the extend bytes — otherwise an attacker who can
