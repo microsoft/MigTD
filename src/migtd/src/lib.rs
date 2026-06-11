@@ -16,6 +16,26 @@
 ))]
 compile_error!("AzCVMEmu only supports vmcall-raw transport. Disable virtio-serial/vmcall-vsock/virtio-vsock when enabling AzCVMEmu.");
 
+// T18: `test_disable_ra_and_accept_all` removes ALL remote attestation
+// and policy verification — it must never combine with the production
+// attestation features. The build_final.sh helper enables this flag by
+// default unless `-a on` is passed; this guard makes any production-shaped
+// build (spdm_attestation or policy_v2 active, not AzCVMEmu, not test)
+// fail at compile time rather than silently shipping an attestation-less
+// MigTD. See docs/threat_model/T18-test-disable-ra-default-on.md.
+#[cfg(all(
+    feature = "test_disable_ra_and_accept_all",
+    any(feature = "spdm_attestation", feature = "policy_v2"),
+    not(feature = "AzCVMEmu"),
+    not(test),
+))]
+compile_error!(
+    "test_disable_ra_and_accept_all is a test-only bypass and must not be combined \
+     with spdm_attestation or policy_v2 in non-AzCVMEmu production builds. \
+     If this is intentional for an emulator test binary, add --features AzCVMEmu \
+     explicitly. See docs/threat_model/T18-test-disable-ra-default-on.md."
+);
+
 #[cfg_attr(feature = "main", macro_use)]
 extern crate alloc;
 
