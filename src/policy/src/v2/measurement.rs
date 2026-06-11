@@ -202,19 +202,31 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 /// its signature), `servtdCollateral.servtdIdentityIssuerChain`, and
 /// `servtdCollateral.servtdTcbMappingIssuerChain` — is bound into RTMR2.
 ///
-/// The redaction is a no-op if `servtdCollateral` is absent or not an object
-/// (e.g. malformed input); the function never errors on a missing field
-/// because the runtime policy parser performs its own structural validation
-/// downstream, and a malformed policy will simply produce a tdinfo_hash that
-/// does not match any `svnMappings[]` entry and so fails attestation.
+/// ## Strict redaction (schema-drift defense)
+///
+/// The redaction is **structurally strict**: it requires
+/// `servtdCollateral` to be present as a JSON object, AND
+/// `servtdTcbMapping` to be one of its direct children. Any input that
+/// violates either condition (missing `servtdCollateral`, non-object
+/// `servtdCollateral`, or missing `servtdTcbMapping`) is rejected with
+/// `PolicyError::InvalidPolicy`. A silent no-op on a malformed shape
+/// would let a future schema change (e.g. moving `servtdTcbMapping`
+/// under a new wrapper, making `servtdCollateral` optional, or
+/// type-confusing it to null/string/array) silently land the mapping
+/// bytes — or zero redaction at all — in the RTMR2 extend,
+/// re-introducing the circular dependency this scheme exists to break.
+/// The runtime extender already panics on extraction failure, so the
+/// stricter error path is fail-closed.
 pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
     let mut policy_data = parse_policy_data(policy_input)?;
 
-    if let Some(coll) = policy_data
+    let coll = policy_data
         .get_mut("servtdCollateral")
         .and_then(|v| v.as_object_mut())
-    {
-        coll.remove("servtdTcbMapping");
+        .ok_or(PolicyError::InvalidPolicy)?;
+
+    if coll.remove("servtdTcbMapping").is_none() {
+        return Err(PolicyError::InvalidPolicy);
     }
 
     canonical_value_bytes(&policy_data)
@@ -373,8 +385,8 @@ mod tests {
         // Two policies that differ in servtdCollateral.servtdIdentity MUST
         // produce different canonical bytes — servtdIdentity (with its
         // signature) is measured, defeating obsolete-identity playback.
-        let a = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"aa"}}}"#;
-        let b = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"bb"}}}"#;
+        let a = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"aa"},"servtdTcbMapping":{}}}"#;
+        let b = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"bb"},"servtdTcbMapping":{}}}"#;
         let out_a = extract_canonical_policy_data_bytes(a.as_bytes()).unwrap();
         let out_b = extract_canonical_policy_data_bytes(b.as_bytes()).unwrap();
         assert_ne!(out_a, out_b);
@@ -386,9 +398,9 @@ mod tests {
         // servtdCollateral.servtdTcbMappingIssuerChain MUST flip the extend
         // bytes — these chains gate the runtime signature verification of the
         // identity and tcb mapping artifacts respectively.
-        let a = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-A"}}"#;
-        let b = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-B","servtdTcbMappingIssuerChain":"chain-A"}}"#;
-        let c = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-B"}}"#;
+        let a = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-A","servtdTcbMapping":{}}}"#;
+        let b = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-B","servtdTcbMappingIssuerChain":"chain-A","servtdTcbMapping":{}}}"#;
+        let c = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-B","servtdTcbMapping":{}}}"#;
         let out_a = extract_canonical_policy_data_bytes(a.as_bytes()).unwrap();
         let out_b = extract_canonical_policy_data_bytes(b.as_bytes()).unwrap();
         let out_c = extract_canonical_policy_data_bytes(c.as_bytes()).unwrap();
@@ -433,24 +445,55 @@ mod tests {
     }
 
     #[test]
-    fn extract_handles_missing_servtd_collateral() {
-        // A policy without servtdCollateral simply isn't redacted; the
-        // function returns canonical bytes of the input policyData verbatim.
+    fn extract_rejects_missing_servtd_collateral() {
+        // Schema-drift defense (fix for scenario 10): a policy without
+        // servtdCollateral MUST NOT silently succeed with no redaction —
+        // such a policy is malformed at this layer, and accepting it
+        // would let a future schema change (servtdCollateral made
+        // optional) silently bypass the redaction scheme.
         let input = br#"{"version":"2.0","id":"X","policySvn":1,"policy":[],"collaterals":{}}"#;
-        let out = extract_canonical_policy_data_bytes(input).unwrap();
-        let expected = br#"{"collaterals":{},"id":"X","policy":[],"policySvn":1,"version":"2.0"}"#;
-        assert_eq!(&out, expected);
+        assert!(extract_canonical_policy_data_bytes(input).is_err());
     }
 
     #[test]
-    fn extract_handles_servtd_collateral_without_tcb_mapping() {
-        // Already-absent servtdTcbMapping is a no-op redaction; bytes match
-        // a policy that originally had servtdTcbMapping present.
-        let with_mapping = r#"{"servtdCollateral":{"a":1,"servtdTcbMapping":{"big":"payload"}}}"#;
-        let without_mapping = r#"{"servtdCollateral":{"a":1}}"#;
-        let out_with = extract_canonical_policy_data_bytes(with_mapping.as_bytes()).unwrap();
-        let out_without = extract_canonical_policy_data_bytes(without_mapping.as_bytes()).unwrap();
-        assert_eq!(out_with, out_without);
+    fn extract_rejects_non_object_servtd_collateral() {
+        // Schema-drift defense: type-confused servtdCollateral (null,
+        // string, array, number) MUST be rejected, not silently
+        // no-op'd. The current strongly-typed PolicyData rejects these
+        // upstream; the redaction layer enforces the same invariant
+        // even when called in isolation (e.g. from migtd-hash with raw
+        // input) so the runtime extender never sees an un-redacted
+        // policy.
+        for shape in [
+            br#"{"servtdCollateral":null}"#.as_slice(),
+            br#"{"servtdCollateral":"a-string"}"#.as_slice(),
+            br#"{"servtdCollateral":[]}"#.as_slice(),
+            br#"{"servtdCollateral":42}"#.as_slice(),
+        ] {
+            assert!(
+                extract_canonical_policy_data_bytes(shape).is_err(),
+                "expected error for shape: {:?}",
+                core::str::from_utf8(shape).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn extract_rejects_servtd_collateral_without_tcb_mapping() {
+        // Schema-drift defense: servtdCollateral present but missing
+        // servtdTcbMapping MUST be rejected. If servtdTcbMapping ever
+        // moves elsewhere (e.g. hoisted to a top-level peer of
+        // policyData, or nested under a new release-scoped wrapper),
+        // the hard-coded path in the redaction would redact the
+        // (now-empty) old location only and silently land the mapping
+        // bytes elsewhere in the canonical extend. Failing closed on
+        // missing servtdTcbMapping forces an explicit code update on
+        // every such schema migration.
+        let input = br#"{"servtdCollateral":{"a":1}}"#;
+        assert!(extract_canonical_policy_data_bytes(input).is_err());
+
+        let input2 = br#"{"servtdCollateral":{"majorVersion":1,"servtdIdentity":{"tdIdentity":{"id":"i"},"signature":"aa"}}}"#;
+        assert!(extract_canonical_policy_data_bytes(input2).is_err());
     }
 
     #[test]
@@ -459,9 +502,8 @@ mod tests {
         // them MUST change the extend bytes — otherwise an attacker who can
         // ship policy through ESRP could strip migration restrictions
         // without changing the measured RTMR2.
-        let with_fwd_bwd =
-            r#"{"policy":[],"forwardPolicy":[{"deny":"all"}],"backwardPolicy":[{"deny":"all"}]}"#;
-        let without = r#"{"policy":[]}"#;
+        let with_fwd_bwd = r#"{"policy":[],"forwardPolicy":[{"deny":"all"}],"backwardPolicy":[{"deny":"all"}],"servtdCollateral":{"servtdTcbMapping":{}}}"#;
+        let without = r#"{"policy":[],"servtdCollateral":{"servtdTcbMapping":{}}}"#;
         let out_with = extract_canonical_policy_data_bytes(with_fwd_bwd.as_bytes()).unwrap();
         let out_without = extract_canonical_policy_data_bytes(without.as_bytes()).unwrap();
         assert_ne!(out_with, out_without);
@@ -476,6 +518,108 @@ mod tests {
             extract_canonical_policy_data_bytes(sample_bare_policy_data().as_bytes()).unwrap();
         let expected = br#"{"collaterals":{"majorVersion":1,"minorVersion":0,"teeType":129},"id":"X-uuid","policy":[{"global":{"tcb":{"tcbDate":{"operation":"ge","reference":"2023"}}}},{"servtd":{"x":1}}],"policySvn":7,"servtdCollateral":{"majorVersion":1,"minorVersion":0,"servtdIdentity":{"signature":"deadbeef","tdIdentity":{"id":"identity-1","tcbLevels":[],"version":1}},"servtdIdentityIssuerChain":"chain","servtdTcbMappingIssuerChain":"mapping-chain"},"version":"2.0"}"#;
         assert_eq!(&out, expected);
+    }
+
+    // ------------------------------------------------------------------
+    // Schema-drift defense (fix for scenario 10)
+    //
+    // These tests are NOT about the current schema shape — they exist to
+    // catch a future schema change that introduces a new placement of
+    // `servtdTcbMapping` without updating the redaction logic.
+    // ------------------------------------------------------------------
+
+    /// Recursively count the number of object keys named `target` in `v`
+    /// and record the dotted path of each occurrence.
+    fn collect_key_paths(
+        v: &Value,
+        target: &str,
+        current: &mut alloc::string::String,
+        out: &mut Vec<alloc::string::String>,
+    ) {
+        match v {
+            Value::Object(map) => {
+                for (k, child) in map.iter() {
+                    let prev_len = current.len();
+                    if !current.is_empty() {
+                        current.push('.');
+                    }
+                    current.push_str(k);
+                    if k == target {
+                        out.push(current.clone());
+                    }
+                    collect_key_paths(child, target, current, out);
+                    current.truncate(prev_len);
+                }
+            }
+            Value::Array(arr) => {
+                for (i, e) in arr.iter().enumerate() {
+                    let prev_len = current.len();
+                    current.push_str(&format!("[{}]", i));
+                    collect_key_paths(e, target, current, out);
+                    current.truncate(prev_len);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn extract_input_has_servtd_tcb_mapping_only_at_expected_path() {
+        // Defense against (2) in the scenario-10 fix recommendation:
+        // if a future schema places `servtdTcbMapping` anywhere other
+        // than the single expected path `servtdCollateral.servtdTcbMapping`
+        // (e.g. nested under a release-scoped wrapper, or hoisted to a
+        // top-level peer of policyData), this test fails and forces an
+        // explicit code update to the redaction helper.
+        //
+        // Note: this asserts the property of the SAMPLE INPUT used by the
+        // test suite, not arbitrary inputs. Combined with
+        // `extract_canonical_bytes_do_not_contain_field_name` below, it
+        // pins both the schema fixture and the redaction completeness.
+        let v: Value = serde_json::from_str(sample_bare_policy_data()).unwrap();
+        let mut paths = Vec::new();
+        let mut cur = alloc::string::String::new();
+        collect_key_paths(&v, "servtdTcbMapping", &mut cur, &mut paths);
+        assert_eq!(
+            paths.len(),
+            1,
+            "servtdTcbMapping must appear exactly once in the sample; found at: {:?}",
+            paths
+        );
+        assert_eq!(paths[0], "servtdCollateral.servtdTcbMapping");
+    }
+
+    #[test]
+    fn extract_canonical_bytes_do_not_contain_field_name() {
+        // Defense against schema drift / regression in the redaction
+        // helper: the literal substring `"servtdTcbMapping"` (the JSON
+        // key wrapped in quotes) MUST NOT appear anywhere in the
+        // canonical extend bytes. A regression that forgets to redact,
+        // or a refactor that adds a new wrapper containing the same
+        // key, would cause this assertion to fail.
+        //
+        // This complements `extract_redacts_servtd_tcb_mapping` (which
+        // pins the byte equivalence of two policies that differ only in
+        // mapping content) by adding a direct lexical check of the
+        // output. The two tests catch different failure modes: byte
+        // equivalence catches an additive leak via shared bytes,
+        // substring absence catches the field surviving anywhere in the
+        // output JSON.
+        let out =
+            extract_canonical_policy_data_bytes(sample_bare_policy_data().as_bytes()).unwrap();
+        let needle = b"\"servtdTcbMapping\"";
+        assert!(
+            !out.windows(needle.len()).any(|w| w == needle),
+            "canonical output contained redacted field name: {}",
+            core::str::from_utf8(&out).unwrap_or("<non-utf8>")
+        );
+        // Also check the inner key as a defense-in-depth measure.
+        let inner_needle = b"\"svnMappings\"";
+        assert!(
+            !out.windows(inner_needle.len()).any(|w| w == inner_needle),
+            "canonical output contained inner mapping key: {}",
+            core::str::from_utf8(&out).unwrap_or("<non-utf8>")
+        );
     }
 
     // ------------------------------------------------------------------
