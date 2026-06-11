@@ -459,6 +459,13 @@ async fn tls_session_write_all(
             .write(&data[sent..])
             .await
             .map_err(|_| MigrationResult::SecureSessionError)?;
+        // T21: fail-closed on zero-length transport write to avoid a
+        // livelock in policy_v2-without-spdm_attestation rebinding builds.
+        // See docs/threat_model/T21-policyv2-tls-rebinding-zero-progress-livelock.md.
+        if n == 0 {
+            log::error!("tls_session_write_all: zero-length transport write\n");
+            return Err(MigrationResult::SecureSessionError);
+        }
         sent += n;
     }
     Ok(())
@@ -474,6 +481,12 @@ async fn tls_session_read_exact(
             .read(&mut data[recvd..])
             .await
             .map_err(|_| MigrationResult::NetworkError)?;
+        // T21: fail-closed on zero-length transport read. See
+        // docs/threat_model/T21-policyv2-tls-rebinding-zero-progress-livelock.md.
+        if n == 0 {
+            log::error!("tls_session_read_exact: zero-length transport read\n");
+            return Err(MigrationResult::NetworkError);
+        }
         recvd += n;
     }
     Ok(())

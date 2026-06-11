@@ -130,6 +130,15 @@ pub fn write_tagged_event_log(
     let mut log_size = event_log_size(event_log).ok_or_else(|| anyhow!("Parsing event log"))?;
     let event = TaggedEvent::new(tagged_event_id, tagged_event_data);
 
+    // T15: bounds-check the event-log buffer BEFORE extending the hardware
+    // RTMR. RTMR extends are permanent and observed by remote attestation;
+    // a too-small CCEL buffer must not leave the RTMR extended with bytes
+    // that have no corresponding event-log record. See
+    // docs/threat_model/T15-rtmr-extend-before-ccel-bounds-check.md.
+    if event_log.len() < log_size + size_of::<CcEventHeader>() + event.as_bytes().len() {
+        return Err(anyhow!("Event log out of memory"));
+    }
+
     let digest = calculate_digest(hash_data)?;
     extend_rtmr(&digest, mr_index)?;
 
@@ -145,10 +154,6 @@ pub fn write_tagged_event_log(
         },
         event_size: event.as_bytes().len() as u32,
     };
-
-    if event_log.len() < log_size + size_of::<CcEventHeader>() + event.as_bytes().len() {
-        return Err(anyhow!("Event log out of memory"));
-    }
 
     event_log[log_size..log_size + size_of::<CcEventHeader>()]
         .copy_from_slice(event_header.as_bytes());
