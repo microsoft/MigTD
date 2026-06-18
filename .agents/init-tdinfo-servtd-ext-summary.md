@@ -28,7 +28,7 @@ Metadata stored in the target TD's TDCS, read by the *current* MigTD via `TDG.SE
 
 | Field | Size | Description |
 |---|---|---|
-| `init_servtd_info_hash` | 48 B | SHA-384 hash identifying the *initial* bound MigTD (computed from init TDINFO + type + attr; set at first binding) |
+| `init_servtd_info_hash` | 48 B | SHA-384 hash identifying the *initial* bound MigTD (= SHA384(init_TDINFO masked by servtd_attr); set at first binding) |
 | `init_attr` | 8 B | SERVTD_ATTR at initial binding time. Bits 15:0 = SERVTD_TYPE (0=MigTD). Bits 40:32 = IGNORE flags controlling which TDINFO fields are zeroed before hashing |
 | `init_cpusvn` | 16 B | Platform CPU SVN at initial binding |
 | `init_tee_tcb_svn` | 16 B | TEE TCB SVN at initial binding |
@@ -59,7 +59,7 @@ Metadata stored in the target TD's TDCS, read by the *current* MigTD via `TDG.SE
    - ⚠️ **REVERT_ME TEST MODE**: failures are logged but do not abort.
 5. **Init_TDINFO integrity verification** (POL-SRCv2-06..07): calls `verify_init_tdinfo()` → `verify_servtd_hash()`:
    - If `init_servtd_info_hash` is **all-zero** (host never provisioned it): skips hash check, returns parsed `TdInfo`. The allowlist gate in step 6 still validates the measurements.
-   - Otherwise: computes `SHA384(SHA384(masked_tdinfo) || SERVTD_TYPE || init_attr)` and compares to `init_servtd_info_hash`.
+   - Otherwise: computes `SHA384(masked_tdinfo)` and compares to `init_servtd_info_hash`.
    - ⚠️ **REVERT_ME TEST MODE**: hash mismatch is logged but returns `Ok` (soft-fail).
    - **Enforced**: parse failure or all-zero bypass is hard-fail on malformed input.
 6. **Allowlist gate** (POL-SRCv2-08): `get_engine_svn_by_measurements()` — init MigTD's `mrtd`, `rtmr0`, `rtmr1` must be in `servtd_tcb_mapping`. **Enforced** (hard-fail on `SvnMismatch`). Skipped under `use-mock-quote` feature (mock binary has different MRTD).

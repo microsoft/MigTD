@@ -47,6 +47,15 @@
 //! `A` is the value extended into RTMR1 (replacing the old "hash the full
 //! policy issuer chain PEM bytes" scheme).
 //!
+//! ## `tdinfo_hash` = `init_servtd_info_hash`
+//!
+//! The TDX module computes `init_servtd_info_hash = SHA384(TDINFO_STRUCT
+//! masked by servtd_attr)`. For production MigTDs (`servtd_attr == 0`) this
+//! simplifies to `SHA384(unmasked_TDINFO)`. The TCB mapping's
+//! `svnMappings[].tdMeasurements.tdinfo_hash` stores this same value,
+//! enabling MAA to look up `init_servtd_info_hash` directly against
+//! svnMappings without any recomputation.
+//!
 //! Together, the single-extend RTMR2 (with `servtdTcbMapping` redacted) and
 //! the RTMR1 signer anchor break the circular dependency that previously
 //! prevented `svnMappings[].tdMeasurements` from being a stable, pre-signing
@@ -68,18 +77,21 @@ pub const SIGNER_ANCHOR_DOMAIN_TAG: &[u8] = b"MIGTD-RTMR1-ANCHOR-V1";
 /// Single byte separator (`0x00`) between domain tag, R, and S.
 const SIGNER_ANCHOR_SEPARATOR: u8 = 0x00;
 
-/// `SERVTD_TYPE` for MigTD as used by TDX module (`servtd_type` is u16 LE).
-const SERVTD_TYPE_MIGTD: u16 = 0;
-
-/// "Outer" form of the canonical TDINFO hash used in svnMappings.
-/// Equals `init_servtd_info_hash` in `SERVTD_EXT_STRUCT` when the bound MigTD
-/// runs with `servtd_attr == 0` (production case).
+/// Canonical `tdinfo_hash` used in svnMappings.
 ///
-/// `tdinfo_hash = SHA384( SHA384(unmasked_TDINFO) || SERVTD_TYPE(u16_LE=0)
-///                                                 || servtd_attr(u64_LE=0) )`.
+/// Per the TDX module specification, the SEAM module computes:
+///   `init_servtd_info_hash = SHA384(TDINFO_STRUCT masked by servtd_attr)`
+///
+/// For a production MigTD with `servtd_attr == 0` (no IGNORE bits), masking
+/// is a no-op, so `init_servtd_info_hash = SHA384(unmasked_TDINFO)`.
+///
+/// The TCB mapping's `svnMappings[].tdMeasurements.tdinfo_hash` stores this
+/// same value, enabling direct lookup: MAA can compare
+/// `servtd_ext.init_servtd_info_hash` against svnMappings entries without
+/// any additional computation.
 ///
 /// Callers MUST pass the SHA384 of the unmasked, fully-populated 512-byte
-/// TDINFO_STRUCT (no IGNORE-mask bits applied). See `One_Hash_Endorsement.md`.
+/// TDINFO_STRUCT (no IGNORE-mask bits applied).
 pub fn compute_tdinfo_hash(
     unmasked_tdinfo_sha384: &[u8],
 ) -> Result<[u8; SHA384_DIGEST_SIZE], PolicyError> {
@@ -87,14 +99,8 @@ pub fn compute_tdinfo_hash(
         return Err(PolicyError::InvalidParameter);
     }
 
-    let mut buf = Vec::with_capacity(SHA384_DIGEST_SIZE + 2 + 8);
-    buf.extend_from_slice(unmasked_tdinfo_sha384);
-    buf.extend_from_slice(&SERVTD_TYPE_MIGTD.to_le_bytes());
-    buf.extend_from_slice(&0u64.to_le_bytes());
-
-    let digest = digest_sha384(&buf).map_err(|_| PolicyError::HashCalculation)?;
     let mut out = [0u8; SHA384_DIGEST_SIZE];
-    out.copy_from_slice(&digest);
+    out.copy_from_slice(unmasked_tdinfo_sha384);
     Ok(out)
 }
 
@@ -647,16 +653,12 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn compute_tdinfo_hash_formula_is_outer_with_attr_zero() {
+    fn compute_tdinfo_hash_is_identity_passthrough() {
         let inner = [0xAAu8; SHA384_DIGEST_SIZE];
         let got = compute_tdinfo_hash(&inner).unwrap();
-
-        let mut expected_buf = Vec::new();
-        expected_buf.extend_from_slice(&inner);
-        expected_buf.extend_from_slice(&0u16.to_le_bytes());
-        expected_buf.extend_from_slice(&0u64.to_le_bytes());
-        let expected = digest_sha384(&expected_buf).unwrap();
-        assert_eq!(&got[..], expected.as_slice());
+        // compute_tdinfo_hash is now identity: the caller passes in
+        // SHA384(TDINFO) and the function returns it unchanged.
+        assert_eq!(&got[..], &inner[..]);
     }
 
     #[test]

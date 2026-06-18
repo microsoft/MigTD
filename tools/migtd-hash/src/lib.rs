@@ -46,8 +46,9 @@ const SERVTD_ATTR_IGNORE_RTMR3: u64 = 0x200_0000_0000;
 ///
 /// This does NOT apply any `servtd_attr` ignore-bit masking. Call
 /// [`apply_servtd_attr_masks`] separately if you need a masked copy. The
-/// unmasked struct is required for the `tdinfo_hash` field of v2 TCB mappings,
-/// which is always computed with `servtd_attr = 0`.
+/// unmasked struct is required for the `tdinfo_hash` field of v2 TCB mappings:
+/// `tdinfo_hash = SHA384(unmasked_TDINFO) = init_servtd_info_hash` when
+/// `servtd_attr == 0`.
 pub fn build_td_info_unmasked(
     manifest: &[u8],
     mut image: File,
@@ -166,19 +167,16 @@ pub fn calculate_servtd_info_hash(td_info: TdInfoStruct) -> Result<Vec<u8>, Erro
     digest_sha384(&buffer).map_err(|_| anyhow!("Calculate digest"))
 }
 
-/// Compute the canonical v2 `tdinfo_hash` for an attr=0 MigTD.
+/// Compute the canonical v2 `tdinfo_hash` for a production MigTD (attr=0).
 ///
-/// Definition (per `docs/tcb_mapping_redesign.md`):
-///   `tdinfo_hash = SHA384( SHA384(unmasked_TDINFO) || SERVTD_TYPE(LE u16 = 0)
-///                          || servtd_attr(LE u64 = 0) )`
+/// Definition (per TDX module spec and `docs/tcb_mapping_redesign.md`):
+///   `tdinfo_hash = SHA384(TDINFO_STRUCT_512_bytes)`
 ///
-/// This intentionally ignores any user-supplied `--servtd-attr` masking because
-/// the value embedded in a TCB mapping must equal `init_servtd_info_hash` in
-/// SERVTD_EXT_STRUCT for the standard `attr = 0` MigTD profile, which enables
-/// 1-step MAA lookup.
+/// This equals `init_servtd_info_hash` in SERVTD_EXT_STRUCT when `servtd_attr
+/// == 0` (the production profile), enabling direct MAA lookup through
+/// `svnMappings[].tdMeasurements.tdinfo_hash`.
 pub fn calculate_tdinfo_hash(td_info: TdInfoStruct) -> Result<Vec<u8>, Error> {
-    let inner = calculate_servtd_info_hash(td_info)?;
-    calculate_servtd_hash(&inner, SERVTD_TYPE_MIGTD, 0)
+    calculate_servtd_info_hash(td_info)
 }
 
 fn rtmr1(
