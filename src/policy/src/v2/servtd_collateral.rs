@@ -159,9 +159,7 @@ pub struct Measurements {
     /// (`docs/tcb_mapping_redesign.md`).
     ///
     /// Equals `init_servtd_info_hash` for production MigTDs (servtd_attr=0):
-    ///   inner = SHA384(unmasked TDINFO_STRUCT bytes)
-    ///   tdinfo_hash = SHA384( inner || u16_LE(SERVTD_TYPE=0)
-    ///                                || u64_LE(servtd_attr=0) )
+    ///   tdinfo_hash = SHA384(unmasked TDINFO_STRUCT bytes)
     ///
     /// Hex-encoded (case-insensitive). The serde alias accepts both
     /// the canonical snake_case key and the legacy camelCase spelling.
@@ -185,15 +183,15 @@ impl Measurements {
 
 impl TdTcbMapping {
     /// Look up the engine SVN for the TD represented by `report` by computing
-    /// the outer `tdinfo_hash` (per redesign §RTMR-layout) and matching the
+    /// `tdinfo_hash` (per redesign §RTMR-layout) and matching the
     /// `svnMappings[].tdMeasurements.tdinfoHash` entries.
     pub fn get_engine_svn_by_report(&self, report: &Report) -> Option<u16> {
         let tdinfo_hash = compute_tdinfo_hash_from_report(report).ok()?;
         self.get_engine_svn_by_tdinfo_hash(&tdinfo_hash)
     }
 
-    /// Look up the engine SVN by an already-computed `tdinfo_hash` (outer form,
-    /// 48 raw bytes). This is the canonical entry point for the redesign.
+    /// Look up the engine SVN by an already-computed `tdinfo_hash`
+    /// (48 raw bytes). This is the canonical entry point for the redesign.
     pub fn get_engine_svn_by_tdinfo_hash(&self, tdinfo_hash: &[u8]) -> Option<u16> {
         if tdinfo_hash.len() != SHA384_DIGEST_SIZE {
             return None;
@@ -274,9 +272,10 @@ pub fn pack_unmasked_tdinfo(
     buf
 }
 
-/// Compute the outer `tdinfo_hash` from the 10 individual TDINFO measurement
-/// fields. Equivalent to `init_servtd_info_hash` for MigTDs bound with
-/// `servtd_attr == 0`.
+/// Compute `tdinfo_hash` from the 10 individual TDINFO measurement fields.
+/// Equals `init_servtd_info_hash` for MigTDs bound with `servtd_attr == 0`.
+///
+/// Formula: `SHA384(pack(attributes, xfam, mrtd, ..., rtmr3, reserved))`
 pub fn compute_tdinfo_hash_from_fields(
     attributes: &[u8; 8],
     xfam: &[u8; 8],
@@ -311,9 +310,9 @@ fn as_array<const N: usize>(slice: &[u8]) -> Result<&[u8; N], PolicyError> {
     slice.try_into().map_err(|_| PolicyError::InvalidParameter)
 }
 
-/// Compute the outer `tdinfo_hash` for the TD described by `report`.
+/// Compute `tdinfo_hash` for the TD described by `report`.
 ///
-/// Returns the 48-byte hash, equivalent to `init_servtd_info_hash` for
+/// Returns the 48-byte hash, equals `init_servtd_info_hash` for
 /// production MigTDs (`servtd_attr == 0`).
 pub fn compute_tdinfo_hash_from_report(
     report: &Report,
@@ -364,7 +363,7 @@ mod test {
         let engine: TdTcbMapping = serde_json::from_slice(engine_bytes).unwrap();
 
         // The first svnMappings entry in the test fixture is the canonical
-        // OUTER tdinfo_hash for an unmasked attr=0 MigTD.
+        // tdinfo_hash (= SHA384(TDINFO) = init_servtd_info_hash for attr=0).
         let expected_hash = engine.svn_mappings[0].td_measurements.tdinfo_hash.clone();
         let target = Measurements {
             tdinfo_hash: expected_hash.clone(),
@@ -447,14 +446,13 @@ mod test {
             .all(|b| *b == 0));
     }
 
-    /// Cross-implementation parity: the outer `tdinfo_hash` computed from the
-    /// canonical 10 fields here MUST match the explicit two-stage formula
-    /// `SHA384( SHA384(unmasked_TDINFO_512) || u16_LE(0) || u64_LE(0) )` used
+    /// Cross-implementation parity: `tdinfo_hash` computed from the
+    /// canonical 10 fields here MUST equal `SHA384(unmasked_TDINFO_512)` used
     /// by `migtd-hash`, `mig-td-tools tdinfo-hash`, and the bash mock-test
     /// scripts. If they ever drift, runtime policy lookup silently fails for
     /// all valid TDs.
     #[test]
-    fn outer_tdinfo_hash_matches_two_stage_formula() {
+    fn tdinfo_hash_matches_direct_sha384_formula() {
         use crypto::hash::digest_sha384;
         let attributes = [0xAAu8; 8];
         let xfam = [0xBBu8; 8];
@@ -494,12 +492,7 @@ mod test {
             &rtmr3,
         );
         assert_eq!(packed.len(), 512);
-        let inner = digest_sha384(&packed).unwrap();
-        let mut buf = alloc::vec::Vec::new();
-        buf.extend_from_slice(&inner);
-        buf.extend_from_slice(&0u16.to_le_bytes());
-        buf.extend_from_slice(&0u64.to_le_bytes());
-        let expected = digest_sha384(&buf).unwrap();
+        let expected = digest_sha384(&packed).unwrap();
 
         assert_eq!(&got[..], expected.as_slice());
     }

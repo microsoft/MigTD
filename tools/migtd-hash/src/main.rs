@@ -221,9 +221,9 @@ struct Config {
     /// Output in TD Info in JSON format
     #[clap(long)]
     pub output_td_info: Option<PathBuf>,
-    /// Output the v2-style `tdinfo_hash` (OUTER hash with SERVTD_TYPE=0,
-    /// servtd_attr=0) as a hex-encoded text file. ALWAYS uses unmasked TDINFO
-    /// regardless of `--servtd-attr`.
+    /// Output the v2-style `tdinfo_hash` (= SHA384(TDINFO_STRUCT), equals
+    /// `init_servtd_info_hash` for attr=0) as a hex-encoded text file.
+    /// ALWAYS uses unmasked TDINFO regardless of `--servtd-attr`.
     #[clap(long)]
     pub output_tdinfo_hash: Option<PathBuf>,
     /// Enable verbose logging
@@ -328,8 +328,8 @@ fn main() {
 
     // Compute the canonical v2 tdinfo_hash from the UNMASKED TDINFO. This is
     // what gets written into the TCB mapping and equals `init_servtd_info_hash`
-    // for an attr=0 MigTD.
-    let tdinfo_hash_outer = if config.policy_v2 {
+    // for an attr=0 MigTD (tdinfo_hash = SHA384(TDINFO_STRUCT)).
+    let tdinfo_hash_v2 = if config.policy_v2 {
         Some(
             calculate_tdinfo_hash(clone_td_info(&unmasked_td_info)).unwrap_or_else(|e| {
                 eprintln!("Failed to calculate tdinfo_hash: {:?}", e);
@@ -340,12 +340,12 @@ fn main() {
         None
     };
 
-    if let Some(ref hash) = tdinfo_hash_outer {
+    if let Some(ref hash) = tdinfo_hash_v2 {
         debug!("tdinfo_hash (unmasked, attr=0): {}", bytes_to_hex(hash));
     }
 
     if let Some(output_tdinfo_hash) = &config.output_tdinfo_hash {
-        let hash = tdinfo_hash_outer
+        let hash = tdinfo_hash_v2
             .as_ref()
             .expect("--output-tdinfo-hash requires --policy-v2");
         debug!("Writing tdinfo_hash to: {:?}", output_tdinfo_hash);
@@ -390,7 +390,7 @@ fn main() {
     debug!("Updating tcb_mapping file...");
     if let Some(tcb_mapping_path) = &config.update_tcb_mapping {
         let result = if config.policy_v2 {
-            let hash = tdinfo_hash_outer
+            let hash = tdinfo_hash_v2
                 .as_ref()
                 .expect("v2 tcb-mapping update requires tdinfo_hash to be computed");
             update_tcb_mapping_file_v2(tcb_mapping_path, hash)
