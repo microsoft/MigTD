@@ -1057,6 +1057,18 @@ mod v2 {
     }
 
     #[test]
+    fn test_verify_servtd_info_hash_all_zero_init_hash_fails() {
+        // When init_servtd_info_hash is all-zero but SERVTD_EXT is present,
+        // verify_servtd_info_hash should fail (the sender should not have sent
+        // init_tdinfo when SERVTD_EXT is not properly provisioned).
+        let mut tdinfo_bytes = [0u8; 512];
+        tdinfo_bytes[0..8].copy_from_slice(&[0xAB; 8]); // non-zero attributes
+        let all_zero_init = [0u8; 48];
+        let result = verify_servtd_info_hash(&tdinfo_bytes, 0, &all_zero_init);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_verify_servtd_info_hash_with_ignore_attributes() {
         // Build TdInfo with non-zero attributes
         let mut tdinfo_bytes = [0u8; 512];
