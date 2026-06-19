@@ -4,11 +4,7 @@
 use crate::mig_policy;
 use crate::migration::MigrationResult;
 use crate::{
-    migration::{
-        data::MigrationSessionKey,
-        session::{cal_mig_version, exchange_info, set_mig_version, write_msk},
-        MigtdMigrationInformation,
-    },
+    migration::{data::MigrationSessionKey, MigtdMigrationInformation},
     spdm::{
         build_report_data, gen_quote_spdm, spdm_rsp::SECRET_ASYM_IMPL_INSTANCE, spdm_verify_quote,
         verify_report_data_binding, verify_tdreport_data_binding, vmcall_msg::VmCallTransportEncap,
@@ -91,8 +87,9 @@ pub fn spdm_requester<T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static>
 pub async fn spdm_requester_transfer_msk(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
+    exchange_information: &ExchangeInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
-) -> Result<(), SpdmStatus> {
+) -> Result<ExchangeInformation, SpdmStatus> {
     // `send_and_receive_pub_key` encodes the requester's ephemeral ECDSA
     // private key into `spdm_requester.common.app_context_data_buffer` so
     // libspdm's asymmetric signing callback can read it. The libspdm
@@ -101,6 +98,7 @@ pub async fn spdm_requester_transfer_msk(
     let result = spdm_requester_transfer_msk_inner(
         spdm_requester,
         mig_info,
+        exchange_information,
         #[cfg(feature = "policy_v2")]
         peer_data,
     )
@@ -112,18 +110,10 @@ pub async fn spdm_requester_transfer_msk(
 async fn spdm_requester_transfer_msk_inner(
     spdm_requester: &mut RequesterContext,
     mig_info: &MigtdMigrationInformation,
+    exchange_information: &ExchangeInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
-) -> Result<(), SpdmStatus> {
-    Box::pin(spdm_requester.send_receive_spdm_version()).await?;
-    Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
-    Box::pin(spdm_requester.send_receive_spdm_algorithm()).await?;
-
-    Box::pin(send_and_receive_pub_key(spdm_requester)).await?;
-    let session_id = Box::pin(spdm_requester.send_receive_spdm_key_exchange(
-        0xff,
-        SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeNone,
-    ))
-    .await?;
+) -> Result<ExchangeInformation, SpdmStatus> {
+    let session_id = crate::spdm::handshake::requester_handshake_prelude(spdm_requester).await?;
 
     Box::pin(send_and_receive_sdm_migration_attest_info(
         spdm_requester,
@@ -135,15 +125,17 @@ async fn spdm_requester_transfer_msk_inner(
     .await?;
 
     Box::pin(spdm_requester.send_receive_spdm_finish(Some(0xff), session_id)).await?;
-    Box::pin(send_and_receive_sdm_exchange_migration_info(
+
+    let remote_information = Box::pin(send_and_receive_sdm_exchange_migration_info(
         spdm_requester,
-        mig_info,
+        exchange_information,
         Some(session_id),
     ))
     .await?;
+
     Box::pin(spdm_requester.send_receive_spdm_end_session(session_id)).await?;
 
-    Ok(())
+    Ok(remote_information)
 }
 
 pub async fn send_and_receive_pub_key(spdm_requester: &mut RequesterContext) -> SpdmResult {
@@ -504,8 +496,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
             &mut receive_buffer,
         )
         .await?;
-
-    //Format checks
+    // Format checks
     let mut reader = Reader::init(response);
     let _response_header =
         SpdmMessageHeader::read(&mut reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
@@ -625,7 +616,6 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         error!("Cannot get session id. Attestation failed.\n");
         return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
     }
-
     Ok(())
 }
 
@@ -702,9 +692,13 @@ fn verify_peer_attestation_v2(
     let peer_data_hash = digest_sha384(peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
     if mig_policy_hash_peer != peer_data_hash.as_slice() {
         error!("The received mig policy hash does not match the expected peer_data hash!\n");
+        let session = spdm_requester
+            .common
+            .get_session_via_id(session_id)
+            .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        session.teardown();
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
-
     // 2. Authenticate remote (includes quote verification internally)
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
@@ -746,14 +740,12 @@ fn verify_peer_attestation_v2(
 
 async fn send_and_receive_sdm_exchange_migration_info(
     spdm_requester: &mut RequesterContext,
-    mig_info: &MigtdMigrationInformation,
+    exchange_information: &ExchangeInformation,
     session_id: Option<u32>,
-) -> SpdmResult {
+) -> SpdmResult<ExchangeInformation> {
     let mut vendor_id = [0u8; MAX_SPDM_VENDOR_DEFINED_VENDOR_ID_LEN];
     vendor_id[..VDM_MESSAGE_VENDOR_ID_LEN].copy_from_slice(&VDM_MESSAGE_VENDOR_ID);
     let vendor_id = VendorIDStruct { len: 4, vendor_id };
-
-    let exchange_information = exchange_info(mig_info, true)?;
 
     let mut payload = vec![0u8; MAX_SPDM_VENDOR_DEFINED_PAYLOAD_SIZE];
     let mut writer = Writer::init(&mut payload);
@@ -833,7 +825,6 @@ async fn send_and_receive_sdm_exchange_migration_info(
             &mut receive_buffer,
         )
         .await?;
-
     // Format checks
     let mut reader = Reader::init(response);
     let _response_header =
@@ -916,12 +907,7 @@ async fn send_and_receive_sdm_exchange_migration_info(
         },
     };
 
-    let mig_ver = cal_mig_version(true, &exchange_information, &remote_information)?;
-    set_mig_version(mig_info, mig_ver)?;
-    write_msk(mig_info, &remote_information.key)?;
-    log::info!("Set MSK and report status\n");
-
-    Ok(())
+    Ok(remote_information)
 }
 
 #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
@@ -1186,6 +1172,11 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
         let peer_data_hash = digest_sha384(&peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
         if mig_policy_hash_dst != peer_data_hash.as_slice() {
             error!("The received mig policy hash does not match the expected peer_data hash!\n");
+            let session = spdm_requester
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
             return Err(SPDM_STATUS_INVALID_MSG_FIELD);
         }
 
@@ -1208,6 +1199,7 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
 
         // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
         let verified_report_peer = policy_check_result.unwrap();
+        #[cfg(not(any(feature = "AzCVMEmu", feature = "test_mock_report")))]
         if verify_tdreport_data_binding(&verified_report_peer, b"MigTDRsp", &th1).is_err() {
             error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = spdm_requester
@@ -1217,6 +1209,8 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
             session.teardown();
             return Err(SpdmStatus::from(MigrationResult::MutualAttestationError));
         }
+        #[cfg(any(feature = "AzCVMEmu", feature = "test_mock_report"))]
+        let _ = (&th1, &verified_report_peer);
     }
 
     let vdm_attest_info_src_hash =
