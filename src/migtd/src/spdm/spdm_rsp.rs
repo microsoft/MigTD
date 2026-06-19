@@ -7,19 +7,13 @@ use crate::mig_policy;
 use crate::migration::pre_session_data::local_peer_data;
 #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
 use crate::migration::rebinding::{write_rebinding_session_token, write_servtd_rebind_attr};
-#[cfg(not(feature = "policy_v2"))]
-use crate::migration::servtd_ext::verify_servtd_attr;
 #[cfg(feature = "policy_v2")]
-use crate::migration::servtd_ext::{verify_servtd_attr, write_approved_servtd_ext_hash, ServtdExt};
+use crate::migration::servtd_ext::{write_approved_servtd_ext_hash, ServtdExt};
 use crate::migration::MigrationResult;
 use crate::{
     event_log::get_event_log,
     migration::{
-        data::MigrationSessionKey,
-        session::{
-            cal_mig_version, exchange_info, set_mig_version, write_msk, ExchangeInformation,
-        },
-        MigtdMigrationInformation,
+        data::MigrationSessionKey, session::ExchangeInformation, MigtdMigrationInformation,
     },
 };
 use alloc::sync::Arc;
@@ -54,12 +48,22 @@ pub struct ResponderContextEx<'a> {
     pub peer_data: Vec<u8>,
     pub info: ResponderContextExInfo<'a>,
     pub mig_info_exchanged: bool,
+    /// Populated by the migration responder VDM handler from the peer's
+    /// `ExchangeMigrationInfoReq`; consumed by the caller after the SPDM
+    /// loop returns to drive the post-session commit chain.
+    pub remote_information: Option<ExchangeInformation>,
     #[cfg(feature = "policy_v2")]
     pub servtd_ext: Option<ServtdExt>,
 }
 
 pub enum ResponderContextExInfo<'a> {
-    MigrationInformation(&'a MigtdMigrationInformation),
+    /// Migration responder context. `exchange_information` is computed by
+    /// the caller before the SPDM loop and used by the VDM handler to
+    /// populate the `ExchangeMigrationInfoRsp` payload.
+    MigrationInformation {
+        mig_info: &'a MigtdMigrationInformation,
+        exchange_information: &'a ExchangeInformation,
+    },
     #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
     RebindInformation(&'a MigtdMigrationInformation),
     None,
@@ -74,9 +78,16 @@ impl ResponderContextEx<'_> {
     }
 }
 
+/// SAFETY: `ResponderContextEx` is `#[repr(C)]` with `ResponderContext` as
+/// its first field, so a `&mut ResponderContext` that originated from a
+/// live `&mut ResponderContextEx` can be upcast back to the outer struct
+/// via a zero-offset pointer cast. The caller must ensure `inner` was
+/// obtained from `ResponderContextEx::inner_mut` (or equivalent) and that
+/// no other reference to the outer struct (or any of its other fields) is
+/// live for the duration of the returned borrow.
 pub unsafe fn upcast_mut(inner: &mut ResponderContext) -> &mut ResponderContextEx {
     let ptr = inner as *mut ResponderContext as *mut u8;
-    let outer_ptr = ptr.sub(0) as *mut ResponderContextEx;
+    let outer_ptr = ptr as *mut ResponderContextEx;
     &mut *outer_ptr
 }
 
@@ -142,6 +153,7 @@ pub fn spdm_responder<'a, T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'sta
         peer_data: Vec::new(),
         info: ResponderContextExInfo::None,
         mig_info_exchanged: false,
+        remote_information: None,
         #[cfg(feature = "policy_v2")]
         servtd_ext: None,
     };
@@ -149,18 +161,36 @@ pub fn spdm_responder<'a, T: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'sta
     Ok((responder_context_ex, device_io_ref))
 }
 
-pub async fn spdm_responder_transfer_msk(
-    spdm_responder_ex: &mut ResponderContextEx<'_>,
-    mig_info: &MigtdMigrationInformation,
+pub async fn spdm_responder_transfer_msk<'a>(
+    spdm_responder_ex: &mut ResponderContextEx<'a>,
+    mig_info: &'a MigtdMigrationInformation,
+    exchange_information: &'a ExchangeInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
     #[cfg(not(feature = "policy_v2"))]
     let peer_data = Vec::new();
 
-    spdm_responder_ex.peer_data = peer_data;
+    spdm_responder_ex.info = ResponderContextExInfo::MigrationInformation {
+        mig_info,
+        exchange_information,
+    };
+    spdm_responder_ex.remote_information = None;
+
+    // The VDM handler reads `mig_info` / `exchange_information` from
+    // `responder_ex.info`; no per-session app context data is required for
+    // the migration path beyond placeholder defaults.
+    let app_context = SpdmAppContextData {
+        migration_info: MigtdMigrationInformation::default(),
+        private_key: PrivateKeyDer::default(),
+    };
 
     // Zeroize the responder key buffer on every return path.
-    let result = spdm_responder_transfer_msk_inner(spdm_responder_ex, mig_info).await;
+    let result = crate::spdm::handshake::run_responder_message_loop(
+        spdm_responder_ex,
+        peer_data,
+        app_context,
+    )
+    .await;
     spdm_responder_ex
         .responder_context
         .common
@@ -168,24 +198,6 @@ pub async fn spdm_responder_transfer_msk(
         .zeroize();
 
     result
-}
-
-async fn spdm_responder_transfer_msk_inner(
-    spdm_responder_ex: &mut ResponderContextEx<'_>,
-    mig_info: &MigtdMigrationInformation,
-) -> Result<(), SpdmStatus> {
-    let spdm_responder = &mut spdm_responder_ex.responder_context;
-    let mut writer = Writer::init(&mut spdm_responder.common.app_context_data_buffer);
-
-    let responder_app_context = SpdmAppContextData {
-        migration_info: mig_info.clone(),
-        private_key: PrivateKeyDer::default(),
-    };
-    responder_app_context
-        .encode(&mut writer)
-        .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-
-    Box::pin(rsp_handle_message(spdm_responder)).await
 }
 
 pub async fn rsp_handle_message(spdm_responder: &mut ResponderContext) -> Result<(), SpdmStatus> {
@@ -376,7 +388,7 @@ pub fn handle_exchange_mig_attest_info_req(
     let spdm_responder_ex = unsafe { upcast_mut(responder_context) };
     if !matches!(
         &spdm_responder_ex.info,
-        ResponderContextExInfo::MigrationInformation(_)
+        ResponderContextExInfo::MigrationInformation { .. }
     ) {
         error!("Migration info is not set in responder context.\n");
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
@@ -736,6 +748,11 @@ fn rsp_verify_peer_attestation_v2(
     let peer_data_hash = digest_sha384(peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
     if mig_policy_hash_peer != peer_data_hash.as_slice() {
         error!("The received mig policy hash does not match the expected peer_data hash!\n");
+        let session = responder_context
+            .common
+            .get_session_via_id(session_id)
+            .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+        session.teardown();
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
@@ -889,44 +906,37 @@ pub fn handle_exchange_mig_info_req(
         },
     };
 
-    let mut reader = Reader::init(responder_context.common.app_context_data_buffer.as_ref());
-    let responder_app_context =
-        SpdmAppContextData::read(&mut reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
-    let exchange_information = exchange_info(&responder_app_context.migration_info, false)?;
-
-    verify_servtd_attr(
-        responder_app_context.migration_info.binding_handle,
-        &responder_app_context.migration_info.target_td_uuid,
-    )?;
-
-    let mig_ver = cal_mig_version(false, &exchange_information, &remote_information)?;
-    set_mig_version(&responder_app_context.migration_info, mig_ver)?;
-    write_msk(
-        &responder_app_context.migration_info,
-        &remote_information.key,
-    )?;
-
-    unsafe {
-        upcast_mut(responder_context).mig_info_exchanged = true;
-    }
-
-    // Write APPROVED_SERVTD_EXT_HASH if SERVTD_EXT was received during attestation
-    #[cfg(feature = "policy_v2")]
-    {
-        let servtd_ext = unsafe {
-            let spdm_responder_ex = upcast_mut(responder_context);
-            spdm_responder_ex.servtd_ext
-        };
-        if let Some(ext) = servtd_ext {
-            write_approved_servtd_ext_hash(&ext.calculate_approved_servtd_ext_hash()?)?;
+    // Read mig_info / exchange_information that the caller stashed in
+    // `responder_ex.info` before driving the session; stash the parsed
+    // `remote_information` for the caller to consume after the loop returns.
+    //
+    // SAFETY: `responder_context` was obtained from `&mut ResponderContextEx`
+    // via the SPDM dispatch path. See `upcast_mut` SAFETY notes.
+    let spdm_responder_ex = unsafe { upcast_mut(responder_context) };
+    let exchange_information: &ExchangeInformation = match &spdm_responder_ex.info {
+        ResponderContextExInfo::MigrationInformation {
+            mig_info: _,
+            exchange_information,
+        } => *exchange_information,
+        _ => {
+            error!(
+                "Migration responder is missing ExchangeMigrationInfo context (caller did not set responder_ex.info)\n"
+            );
+            return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
         }
-    }
+    };
 
     log::info!("Set MSK and report status\n");
 
     let min_import_version = exchange_information.min_ver;
     let max_import_version = exchange_information.max_ver;
     let mig_session_key = exchange_information.key.as_bytes().to_vec();
+
+    spdm_responder_ex.remote_information = Some(remote_information);
+    // Finalization now happens after the responder loop, so latch the
+    // accepted request here to prevent a replay from replacing the staged
+    // migration information before the caller commits it.
+    spdm_responder_ex.mig_info_exchanged = true;
 
     let mut writer = Writer::init(vendor_defined_rsp_payload);
     let mut cnt = 0;
@@ -1163,6 +1173,11 @@ pub fn handle_exchange_rebind_attest_info_req(
         let peer_data_hash = digest_sha384(peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
         if mig_policy_hash_src_vec != peer_data_hash {
             error!("The received mig policy hash does not match the expected peer_data hash!\n");
+            let session = responder_context
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
             return Err(SPDM_STATUS_INVALID_MSG_FIELD);
         }
 
@@ -1186,6 +1201,7 @@ pub fn handle_exchange_rebind_attest_info_req(
 
         // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
         let verified_report_peer = policy_check_result.unwrap();
+        #[cfg(not(any(feature = "AzCVMEmu", feature = "test_mock_report")))]
         if verify_tdreport_data_binding(&verified_report_peer, b"MigTDReq", &th1).is_err() {
             error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = responder_context
@@ -1195,6 +1211,8 @@ pub fn handle_exchange_rebind_attest_info_req(
             session.teardown();
             return Err(SpdmStatus::from(MigrationResult::MutualAttestationError));
         }
+        #[cfg(any(feature = "AzCVMEmu", feature = "test_mock_report"))]
+        let _ = (&th1, &verified_report_peer);
     }
 
     unsafe {
