@@ -184,66 +184,24 @@ pub async fn rebinding_old_prepare(
     data: &mut Vec<u8>,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), MigrationResult> {
-    use core::ops::DerefMut;
+    use crate::migration::spdm_session::{finalize_spdm_session, map_spdm_setup_err};
 
-    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-    let (mut spdm_requester, device_io_ref) = spdm::spdm_requester(transport).map_err(|_e| {
-        #[cfg(feature = "vmcall-raw")]
-        data.extend_from_slice(
-            &format!(
-                "Error: rebinding_old_prepare(): Failed in spdm_requester transport. Migration ID: {:x}\n",
-                info.mig_request_id,
-            )
-            .into_bytes(),
-        );
-        log::error!(
-            "rebinding: Failed in spdm_requester transport. Migration ID: {}\n",
-            info.mig_request_id
-        );
-        MigrationResult::SecureSessionError
-    })?;
-    with_timeout(
-        SPDM_TIMEOUT,
+    let (mut spdm_requester, io_ref) =
+        spdm::spdm_requester(transport).map_err(|_| map_spdm_setup_err(info.mig_request_id))?;
+
+    finalize_spdm_session(
         spdm::spdm_requester_rebind_old(
             &mut spdm_requester,
             info,
             #[cfg(feature = "policy_v2")]
             peer_data,
         ),
+        io_ref,
+        info.mig_request_id,
     )
-    .await
-    .map_err(|e| {
-        #[cfg(feature = "vmcall-raw")]
-        data.extend_from_slice(
-            &format!(
-                "Error: rebinding_old_prepare(): spdm_requester_rebind_old timed out ({:?}). Migration ID: {:x}\n",
-                e, info.mig_request_id,
-            )
-            .into_bytes(),
-        );
-        log::error!(
-            "rebinding: spdm_requester_rebind_old timeout error: {:?}\n",
-            e
-        );
-        e
-    })?
-    .map_err(|e| {
-        #[cfg(feature = "vmcall-raw")]
-        data.extend_from_slice(
-            &format!(
-                "Error: rebinding_old_prepare(): spdm_requester_rebind_old failed ({:?}). Migration ID: {:x}\n",
-                e, info.mig_request_id,
-            )
-            .into_bytes(),
-        );
-        log::error!("rebinding: spdm_requester_rebind_old error: {:?}\n", e);
-        spdm::decode_spdm_session_err(e)
-    })?;
-    log::info!("Rebind completed\n");
+    .await?;
 
-    let mut transport_lock = device_io_ref.lock();
-    let transport = transport_lock.deref_mut();
-    shutdown_transport(&mut transport.transport, info.mig_request_id).await?;
+    log::info!("Rebind completed\n");
     Ok(())
 }
 
@@ -254,67 +212,24 @@ pub async fn rebinding_new_prepare(
     data: &mut Vec<u8>,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), MigrationResult> {
-    use core::ops::DerefMut;
+    use crate::migration::spdm_session::{finalize_spdm_session, map_spdm_setup_err};
 
-    const SPDM_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
-    let (mut spdm_responder, device_io_ref) = spdm::spdm_responder(transport).map_err(|_e| {
-        #[cfg(feature = "vmcall-raw")]
-        data.extend_from_slice(
-            &format!(
-                "Error: rebinding_new_prepare(): Failed in spdm_responder transport. Migration ID: {:x}\n",
-                info.mig_request_id,
-            )
-            .into_bytes(),
-        );
-        log::error!(
-            "rebinding: Failed in spdm_responder transport. Migration ID: {}\n",
-            info.mig_request_id
-        );
-        MigrationResult::SecureSessionError
-    })?;
+    let (mut spdm_responder, io_ref) =
+        spdm::spdm_responder(transport).map_err(|_| map_spdm_setup_err(info.mig_request_id))?;
 
-    with_timeout(
-        SPDM_TIMEOUT,
+    finalize_spdm_session(
         spdm::spdm_responder_rebind_new(
             &mut spdm_responder,
             info,
             #[cfg(feature = "policy_v2")]
             peer_data,
         ),
+        io_ref,
+        info.mig_request_id,
     )
-    .await
-    .map_err(|e| {
-        #[cfg(feature = "vmcall-raw")]
-        data.extend_from_slice(
-            &format!(
-                "Error: rebinding_new_prepare(): spdm_responder_rebind_new timed out ({:?}). Migration ID: {:x}\n",
-                e, info.mig_request_id,
-            )
-            .into_bytes(),
-        );
-        log::error!(
-            "rebinding: spdm_responder_rebind_new timeout error: {:?}\n",
-            e
-        );
-        e
-    })?
-    .map_err(|e| {
-        #[cfg(feature = "vmcall-raw")]
-        data.extend_from_slice(
-            &format!(
-                "Error: rebinding_new_prepare(): spdm_responder_rebind_new failed ({:?}). Migration ID: {:x}\n",
-                e, info.mig_request_id,
-            )
-            .into_bytes(),
-        );
-        log::error!("rebinding: spdm_responder_rebind_new error: {:?}\n", e);
-        spdm::decode_spdm_session_err(e)
-    })?;
-    log::info!("Rebind completed\n");
+    .await?;
 
-    let mut transport_lock = device_io_ref.lock();
-    let transport = transport_lock.deref_mut();
-    shutdown_transport(&mut transport.transport, info.mig_request_id).await?;
+    log::info!("Rebind completed\n");
     Ok(())
 }
 

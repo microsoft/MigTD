@@ -12,6 +12,8 @@ pub mod rebinding;
 pub mod servtd_ext;
 #[cfg(feature = "main")]
 pub mod session;
+#[cfg(feature = "spdm_attestation")]
+pub mod spdm_session;
 #[cfg(feature = "main")]
 pub mod transport;
 
