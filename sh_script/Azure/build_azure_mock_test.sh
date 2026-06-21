@@ -476,7 +476,7 @@ echo
 # Step 4: Update tcb_mapping.json with the v2 tdinfo_hash
 # Make sure no ending newline is added (important for signing)
 #
-# Per docs/tcb_mapping_redesign.md, the v2 schema uses a single
+# Per doc/tcb_mapping_redesign.md, the v2 schema uses a single
 # `tdinfo_hash = SHA384(SHA384(unmasked_TDINFO_512) || u16_LE(0) || u64_LE(0))`.
 # We delegate the hash computation to the `migtd-hash --from-report` mode so
 # the math stays in one place (tools/migtd-hash/src/lib.rs::calculate_tdinfo_hash)
