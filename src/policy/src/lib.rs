@@ -191,7 +191,7 @@ pub enum EventName {
     MigTdPolicySigner,
     /// Single RTMR2 extend for v2 policy: canonical bytes of `policyData`
     /// with `servtdCollateral.servtdTcbMapping` removed
-    /// (see `docs/tcb_mapping_redesign.md`). Tag ID
+    /// (see `doc/tcb_mapping_redesign.md`). Tag ID
     /// `TAGGED_EVENT_ID_POLICY_DATA = 0x9`. Replaces the prior six per-field
     /// extends; protects every `policyData` field (including
     /// `forwardPolicy` / `backwardPolicy` and the issuer chains) by
