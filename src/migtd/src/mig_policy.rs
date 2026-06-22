@@ -377,12 +377,12 @@ mod v2 {
         let _engine_svn = {
             let tdinfo_hash = tdinfo_hash_from_td_info(&init_td_info)?;
             policy
-                .servtd_tcb_mapping
-                .get_engine_svn_by_tdinfo_hash(&tdinfo_hash)
+                .servtd_lookup_by_tdinfo_hash(&tdinfo_hash)
                 .ok_or(PolicyError::SvnMismatch)?
+                .isvsvn
         };
         #[cfg(feature = "use-mock-quote")]
-        log::warn!("use-mock-quote: skipping get_engine_svn_by_tdinfo_hash allowlist check\n");
+        log::warn!("use-mock-quote: skipping servtd_lookup_by_tdinfo_hash allowlist check\n");
 
         // If backward policy exists, evaluate the migration src based on it.
         let relative_reference = get_local_tcb_evaluation_info()?;
@@ -662,11 +662,7 @@ mod v2 {
         let tcb_evaluation_number = get_tcb_evaluation_number_from_collateral(&collateral)?;
         let report_value = Report::new(suppl_data)?;
 
-        let migtd_svn = policy
-            .servtd_tcb_mapping
-            .get_engine_svn_by_report(&report_value);
-
-        let migtd_tcb = migtd_svn.and_then(|svn| policy.servtd_identity.get_tcb_level_by_svn(svn));
+        let migtd = policy.servtd_lookup_by_report(&report_value);
         let pck_crl_num = get_crl_number(collaterals.pck_crl.as_bytes())
             .map_err(|_| PolicyError::InvalidCollateral)?;
         let root_ca_crl_num = get_crl_number(collaterals.root_ca_crl.as_bytes())
@@ -678,9 +674,9 @@ mod v2 {
             tcb_status: Some(tcb_status.as_str().to_string()),
             tcb_evaluation_number: Some(tcb_evaluation_number),
             fmspc: Some(fmspc),
-            migtd_isvsvn: migtd_svn,
-            migtd_tcb_date: migtd_tcb.map(|tcb| tcb.tcb_date.clone()),
-            migtd_tcb_status: migtd_tcb.map(|tcb| tcb.tcb_status.clone()),
+            migtd_isvsvn: migtd.as_ref().map(|m| m.isvsvn),
+            migtd_tcb_date: migtd.as_ref().map(|m| m.tcb_date.clone()),
+            migtd_tcb_status: migtd.as_ref().map(|m| m.tcb_status.clone()),
             pck_crl_num: Some(pck_crl_num),
             root_ca_crl_num: Some(root_ca_crl_num),
         })
@@ -706,11 +702,7 @@ mod v2 {
         let mapping_tdreport = tdreport;
 
         let tdinfo_hash = tdinfo_hash_from_td_info(&mapping_tdreport.td_info)?;
-        let migtd_svn = policy
-            .servtd_tcb_mapping
-            .get_engine_svn_by_tdinfo_hash(&tdinfo_hash);
-
-        let migtd_tcb = migtd_svn.and_then(|svn| policy.servtd_identity.get_tcb_level_by_svn(svn));
+        let migtd = policy.servtd_lookup_by_tdinfo_hash(&tdinfo_hash);
 
         Ok(PolicyEvaluationInfo {
             tee_tcb_svn: Some(tdreport.tee_tcb_info.tee_tcb_svn),
@@ -718,9 +710,9 @@ mod v2 {
             tcb_status: None,
             tcb_evaluation_number: None,
             fmspc: None,
-            migtd_isvsvn: migtd_svn,
-            migtd_tcb_date: migtd_tcb.map(|tcb| tcb.tcb_date.clone()),
-            migtd_tcb_status: migtd_tcb.map(|tcb| tcb.tcb_status.clone()),
+            migtd_isvsvn: migtd.as_ref().map(|m| m.isvsvn),
+            migtd_tcb_date: migtd.as_ref().map(|m| m.tcb_date.clone()),
+            migtd_tcb_status: migtd.as_ref().map(|m| m.tcb_status.clone()),
             pck_crl_num: None,
             root_ca_crl_num: None,
         })
@@ -1005,12 +997,12 @@ mod v2 {
             let _engine_svn = {
                 let tdinfo_hash = tdinfo_hash_from_td_info(&init_td_info)?;
                 policy
-                    .servtd_tcb_mapping
-                    .get_engine_svn_by_tdinfo_hash(&tdinfo_hash)
+                    .servtd_lookup_by_tdinfo_hash(&tdinfo_hash)
                     .ok_or(PolicyError::SvnMismatch)?
+                    .isvsvn
             };
             #[cfg(feature = "use-mock-quote")]
-            log::warn!("use-mock-quote: skipping get_engine_svn_by_tdinfo_hash allowlist check\n");
+            log::warn!("use-mock-quote: skipping servtd_lookup_by_tdinfo_hash allowlist check\n");
         }
 
         Ok(suppl_data)

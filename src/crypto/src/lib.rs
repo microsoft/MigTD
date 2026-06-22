@@ -163,6 +163,63 @@ pub fn verify_cert_chain_and_signature(
     Ok(())
 }
 
+/// Verify a `COSE_Sign1` ECDSA-P384/SHA-384 (ES384/ESP384) signature against
+/// an embedded RFC 9360 `x5chain`.
+///
+/// * `x5chain_der` — the certificate chain (DER, **end-entity first**) taken
+///   from the COSE protected header.
+/// * `tbs` — the COSE `Sig_structure1` to-be-signed bytes.
+/// * `signature` — the raw `r || s` ECDSA-P384 value. COSE uses the
+///   fixed-width encoding (96 bytes), **not** ASN.1 DER.
+///
+/// Steps performed:
+/// 1. Verify the chain's internal integrity (each cert signed by the next).
+/// 2. Verify the COSE signature with the leaf certificate's public key.
+///
+/// Trust is **not** established here: this only proves the chain is internally
+/// consistent and the signature is valid. The caller must bind the returned
+/// `(root_der, leaf_subject_der)` to a measured trust anchor (see
+/// `policy::compute_signer_anchor`, which folds them into the RTMR1 signer
+/// anchor) before trusting the payload.
+pub fn verify_cose_sign1_es384_x5chain(
+    x5chain_der: &[&[u8]],
+    tbs: &[u8],
+    signature: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    if x5chain_der.is_empty() {
+        return Err(Error::CertChainVerification("empty x5chain".into()));
+    }
+
+    // 1. Chain integrity (leaf -> ... -> root).
+    let chain: Vec<CertificateDer> = x5chain_der
+        .iter()
+        .map(|der| CertificateDer::from(der.to_vec()))
+        .collect();
+    verify_certificate_chain(&chain)?;
+
+    // 2. COSE signature over `tbs` by the leaf key (raw r||s, fixed-width).
+    let leaf =
+        x509::Certificate::from_der(x5chain_der[0]).map_err(|_| Error::ParseCertificate)?;
+    let leaf_pubkey = extract_public_key_from_cert(&leaf)?;
+    ecdsa::ecdsa_verify_with_algorithm(
+        &leaf_pubkey,
+        tbs,
+        signature,
+        &ecdsa::ECDSA_P384_SHA384_FIXED,
+    )
+    .map_err(|_| Error::SignatureVerification)?;
+
+    // 3. Anchor material for the caller: trust-anchor cert DER + leaf subject DER.
+    let root_der = x5chain_der[x5chain_der.len() - 1].to_vec();
+    let leaf_subject_der = leaf
+        .tbs_certificate
+        .subject
+        .to_der()
+        .map_err(|_| Error::ParseCertificate)?;
+
+    Ok((root_der, leaf_subject_der))
+}
+
 fn extract_cert_chain_from_pem(cert_chain_pem: &[u8]) -> Result<Vec<CertificateDer>> {
     let mut cert_chain = Vec::new();
 

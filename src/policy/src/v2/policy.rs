@@ -15,8 +15,24 @@ use crate::{
         bytes_to_hex_string, hex_string_to_bytes, measurement::extract_canonical_policy_data_bytes,
         policy, verify_event_hash,
     },
-    CcEvent, Collaterals, EventName, PolicyError, ServtdCollateral, TdIdentity, TdTcbMapping,
+    CcEvent, Collaterals, EventName, PolicyError, Report, ServtdCollateral, TdIdentity, TdTcbMapping,
 };
+
+#[cfg(feature = "servtd_corim")]
+use crate::v2::ServtdCorim;
+
+/// Result of a successful servtd lookup: the MigTD's ISV SVN and the TCB
+/// level (`tcb_date`, `tcb_status`) recorded for that SVN.
+///
+/// Produced by [`VerifiedPolicy::servtd_lookup_by_tdinfo_hash`] from either
+/// the legacy JSON collateral (one-hash `TdTcbMapping` + `TdIdentity`) or,
+/// when attached, the CoRIM hash endorsement (`servtd_corim` feature).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServtdLookup {
+    pub isvsvn: u16,
+    pub tcb_date: String,
+    pub tcb_status: String,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum TcbStatus {
@@ -178,6 +194,12 @@ pub struct VerifiedPolicy<'a> {
     pub servtd_tcb_mapping_issuer_chain: String,
     /// The policy signing certificate chain (PEM) used to verify this policy.
     pub policy_issuer_chain: String,
+    /// Optional CoRIM-encoded servtd collateral. When attached it is the sole
+    /// authority for servtd lookups (fail-closed: a CoRIM miss is a miss,
+    /// with no fallback to the legacy JSON collateral). Only available with
+    /// the `servtd_corim` feature.
+    #[cfg(feature = "servtd_corim")]
+    servtd_corim: Option<ServtdCorim>,
 }
 
 impl VerifiedPolicy<'_> {
@@ -187,6 +209,49 @@ impl VerifiedPolicy<'_> {
 
     pub fn get_version(&self) -> &str {
         &self.policy_data.version
+    }
+
+    /// Attach decoded CoRIM servtd collateral. Once set, **all** servtd
+    /// lookups resolve against the CoRIM and the legacy JSON collateral is no
+    /// longer consulted.
+    #[cfg(feature = "servtd_corim")]
+    pub fn set_servtd_corim(&mut self, corim: ServtdCorim) {
+        self.servtd_corim = Some(corim);
+    }
+
+    /// Resolve `(isvsvn, tcb_date, tcb_status)` from a 48-byte `tdinfo_hash`
+    /// (= `init/cur_servtd_info_hash`).
+    ///
+    /// When the `servtd_corim` feature is enabled and a CoRIM is attached, it
+    /// is the sole authority (**fail-closed**: a CoRIM miss returns `None`,
+    /// the legacy collateral is not consulted). Otherwise the lookup uses the
+    /// legacy JSON collateral exactly as the one-hash redesign defines it
+    /// (`TdTcbMapping::get_engine_svn_by_tdinfo_hash` then
+    /// `TdIdentity::get_tcb_level_by_svn`).
+    pub fn servtd_lookup_by_tdinfo_hash(&self, tdinfo_hash: &[u8]) -> Option<ServtdLookup> {
+        #[cfg(feature = "servtd_corim")]
+        if let Some(corim) = &self.servtd_corim {
+            return corim.lookup_by_tdinfo_hash(tdinfo_hash);
+        }
+        // Legacy path — unchanged one-hash logic, inline.
+        let isvsvn = self
+            .servtd_tcb_mapping
+            .get_engine_svn_by_tdinfo_hash(tdinfo_hash)?;
+        let level = self.servtd_identity.get_tcb_level_by_svn(isvsvn)?;
+        Some(ServtdLookup {
+            isvsvn,
+            tcb_date: level.tcb_date.clone(),
+            tcb_status: level.tcb_status.clone(),
+        })
+    }
+
+    /// Convenience: compute the `tdinfo_hash` from a verified `Report` and
+    /// resolve through [`servtd_lookup_by_tdinfo_hash`].
+    ///
+    /// [`servtd_lookup_by_tdinfo_hash`]: VerifiedPolicy::servtd_lookup_by_tdinfo_hash
+    pub fn servtd_lookup_by_report(&self, report: &Report) -> Option<ServtdLookup> {
+        let hash = crate::v2::compute_tdinfo_hash_from_report(report).ok()?;
+        self.servtd_lookup_by_tdinfo_hash(&hash)
     }
 }
 
@@ -261,6 +326,8 @@ impl<'a> RawPolicyData<'a> {
             servtd_tcb_mapping,
             servtd_tcb_mapping_issuer_chain,
             policy_issuer_chain,
+            #[cfg(feature = "servtd_corim")]
+            servtd_corim: None,
         })
     }
 
@@ -870,6 +937,44 @@ mod test {
         let issuer_chain =
             include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
         policy.verify(issuer_chain).unwrap();
+    }
+
+    /// Once a CoRIM is attached, `servtd_lookup_by_tdinfo_hash` is
+    /// fail-closed: the legacy collateral is no longer consulted, so a hash
+    /// the legacy table resolves misses (the CoRIM does not know it), while a
+    /// hash the CoRIM knows resolves through it.
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn servtd_lookup_is_fail_closed_when_corim_attached() {
+        use crate::v2::{hex_string_to_bytes, ServtdCorim};
+
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+        let mut verified = policy.verify(issuer_chain).unwrap();
+
+        // A hash the *legacy* embedded tcb_mapping resolves.
+        let legacy_hash = hex_string_to_bytes(
+            &verified.servtd_tcb_mapping.svn_mappings[0]
+                .td_measurements
+                .tdinfo_hash,
+        )
+        .unwrap();
+        assert!(verified.servtd_lookup_by_tdinfo_hash(&legacy_hash).is_some());
+
+        // Attach a CoRIM that only knows the hashes 0xAA*48 / 0xBB*48.
+        let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cbor");
+        let id = include_bytes!("../../test/policy_v2/corim/td_identity.cbor");
+        verified.set_servtd_corim(ServtdCorim::decode(tcb, id, 0).unwrap());
+
+        // Fail-closed: the legacy hash is no longer resolvable (no fallback).
+        assert!(verified.servtd_lookup_by_tdinfo_hash(&legacy_hash).is_none());
+
+        // ...but a hash the CoRIM knows resolves through it.
+        let hit = verified.servtd_lookup_by_tdinfo_hash(&[0xAAu8; 48]);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().isvsvn, 5);
     }
 
     #[test]
