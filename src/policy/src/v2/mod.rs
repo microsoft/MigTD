@@ -13,6 +13,10 @@ mod policy;
 pub use policy::*;
 pub mod measurement;
 pub use measurement::*;
+#[cfg(feature = "servtd_corim")]
+mod servtd_corim;
+#[cfg(feature = "servtd_corim")]
+pub use servtd_corim::*;
 
 impl<'a> Report<'a> {
     pub fn new(report: &'a [u8]) -> Result<Self, PolicyError> {
