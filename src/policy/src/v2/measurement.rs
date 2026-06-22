@@ -11,21 +11,34 @@
 //! ## RTMR2 measurement scheme
 //!
 //! RTMR2 (`mr_index = 0x3`) is extended **once** with the canonical JSON bytes
-//! of `policyData` with `servtdCollateral.servtdTcbMapping` removed.
+//! of `policyData` with `servtdCollateral.servtdTcbMapping` **and**
+//! `servtdCollateral.servtdTcbMappingIssuerChain` removed.
 //!
 //! | # | Field | Helper | Tag ID | EventName |
 //! |---|-------|--------|--------|-----------|
-//! | 1 | `policyData` (redacted: `servtdCollateral.servtdTcbMapping` omitted) | `extract_canonical_policy_data_bytes` | `0x9` | `MigTdPolicyData` |
+//! | 1 | `policyData` (redacted: `servtdTcbMapping` + `servtdTcbMappingIssuerChain` omitted) | `extract_canonical_policy_data_bytes` | `0x9` | `MigTdPolicyData` |
 //!
-//! `servtdCollateral.servtdTcbMapping` is the **only** field excluded because
-//! it must remain updateable after the IGVM is published (re-signed by the
-//! issuer without re-releasing the image). Every other field of `policyData`
-//! — including `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
-//! `backwardPolicy`, `collaterals`, `servtdCollateral.majorVersion`,
-//! `servtdCollateral.minorVersion`, `servtdCollateral.servtdIdentity` (with
-//! its signature), `servtdCollateral.servtdIdentityIssuerChain`, and
-//! `servtdCollateral.servtdTcbMappingIssuerChain` — is bound into RTMR2 by
-//! virtue of being inside `policyData`.
+//! Two fields are excluded, for two different reasons:
+//! * `servtdCollateral.servtdTcbMapping` — must remain updateable after the
+//!   IGVM is published (re-signed by the issuer without re-releasing the
+//!   image); it also carries the circular `tdinfo_hash`.
+//! * `servtdCollateral.servtdTcbMappingIssuerChain` — already measured into
+//!   **RTMR1** (the signer anchor), so measuring it again here would be
+//!   redundant and would re-couple TCB-mapping-signer key rotation to
+//!   `tdinfo_hash`.
+//!
+//! Every other field of `policyData` — including `version`, `id`, `policySvn`,
+//! `policy`, `forwardPolicy`, `backwardPolicy`, `collaterals`,
+//! `servtdCollateral.majorVersion`, `servtdCollateral.minorVersion` — is bound
+//! into RTMR2 by virtue of being inside `policyData`.
+//!
+//! The optional `servtdCollateral.servtdIdentity` (with its signature) and
+//! `servtdCollateral.servtdIdentityIssuerChain` are **also redacted**
+//! (non-strict: removed if present). Like the TCB mapping, the optional TD
+//! Identity must remain re-issuable by the signer (e.g. to revoke/downgrade an
+//! SVN) without re-releasing the image, and its issuer chain is bound into
+//! **RTMR1** (the signer anchor) instead. See
+//! `doc/corim_attestation_design.md` §3.2.
 //!
 //! ## Canonicalization
 //!
@@ -189,24 +202,34 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 }
 
 /// Canonical JSON bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
-/// removed, INCLUDING the outer `{` / `}`.
+/// **and** `servtdCollateral.servtdTcbMappingIssuerChain` removed, INCLUDING
+/// the outer `{` / `}`.
 ///
 /// This is the single buffer extended into RTMR2 by the runtime and by
 /// `migtd-hash` (tag `TAGGED_EVENT_ID_POLICY_DATA = 0x9`, event name
-/// `MigTdPolicyData`). The redaction is what breaks the circular dependency
-/// between `svnMappings[].tdMeasurements.tdinfo_hash` and RTMR2: every other
-/// `policyData` field is included by virtue of being part of the canonical
-/// object bytes, so the measurement automatically protects future field
-/// additions without manual whitelist maintenance.
+/// `MigTdPolicyData`). Redacting `servtdTcbMapping` is what breaks the circular
+/// dependency between `svnMappings[].tdMeasurements.tdinfo_hash` and RTMR2:
+/// every other included `policyData` field is bound by virtue of being part of
+/// the canonical object bytes, so the measurement automatically protects future
+/// field additions without manual whitelist maintenance.
 ///
-/// `servtdCollateral.servtdTcbMapping` is the only field redacted because the
-/// release pipeline must be able to re-issue (re-sign) the TCB mapping with
-/// updated `svnMappings[]` entries without rebuilding the IGVM image. Any
-/// other field — `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
-/// `backwardPolicy`, `collaterals`, `servtdCollateral.majorVersion`,
-/// `servtdCollateral.minorVersion`, `servtdCollateral.servtdIdentity` (with
-/// its signature), `servtdCollateral.servtdIdentityIssuerChain`, and
-/// `servtdCollateral.servtdTcbMappingIssuerChain` — is bound into RTMR2.
+/// Two fields are redacted:
+/// * `servtdCollateral.servtdTcbMapping` (**strict** — its absence is an error)
+///   because the release pipeline must re-issue (re-sign) the TCB mapping with
+///   updated `svnMappings[]` entries without rebuilding the IGVM image, and it
+///   carries the circular `tdinfo_hash`.
+/// * `servtdCollateral.servtdTcbMappingIssuerChain` (**non-strict** — removed
+///   if present) because it is already measured into RTMR1 (the signer anchor);
+///   measuring it again here would be redundant and would re-couple
+///   TCB-mapping-signer rotation to `tdinfo_hash`.
+/// * `servtdCollateral.servtdIdentity` and
+///   `servtdCollateral.servtdIdentityIssuerChain` (**non-strict** — removed if
+///   present) because the optional TD Identity must remain re-issuable without
+///   re-releasing the image, and its issuer chain is bound into RTMR1 instead.
+///
+/// Every other field — `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
+/// `backwardPolicy`, `collaterals`, `servtdCollateral.majorVersion`, and
+/// `servtdCollateral.minorVersion` — is bound into RTMR2.
 ///
 /// ## Strict redaction (schema-drift defense)
 ///
@@ -234,6 +257,28 @@ pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8
     if coll.remove("servtdTcbMapping").is_none() {
         return Err(PolicyError::InvalidPolicy);
     }
+
+    // Also redact `servtdTcbMappingIssuerChain`: it is already measured into
+    // RTMR1 (the signer anchor), so measuring it again here would be redundant
+    // AND would re-couple leaf/intermediate-CA rotation of the TCB-mapping
+    // signer to `tdinfo_hash`, defeating the rotation-stability the anchor
+    // exists to provide.
+    //
+    // Non-strict (remove if present): unlike `servtdTcbMapping` — whose
+    // presence is enforced because it carries the circular `tdinfo_hash` — a
+    // policy without an issuer chain simply has nothing to double-measure. The
+    // security binding does not rest on this redaction: `RawPolicyData::verify`
+    // separately requires the chain that verifies `servtdTcbMapping` to hash to
+    // the RTMR1 signer anchor, so a swapped/absent chain fails closed there.
+    coll.remove("servtdTcbMappingIssuerChain");
+
+    // Redact the optional TD Identity and its issuer chain (non-strict). Like
+    // the TCB mapping, the optional TD Identity must stay re-issuable by the
+    // signer without re-releasing the image; its issuer chain is bound into
+    // RTMR1 (the signer anchor) instead, and `RawPolicyData::verify` binds it
+    // there fail-closed when present.
+    coll.remove("servtdIdentity");
+    coll.remove("servtdIdentityIssuerChain");
 
     canonical_value_bytes(&policy_data)
 }
@@ -387,32 +432,53 @@ mod tests {
     }
 
     #[test]
-    fn extract_redacts_only_servtd_tcb_mapping() {
-        // Two policies that differ in servtdCollateral.servtdIdentity MUST
-        // produce different canonical bytes — servtdIdentity (with its
-        // signature) is measured, defeating obsolete-identity playback.
+    fn extract_redacts_servtd_identity() {
+        // Two policies that differ in servtdCollateral.servtdIdentity MUST now
+        // produce IDENTICAL canonical bytes — the optional TD Identity is
+        // redacted from RTMR2 (like the TCB mapping) and bound to RTMR1
+        // instead, so it stays re-issuable without an image rebuild.
         let a = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"aa"},"servtdTcbMapping":{}}}"#;
-        let b = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i1"},"signature":"bb"},"servtdTcbMapping":{}}}"#;
+        let b = r#"{"servtdCollateral":{"servtdIdentity":{"tdIdentity":{"id":"i2"},"signature":"bb"},"servtdTcbMapping":{}}}"#;
         let out_a = extract_canonical_policy_data_bytes(a.as_bytes()).unwrap();
         let out_b = extract_canonical_policy_data_bytes(b.as_bytes()).unwrap();
-        assert_ne!(out_a, out_b);
+        assert_eq!(out_a, out_b);
+        assert!(!out_a
+            .windows(b"servtdIdentity".len())
+            .any(|w| w == b"servtdIdentity"));
     }
 
     #[test]
-    fn extract_protects_issuer_chains() {
-        // Substituting servtdCollateral.servtdIdentityIssuerChain or
-        // servtdCollateral.servtdTcbMappingIssuerChain MUST flip the extend
-        // bytes — these chains gate the runtime signature verification of the
-        // identity and tcb mapping artifacts respectively.
-        let a = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-A","servtdTcbMapping":{}}}"#;
-        let b = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-B","servtdTcbMappingIssuerChain":"chain-A","servtdTcbMapping":{}}}"#;
-        let c = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-B","servtdTcbMapping":{}}}"#;
+    fn extract_redacts_both_identity_and_mapping_chains() {
+        // Both servtdIdentityIssuerChain and servtdTcbMappingIssuerChain are
+        // measured into RTMR1 (the signer anchor) and redacted from RTMR2, so
+        // substituting either MUST NOT flip the extend — their integrity is
+        // enforced by the RTMR1 anchor binding in `RawPolicyData::verify`, not
+        // by this measurement.
+        let base = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-A","servtdTcbMapping":{}}}"#;
+        let diff_identity = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-B","servtdTcbMappingIssuerChain":"chain-A","servtdTcbMapping":{}}}"#;
+        let diff_mapping = r#"{"servtdCollateral":{"servtdIdentityIssuerChain":"chain-A","servtdTcbMappingIssuerChain":"chain-B","servtdTcbMapping":{}}}"#;
+        let out_base = extract_canonical_policy_data_bytes(base.as_bytes()).unwrap();
+        let out_diff_identity =
+            extract_canonical_policy_data_bytes(diff_identity.as_bytes()).unwrap();
+        let out_diff_mapping =
+            extract_canonical_policy_data_bytes(diff_mapping.as_bytes()).unwrap();
+        // Both issuer chains are redacted (anchored by RTMR1) -> stable.
+        assert_eq!(out_base, out_diff_identity);
+        assert_eq!(out_base, out_diff_mapping);
+    }
+
+    #[test]
+    fn extract_redacts_servtd_tcb_mapping_issuer_chain() {
+        // Two policies that differ ONLY in
+        // servtdCollateral.servtdTcbMappingIssuerChain must produce identical
+        // canonical bytes (the chain is anchored by RTMR1, not RTMR2). This is
+        // what makes TCB-mapping-signer key/intermediate rotation
+        // tdinfo_hash-stable.
+        let a = r#"{"servtdCollateral":{"servtdTcbMappingIssuerChain":"old-leaf-chain","servtdTcbMapping":{}}}"#;
+        let b = r#"{"servtdCollateral":{"servtdTcbMappingIssuerChain":"rotated-leaf-chain","servtdTcbMapping":{}}}"#;
         let out_a = extract_canonical_policy_data_bytes(a.as_bytes()).unwrap();
         let out_b = extract_canonical_policy_data_bytes(b.as_bytes()).unwrap();
-        let out_c = extract_canonical_policy_data_bytes(c.as_bytes()).unwrap();
-        assert_ne!(out_a, out_b);
-        assert_ne!(out_a, out_c);
-        assert_ne!(out_b, out_c);
+        assert_eq!(out_a, out_b);
     }
 
     #[test]
@@ -542,7 +608,7 @@ mod tests {
         // whitespace, redaction scope) will fail this assertion.
         let out =
             extract_canonical_policy_data_bytes(sample_bare_policy_data().as_bytes()).unwrap();
-        let expected = br#"{"collaterals":{"majorVersion":1,"minorVersion":0,"teeType":129},"id":"X-uuid","policy":[{"global":{"tcb":{"tcbDate":{"operation":"ge","reference":"2023"}}}},{"servtd":{"x":1}}],"policySvn":7,"servtdCollateral":{"majorVersion":1,"minorVersion":0,"servtdIdentity":{"signature":"deadbeef","tdIdentity":{"id":"identity-1","tcbLevels":[],"version":1}},"servtdIdentityIssuerChain":"chain","servtdTcbMappingIssuerChain":"mapping-chain"},"version":"2.0"}"#;
+        let expected = br#"{"collaterals":{"majorVersion":1,"minorVersion":0,"teeType":129},"id":"X-uuid","policy":[{"global":{"tcb":{"tcbDate":{"operation":"ge","reference":"2023"}}}},{"servtd":{"x":1}}],"policySvn":7,"servtdCollateral":{"majorVersion":1,"minorVersion":0},"version":"2.0"}"#;
         assert_eq!(&out, expected);
     }
 
@@ -644,6 +710,14 @@ mod tests {
         assert!(
             !out.windows(inner_needle.len()).any(|w| w == inner_needle),
             "canonical output contained inner mapping key: {}",
+            core::str::from_utf8(&out).unwrap_or("<non-utf8>")
+        );
+        // The TCB-mapping issuer chain is redacted too (measured into RTMR1),
+        // so its field name MUST NOT survive in the RTMR2 extend bytes.
+        let chain_needle = b"\"servtdTcbMappingIssuerChain\"";
+        assert!(
+            !out.windows(chain_needle.len()).any(|w| w == chain_needle),
+            "canonical output contained redacted issuer-chain field name: {}",
             core::str::from_utf8(&out).unwrap_or("<non-utf8>")
         );
     }
