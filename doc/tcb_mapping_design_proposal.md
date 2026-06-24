@@ -402,3 +402,15 @@ Today RTMR1 measures the full issuer cert chain, so any leaf re-issuance (e.g. r
 # Schema note — flat `tdinfo_hash` vs measurement registers (MRs)
 
 Throughout this document `svnMappings[]` entries are written in the flattened form `{tdinfo_hash, isvsvn}` for readability. In the actual CoRIM/`policyData` schema the measurement is nested under `tdMeasurements` (e.g. `svnMappings[].tdMeasurements.tdinfo_hash`, see `src/policy/src/v2/servtd_collateral.rs`), and `tdMeasurements` is the place that can also carry the individual measurement registers / MRs (`MRTD`, `RTMR0`–`RTMR3`). This proposal keys the mapping on the single composite `tdinfo_hash` (= `SHA384(TDINFO)`, which already folds in all MRs) rather than the per-register subset used today; the implementation should populate `tdMeasurements.tdinfo_hash` accordingly.
+
+# MRTD / RTMR measurements -current implementation
+
+| Register | Measured content (Policy v2)                                              | Measured by        | Stage     |
+| -------- | ------------------------------------------------------------------------ | ------------------ | --------- |
+| `MRTD`   | Initial TD image: **td-shim BFV** + **MigTD core Payload** page contents, plus the GPAs of all added private pages. (CFV content **excluded**.) | TDX module (static) | TD build  |
+| `RTMR0`  | One `EV_SEPARATOR` event (`u32` `0x0000_0000`). Nothing else.             | td-shim firmware   | Boot      |
+| `RTMR1`  | `EV_SEPARATOR`, **then the policy issuer chain** (`policy_issuer_chain.pem`). | td-shim, then MigTD | Boot      |
+| `RTMR2`  | **The migration policy** (`policy_v2_signed.json`). No root CA in v2.     | MigTD core         | Boot      |
+| `RTMR3`  | *Nothing* — stays all-zero.                                              | —                  | —         |
+
+See [policy_v2_measurements.md](./policy_v2_measurements.md) for details.
