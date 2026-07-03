@@ -12,8 +12,8 @@ use serde_json::{self, value::RawValue};
 
 use crate::{
     v2::{
-        bytes_to_hex_string, measurement::extract_canonical_policy_data_bytes, policy,
-        verify_event_hash,
+        bytes_to_hex_string, compute_signer_anchor_from_chain_pem,
+        measurement::extract_canonical_policy_data_bytes, policy, verify_event_hash,
     },
     CcEvent, Collaterals, EventName, PolicyError, Report, ServtdCollateral, TdIdentity, TdTcbMapping,
 };
@@ -327,6 +327,28 @@ impl<'a> RawPolicyData<'a> {
         let servtd_tcb_mapping = servtd_collateral
             .servtd_tcb_mapping
             .verify_signature(servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes())?;
+
+        // Bind the TCB-mapping signer chain to the RTMR1 signer anchor.
+        //
+        // `servtdTcbMappingIssuerChain` is redacted from the RTMR2 measurement
+        // (it is measured into RTMR1 instead), so `check_policy_integrity` does
+        // NOT cover it. To keep the redacted chain measured, require the chain
+        // that just verified `servtdTcbMapping` to hash to the same signer
+        // anchor (root CA DER + leaf-subject DER) that RTMR1 commits to —
+        // recomputed here from the CFV-loaded `issuer_chain`. A swapped chain
+        // (different root/subject, e.g. a forged self-signed chain or one
+        // rooted at an unrelated stolen CA) fails closed. This mirrors the
+        // CoRIM path's `anchor != expected_signer_anchor` check
+        // (`servtd_corim::verify_and_extract_payload`). Leaf/intermediate
+        // rotation under the same root + subject keeps the anchor stable, so it
+        // still passes.
+        let cfv_anchor = compute_signer_anchor_from_chain_pem(issuer_chain)?;
+        let mapping_anchor = compute_signer_anchor_from_chain_pem(
+            servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes(),
+        )?;
+        if cfv_anchor != mapping_anchor {
+            return Err(PolicyError::SignerAnchorMismatch);
+        }
 
         let servtd_identity_issuer_chain = servtd_collateral.servtd_identity_issuer_chain.clone();
         let servtd_tcb_mapping_issuer_chain =
@@ -985,6 +1007,26 @@ mod test {
                 "../../test/policy_v2/cert_chain/policy_issuer_chain.pem"
             ))
             .unwrap();
+    }
+
+    /// RTMR1 signer-anchor binding (security-critical): because
+    /// `servtdTcbMappingIssuerChain` is redacted from the RTMR2 measurement, it
+    /// is kept measured only by requiring it to hash to the RTMR1 signer anchor
+    /// derived from the CFV issuer chain. Verifying against an unrelated CFV
+    /// chain (different root + leaf subject) must fail closed with
+    /// `SignerAnchorMismatch` — even though the embedded chains still validate
+    /// the inner signatures.
+    #[test]
+    fn test_verify_policy_rejects_mapping_chain_anchor_mismatch() {
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        let unrelated_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/unrelated_issuer_chain.pem");
+        match policy.verify(unrelated_chain) {
+            Err(PolicyError::SignerAnchorMismatch) => {}
+            Err(other) => panic!("expected SignerAnchorMismatch, got {:?}", other),
+            Ok(_) => panic!("expected SignerAnchorMismatch, but verify() succeeded"),
+        }
     }
 
     /// Once a CoRIM is attached, `servtd_lookup_by_tdinfo_hash` is

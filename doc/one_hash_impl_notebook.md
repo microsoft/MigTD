@@ -105,3 +105,25 @@ mock-report e2e pattern in `integration-emu.yml`.
   still emits `{policyData, signature}`. The runtime now *ignores* the outer
   signature, so this is backward-compatible; the generator will stop emitting it
   when the CRL tooling lands.
+
+### P2 — `servtdTcbMappingIssuerChain` redacted from RTMR2 + RTMR1 anchor binding
+- `extract_canonical_policy_data_bytes` now also removes
+  `servtdTcbMappingIssuerChain` (non-strict). Module/function docs updated.
+- **Security binding (D3):** `RawPolicyData::verify()` now requires
+  `compute_signer_anchor(servtdTcbMappingIssuerChain) ==
+  compute_signer_anchor(cfv issuer_chain)`; mismatch → new
+  `PolicyError::SignerAnchorMismatch`. This keeps the redacted chain measured
+  (via RTMR1). Mirrors the CoRIM path.
+- Tests: `extract_measures_identity_chain_but_redacts_mapping_chain`,
+  `extract_redacts_servtd_tcb_mapping_issuer_chain`, updated
+  `extract_sample_policy_canonical_bytes` + field-name-absence check, and
+  `test_verify_policy_rejects_mapping_chain_anchor_mismatch` (new fixture
+  `cert_chain/unrelated_issuer_chain.pem`). policy v2: 44 passed; migtd clean.
+- **IMPORTANT for P5/P6 (e2e):** the anchor binding requires the CFV
+  `policy_issuer_chain` slot (RTMR1) and the embedded `servtdTcbMappingIssuerChain`
+  to share the same root + leaf subject. Today `build_AzCVMEmu_policy_and_test.sh`
+  gives `policy_signing` (CFV) and `mapping_signing` (embedded) **different**
+  CNs, which WOULD fail the binding. P5 must make the CFV
+  `policy_issuer_chain*.pem` the **TCB-mapping** signer chain (per the design:
+  "RTMR1 = TCBMapping issuer cert chain"). Unit-test fixtures already share one
+  signer (CN=MigTD Info Issuer), so they pass.
