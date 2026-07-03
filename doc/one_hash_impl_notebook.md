@@ -88,3 +88,20 @@ asserts migration fails closed with a revocation error, following the existing
 mock-report e2e pattern in `integration-emu.yml`.
 
 (Decisions appended as work proceeds.)
+
+## Progress log
+
+### P1 — Outer policy signature removed (commit pending)
+- `RawPolicyData.signature` → `Option<String>` (`#[serde(default,
+  skip_serializing_if)]`); deserializes with or without the field.
+- `RawPolicyData::verify()` no longer calls `verify_cert_chain_and_signature` on
+  the outer blob; it parses `policyData` directly. `verify_policy_data_signature`
+  deleted; `hex_string_to_bytes` import dropped.
+- Tests added: `test_verify_policy_without_outer_signature`,
+  `test_outer_signature_is_ignored` (both preserve exact `policyData` bytes so the
+  inner servtd signatures stay valid). `cargo test -p policy --features policy_v2`:
+  42 passed. `cargo build -p migtd --features policy_v2`: clean.
+- **Deferred to P5 (tooling):** the generator (`build_AzCVMEmu_policy_and_test.sh`)
+  still emits `{policyData, signature}`. The runtime now *ignores* the outer
+  signature, so this is backward-compatible; the generator will stop emitting it
+  when the CRL tooling lands.

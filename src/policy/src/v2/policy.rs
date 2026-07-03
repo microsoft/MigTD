@@ -12,8 +12,8 @@ use serde_json::{self, value::RawValue};
 
 use crate::{
     v2::{
-        bytes_to_hex_string, hex_string_to_bytes, measurement::extract_canonical_policy_data_bytes,
-        policy, verify_event_hash,
+        bytes_to_hex_string, measurement::extract_canonical_policy_data_bytes, policy,
+        verify_event_hash,
     },
     CcEvent, Collaterals, EventName, PolicyError, Report, ServtdCollateral, TdIdentity, TdTcbMapping,
 };
@@ -278,7 +278,16 @@ pub fn check_policy_integrity(
 pub struct RawPolicyData<'a> {
     #[serde(borrow)]
     pub policy_data: &'a RawValue,
-    pub signature: String,
+    /// Legacy outer policy-blob signature.
+    ///
+    /// The outer signature has been **removed** from the trust model (per
+    /// `doc/tcb_mapping_design_proposal.md`): `policyData` integrity is now
+    /// established solely by the RTMR2 measurement (`check_policy_integrity`),
+    /// not by an outer signature. This field is retained as an optional,
+    /// **ignored** value only so that pre-existing signed policy blobs still
+    /// deserialize. New policies omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl<'a> RawPolicyData<'a> {
@@ -292,16 +301,25 @@ impl<'a> RawPolicyData<'a> {
         Ok(policy_data.collaterals)
     }
 
-    /// Verify the policy signature and servtd collateral using the given issuer chain.
+    /// Verify the servtd collateral using the given (RTMR1-anchored) issuer
+    /// chain.
+    ///
+    /// The outer policy-blob signature has been **removed** from the trust
+    /// model: `policyData` integrity is established by the RTMR2 measurement
+    /// (`check_policy_integrity`), so this function no longer verifies an outer
+    /// signature. It parses `policyData` directly and verifies the inner servtd
+    /// collateral signatures against their embedded issuer chains.
     pub fn verify(&self, issuer_chain: &[u8]) -> Result<VerifiedPolicy<'a>, PolicyError> {
         let policy_issuer_chain = core::str::from_utf8(issuer_chain)
             .map_err(|_| PolicyError::InvalidPolicy)?
             .to_string();
 
-        // Step 1: Verify signature over raw policy data
-        let policy_data = self.verify_policy_data_signature(issuer_chain)?;
+        // The outer policy-blob signature is no longer part of the trust model
+        // (integrity comes from RTMR2). Parse policyData directly.
+        let policy_data: PolicyData<'a> = serde_json::from_str(self.policy_data.get())
+            .map_err(|_| PolicyError::InvalidPolicy)?;
 
-        // Step 2: Verify servtd collateral signatures using their own embedded chains
+        // Verify servtd collateral signatures using their own embedded chains
         let servtd_collateral = &policy_data.servtd_collateral;
         let servtd_identity = servtd_collateral
             .servtd_identity
@@ -314,7 +332,7 @@ impl<'a> RawPolicyData<'a> {
         let servtd_tcb_mapping_issuer_chain =
             servtd_collateral.servtd_tcb_mapping_issuer_chain.clone();
 
-        // Step 3: Sanity checks
+        // Sanity checks
         if !policy_data.validate() {
             return Err(PolicyError::InvalidParameter);
         }
@@ -329,23 +347,6 @@ impl<'a> RawPolicyData<'a> {
             #[cfg(feature = "servtd_corim")]
             servtd_corim: None,
         })
-    }
-
-    fn verify_policy_data_signature(
-        &self,
-        issuer_chain: &[u8],
-    ) -> Result<PolicyData<'a>, PolicyError> {
-        let signature = hex_string_to_bytes(&self.signature)?;
-
-        crypto::verify_cert_chain_and_signature(
-            issuer_chain,
-            self.policy_data.get().as_bytes(),
-            &signature,
-        )
-        .map_err(|_| PolicyError::SignatureVerificationFailed)?;
-
-        serde_json::from_str::<PolicyData>(self.policy_data.get())
-            .map_err(|_| PolicyError::InvalidPolicy)
     }
 }
 
@@ -922,7 +923,7 @@ impl PolicyProperty {
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloc::{string::ToString, vec};
+    use alloc::{format, string::ToString, vec};
 
     #[test]
     fn test_parse_policy_data() {
@@ -937,6 +938,53 @@ mod test {
         let issuer_chain =
             include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
         policy.verify(issuer_chain).unwrap();
+    }
+
+    /// The outer policy-blob signature has been removed from the trust model.
+    /// A policy with **no** outer `signature` field must still deserialize and
+    /// verify — integrity is established by the RTMR2 measurement, checked
+    /// separately in `check_policy_integrity`. The `policyData` bytes (and thus
+    /// the inner servtd signatures) are preserved verbatim.
+    #[test]
+    fn test_verify_policy_without_outer_signature() {
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let signed = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        assert!(
+            signed.signature.is_some(),
+            "fixture is expected to carry a legacy outer signature"
+        );
+
+        // Re-wrap the exact same policyData bytes with NO outer signature.
+        let no_sig = format!("{{\"policyData\":{}}}", signed.policy_data.get());
+        let unsigned = RawPolicyData::deserialize_from_json(no_sig.as_bytes()).unwrap();
+        assert!(unsigned.signature.is_none());
+
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+        unsigned.verify(issuer_chain).unwrap();
+    }
+
+    /// A bogus outer signature must be **ignored** (never verified), because
+    /// the outer signature is no longer part of the trust model. If it were
+    /// still verified this garbage value would fail closed.
+    #[test]
+    fn test_outer_signature_is_ignored() {
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let signed = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+
+        let tampered = format!(
+            "{{\"policyData\":{},\"signature\":\"deadbeef\"}}",
+            signed.policy_data.get()
+        );
+        let policy = RawPolicyData::deserialize_from_json(tampered.as_bytes()).unwrap();
+        assert_eq!(policy.signature.as_deref(), Some("deadbeef"));
+
+        // Verification succeeds despite the bogus outer signature.
+        policy
+            .verify(include_bytes!(
+                "../../test/policy_v2/cert_chain/policy_issuer_chain.pem"
+            ))
+            .unwrap();
     }
 
     /// Once a CoRIM is attached, `servtd_lookup_by_tdinfo_hash` is
