@@ -210,6 +210,9 @@ OUTPUT_POLICY_B="$OUTPUT_DIR/policy_v2_signed_b.json"
 OUTPUT_POLICY_PM_B="$OUTPUT_DIR/policy_v2_signed_pm_b.json"
 # Variant B with policy + tcb_mapping + td_identity leaf certs all rotated
 OUTPUT_POLICY_PMI_B="$OUTPUT_DIR/policy_v2_signed_pmi_b.json"
+# Variant "a" whose collaterals carry a signer CRL that REVOKES the tcb-mapping
+# signer leaf — used by the revocation e2e test (verify() must fail closed).
+OUTPUT_POLICY_REVOKED="$OUTPUT_DIR/policy_v2_signed_revoked.json"
 OUTPUT_CERT_CHAIN="$OUTPUT_DIR/policy_issuer_chain.pem"
 OUTPUT_CERT_CHAIN_A="$OUTPUT_DIR/policy_issuer_chain_a.pem"
 OUTPUT_CERT_CHAIN_B="$OUTPUT_DIR/policy_issuer_chain_b.pem"
@@ -348,6 +351,43 @@ generate_certificates() {
     # Keep backward-compatible aliases (default to "a")
     cp "$output_dir/policy_signing_a_pkcs8.key" "$output_dir/policy_signing_pkcs8.key"
     cp "$output_dir/policy_issuer_chain_a.pem" "$output_dir/policy_issuer_chain.pem"
+}
+
+# Generate two servtd signer CRLs, both signed by the shared root CA:
+#   servtd_crl_empty.pem   : revokes nothing (crlNumber 0x1000)
+#   servtd_crl_revoked.pem : revokes the mapping_signing_a leaf (crlNumber 0x1001)
+# The CRL issuer (root CA subject) matches the root cert present in every
+# mapping/identity signer chain, so crypto::verify_signer_chain_not_revoked can
+# authenticate it and check the leaf serials.
+generate_servtd_crls() {
+    local cert_dir="$1"
+    local hash_algo="sha384"
+    local cadir="$cert_dir/crl_ca"
+
+    mkdir -p "$cadir"
+    : > "$cadir/index.txt"
+    echo 1000 > "$cadir/crlnumber"
+    cat > "$cadir/ca.cnf" <<EOF
+[ca]
+default_ca = CA_default
+[CA_default]
+database = $cadir/index.txt
+crlnumber = $cadir/crlnumber
+default_md = $hash_algo
+default_crl_days = 3650
+EOF
+
+    # Empty CRL (crlNumber 0x1000).
+    openssl ca -config "$cadir/ca.cnf" -gencrl \
+        -keyfile "$cert_dir/root_ca.key" -cert "$cert_dir/root_ca.pem" \
+        -out "$cert_dir/servtd_crl_empty.pem" 2>/dev/null
+
+    # Revoke the mapping_signing_a leaf, then regenerate (crlNumber 0x1001).
+    openssl ca -config "$cadir/ca.cnf" -revoke "$cert_dir/mapping_signing_a.pem" \
+        -keyfile "$cert_dir/root_ca.key" -cert "$cert_dir/root_ca.pem" 2>/dev/null
+    openssl ca -config "$cadir/ca.cnf" -gencrl \
+        -keyfile "$cert_dir/root_ca.key" -cert "$cert_dir/root_ca.pem" \
+        -out "$cert_dir/servtd_crl_revoked.pem" 2>/dev/null
 }
 
 # Parse command line arguments
@@ -725,6 +765,15 @@ echo -e "${GREEN}✓ Certificates generated in: $CERT_DIR${NC}"
 echo
 
 #
+# Step 5b: Generate servtd signer CRLs (embedded per-variant into servtdCollateral)
+#
+echo -e "${BLUE}=== Step 5b: Generating Signer CRLs ===${NC}"
+generate_servtd_crls "$CERT_DIR"
+
+echo -e "${GREEN}✓ Signer CRLs generated (empty + mapping-leaf-revoked)${NC}"
+echo
+
+#
 # Steps 6-10: Sign all policy variants
 #
 # Each variant is built by:
@@ -749,6 +798,7 @@ build_signed_policy_variant() {
     local mapping_suffix="$3"    # a or b
     local policy_suffix="$4"     # a or b
     local output_policy="$5"
+    local servtd_crl_file="${6:-}"  # optional PEM CRL to embed in servtdCollateral
 
     local identity_key="$CERT_DIR/identity_signing_${identity_suffix}_pkcs8.key"
     local mapping_key="$CERT_DIR/mapping_signing_${mapping_suffix}_pkcs8.key"
@@ -777,11 +827,16 @@ build_signed_policy_variant() {
         --input "$TCB_MAPPING_UPDATED" \
         --output "$tcb_mapping_signed"
 
+    local servtd_crl_arg=()
+    if [ -n "$servtd_crl_file" ]; then
+        servtd_crl_arg=(--servtd-crl "$servtd_crl_file")
+    fi
     "$TOOLS_DIR/servtd-collateral-generator" \
         --identity "$td_identity_signed" \
         --identity-chain "$identity_chain" \
         --mapping "$tcb_mapping_signed" \
         --mapping-chain "$mapping_chain" \
+        "${servtd_crl_arg[@]}" \
         --output "$servtd_collateral"
 
     "$TOOLS_DIR/migtd-policy-generator" v2 \
@@ -801,10 +856,14 @@ build_signed_policy_variant() {
 }
 
 echo -e "${BLUE}=== Step 6-10: Building Signed Policy Variants ===${NC}"
-build_signed_policy_variant "a"     a a a "$OUTPUT_POLICY_A"
-build_signed_policy_variant "b"     a a b "$OUTPUT_POLICY_B"
-build_signed_policy_variant "pm_b"  a b b "$OUTPUT_POLICY_PM_B"
-build_signed_policy_variant "pmi_b" b b b "$OUTPUT_POLICY_PMI_B"
+build_signed_policy_variant "a"     a a a "$OUTPUT_POLICY_A"     "$CERT_DIR/servtd_crl_empty.pem"
+build_signed_policy_variant "b"     a a b "$OUTPUT_POLICY_B"     "$CERT_DIR/servtd_crl_empty.pem"
+build_signed_policy_variant "pm_b"  a b b "$OUTPUT_POLICY_PM_B"  "$CERT_DIR/servtd_crl_empty.pem"
+build_signed_policy_variant "pmi_b" b b b "$OUTPUT_POLICY_PMI_B" "$CERT_DIR/servtd_crl_empty.pem"
+# Revocation variant: same signers as "a", but its servtdCollateral carries a
+# servtdCrl that revokes the tcb-mapping signer leaf, so RawPolicyData::verify()
+# fails closed (PolicyError::SignerRevoked).
+build_signed_policy_variant "revoked" a a a "$OUTPUT_POLICY_REVOKED" "$CERT_DIR/servtd_crl_revoked.pem"
 
 # Also keep a default signed policy (variant a) for backward compat
 cp "$OUTPUT_POLICY_A" "$OUTPUT_POLICY"
@@ -816,8 +875,15 @@ echo
 # Step 11: Copying Certificate Chains to output directory
 #
 echo -e "${BLUE}=== Step 11: Copying Certificate Chains ===${NC}"
-cp "$CERT_DIR/policy_issuer_chain_a.pem" "$OUTPUT_CERT_CHAIN_A"
-cp "$CERT_DIR/policy_issuer_chain_b.pem" "$OUTPUT_CERT_CHAIN_B"
+# The CFV MIGTD_POLICY_ISSUER_CHAIN slot now carries the **TCB-mapping** issuer
+# chain (per doc/tcb_mapping_design_proposal.md: "RTMR1 = TCBMapping issuer cert
+# chain"). RTMR1 measures its signer anchor and RawPolicyData::verify() binds
+# the embedded servtdTcbMappingIssuerChain to that same anchor, so the CFV chain
+# and the embedded mapping chain MUST share root + leaf subject. The old
+# policy_signing family only signed the (now-removed) outer policy signature and
+# is no longer the RTMR1 anchor.
+cp "$CERT_DIR/mapping_issuer_chain_a.pem" "$OUTPUT_CERT_CHAIN_A"
+cp "$CERT_DIR/mapping_issuer_chain_b.pem" "$OUTPUT_CERT_CHAIN_B"
 cp "$OUTPUT_CERT_CHAIN_A" "$OUTPUT_CERT_CHAIN"
 
 echo -e "${GREEN}✓ Certificate chain A: $OUTPUT_CERT_CHAIN_A${NC}"

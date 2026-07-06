@@ -511,6 +511,25 @@ mod v2 {
         .log_err("Peer tcb mapping cert chain validation")
         .map_err(|_| PolicyError::PeerCertChainValidation)?;
 
+        // 3b. Cross-check the peer's signer chains against OUR locally-trusted
+        //     CRL: a peer could ship a laundered (revocation-free) CRL of its
+        //     own, so the authoritative revocation list is the local one.
+        //     Fail-closed.
+        if let Some(servtd_crl) = local_policy.servtd_crl.as_deref() {
+            crypto::verify_signer_chain_not_revoked(
+                verified_policy.servtd_tcb_mapping_issuer_chain.as_bytes(),
+                servtd_crl.as_bytes(),
+            )
+            .log_err("Peer tcb mapping signer revocation check")
+            .map_err(|_| PolicyError::SignerRevoked)?;
+            crypto::verify_signer_chain_not_revoked(
+                verified_policy.servtd_identity_issuer_chain.as_bytes(),
+                servtd_crl.as_bytes(),
+            )
+            .log_err("Peer identity signer revocation check")
+            .map_err(|_| PolicyError::SignerRevoked)?;
+        }
+
         // 4. Check the integrity of the policy with its event log
         let events = parse_events(event_log).ok_or(PolicyError::InvalidEventLog)?;
         check_policy_integrity(mig_policy, &events)?;
@@ -651,6 +670,21 @@ mod v2 {
         Ok(rtmrs)
     }
 
+    /// Compute the servtd signer CRL number from the verified policy, if a
+    /// signer CRL is present (`servtdCollateral.servtdCrl`). `None` when it is
+    /// absent (backward compatibility); `Some(n)` feeds the `servtd_crl_num`
+    /// anti-rollback floor.
+    fn servtd_crl_num_from_policy(
+        policy: &VerifiedPolicy,
+    ) -> Result<Option<u32>, PolicyError> {
+        policy
+            .servtd_crl
+            .as_deref()
+            .map(|crl| get_crl_number(crl.as_bytes()))
+            .transpose()
+            .map_err(|_| PolicyError::InvalidCollateral)
+    }
+
     fn setup_evaluation_data(
         fmspc: [u8; 6],
         suppl_data: &[u8],
@@ -679,6 +713,7 @@ mod v2 {
             migtd_tcb_status: migtd.as_ref().map(|m| m.tcb_status.clone()),
             pck_crl_num: Some(pck_crl_num),
             root_ca_crl_num: Some(root_ca_crl_num),
+            servtd_crl_num: servtd_crl_num_from_policy(policy)?,
         })
     }
 
@@ -715,6 +750,7 @@ mod v2 {
             migtd_tcb_status: migtd.as_ref().map(|m| m.tcb_status.clone()),
             pck_crl_num: None,
             root_ca_crl_num: None,
+            servtd_crl_num: servtd_crl_num_from_policy(policy)?,
         })
     }
 

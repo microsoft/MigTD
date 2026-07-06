@@ -30,6 +30,12 @@ pub struct ServtdCollateral<'a> {
     pub servtd_identity: RawServtdIdentity<'a>,
     pub servtd_tcb_mapping_issuer_chain: String,
     pub servtd_tcb_mapping: RawServtdTcbMapping<'a>,
+    /// Optional PEM CRL for the servTD signer chain (TCB-mapping / identity
+    /// issuers). When present it is enforced fail-closed in
+    /// `RawPolicyData::verify`, and its CRL number feeds the `servtd_crl_num`
+    /// anti-rollback floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servtd_crl: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

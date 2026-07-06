@@ -29,6 +29,9 @@ struct Cli {
     /// PEM issuer chain for mapping
     #[arg(long, value_name = "FILE")]
     mapping_chain: PathBuf,
+    /// Optional PEM CRL for the servTD signer chain (embedded as `servtdCrl`)
+    #[arg(long, value_name = "FILE")]
+    servtd_crl: Option<PathBuf>,
     /// Where to write the generated file
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
@@ -42,6 +45,7 @@ fn main() {
         &cli.identity_chain,
         &cli.mapping,
         &cli.mapping_chain,
+        cli.servtd_crl.as_deref(),
     )
     .unwrap_or_else(|e| {
         eprintln!("Failed to build ServTD collateral: {}", e);

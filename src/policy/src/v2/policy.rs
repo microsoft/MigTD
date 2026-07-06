@@ -184,6 +184,11 @@ pub struct PolicyEvaluationInfo {
 
     /// The minimal crl_num of root_ca_crl
     pub root_ca_crl_num: Option<u32>,
+
+    /// The CRL number of the servtd signer CRL (`collaterals.servtdCrl`), used
+    /// for monotonic anti-rollback of the signer revocation list. See
+    /// `doc/rtmr1_signer_anchor_proposal.md` §revocation.
+    pub servtd_crl_num: Option<u32>,
 }
 
 pub struct VerifiedPolicy<'a> {
@@ -192,6 +197,10 @@ pub struct VerifiedPolicy<'a> {
     pub servtd_identity_issuer_chain: String,
     pub servtd_tcb_mapping: TdTcbMapping,
     pub servtd_tcb_mapping_issuer_chain: String,
+    /// Optional PEM CRL for the servTD signer chain, from
+    /// `servtdCollateral.servtdCrl`. Retained so the runtime can cross-check a
+    /// peer's signer chain against the local trusted CRL.
+    pub servtd_crl: Option<String>,
     /// The policy signing certificate chain (PEM) used to verify this policy.
     pub policy_issuer_chain: String,
     /// Optional CoRIM-encoded servtd collateral. When attached it is the sole
@@ -350,9 +359,27 @@ impl<'a> RawPolicyData<'a> {
             return Err(PolicyError::SignerAnchorMismatch);
         }
 
+        // Signer-key revocation (fail-closed): the RTMR1 anchor measures the
+        // signer identity but cannot tell a still-valid cert from a revoked one
+        // under the same root + subject. Freshness is enforced separately by
+        // `CrlPolicy` (`servtd_crl_num`). See doc/servtd_signer_revocation_proposal.md.
+        if let Some(servtd_crl) = servtd_collateral.servtd_crl.as_deref() {
+            crypto::verify_signer_chain_not_revoked(
+                servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes(),
+                servtd_crl.as_bytes(),
+            )
+            .map_err(|_| PolicyError::SignerRevoked)?;
+            crypto::verify_signer_chain_not_revoked(
+                servtd_collateral.servtd_identity_issuer_chain.as_bytes(),
+                servtd_crl.as_bytes(),
+            )
+            .map_err(|_| PolicyError::SignerRevoked)?;
+        }
+
         let servtd_identity_issuer_chain = servtd_collateral.servtd_identity_issuer_chain.clone();
         let servtd_tcb_mapping_issuer_chain =
             servtd_collateral.servtd_tcb_mapping_issuer_chain.clone();
+        let servtd_crl = servtd_collateral.servtd_crl.clone();
 
         // Sanity checks
         if !policy_data.validate() {
@@ -365,6 +392,7 @@ impl<'a> RawPolicyData<'a> {
             servtd_identity_issuer_chain,
             servtd_tcb_mapping,
             servtd_tcb_mapping_issuer_chain,
+            servtd_crl,
             policy_issuer_chain,
             #[cfg(feature = "servtd_corim")]
             servtd_corim: None,
@@ -595,6 +623,7 @@ impl PlatformPolicy {
 struct CrlPolicy {
     pck_crl_num: Option<PolicyProperty>,
     root_ca_crl_num: Option<PolicyProperty>,
+    servtd_crl_num: Option<PolicyProperty>,
 }
 
 impl CrlPolicy {
@@ -613,6 +642,13 @@ impl CrlPolicy {
         if let Some(property) = &self.root_ca_crl_num {
             let root_ca_crl_num = value.root_ca_crl_num.ok_or(PolicyError::CrlEvaluation)?;
             if !property.evaluate_integer(root_ca_crl_num, relative_reference.root_ca_crl_num)? {
+                return Err(PolicyError::CrlEvaluation);
+            }
+        }
+
+        if let Some(property) = &self.servtd_crl_num {
+            let servtd_crl_num = value.servtd_crl_num.ok_or(PolicyError::CrlEvaluation)?;
+            if !property.evaluate_integer(servtd_crl_num, relative_reference.servtd_crl_num)? {
                 return Err(PolicyError::CrlEvaluation);
             }
         }
@@ -1029,6 +1065,59 @@ mod test {
         }
     }
 
+    /// End-to-end `verify()` revocation enforcement: a policy whose
+    /// `servtdCollateral.servtdCrl` revokes the signer leaf must fail closed
+    /// with `SignerRevoked`, while the same policy carrying a revocation-free
+    /// CRL verifies. The fixtures under `test/policy_v2/revocation/` are a
+    /// self-contained PKI (one signer for both identity and mapping) with
+    /// matching empty and revoking CRLs.
+    #[test]
+    fn verify_enforces_servtd_signer_revocation() {
+        let chain = include_bytes!("../../test/policy_v2/revocation/signer_chain.pem");
+
+        let ok = include_bytes!("../../test/policy_v2/revocation/policy_ok.json");
+        RawPolicyData::deserialize_from_json(ok)
+            .unwrap()
+            .verify(chain)
+            .expect("policy with an unrevoked signer should verify");
+
+        let revoked = include_bytes!("../../test/policy_v2/revocation/policy_revoked.json");
+        match RawPolicyData::deserialize_from_json(revoked)
+            .unwrap()
+            .verify(chain)
+        {
+            Err(PolicyError::SignerRevoked) => {}
+            Err(other) => panic!("expected SignerRevoked, got {:?}", other),
+            Ok(_) => panic!("expected SignerRevoked, but verify() succeeded"),
+        }
+    }
+
+    /// Anti-rollback floor on the servtd signer CRL number: a policy `crl`
+    /// block with `servtdCrlNum` rejects a delivered CRL whose number is below
+    /// the floor (a rolled-back revocation list), and rejects a missing number
+    /// when a floor is set. Fail-closed. Mirrors the pck/root_ca CRL floors.
+    #[test]
+    fn crl_policy_enforces_servtd_crl_num_floor() {
+        let policy: CrlPolicy = serde_json::from_str(
+            r#"{"servtdCrlNum":{"operation":"greater-or-equal","reference":4097}}"#,
+        )
+        .unwrap();
+        let reference = PolicyEvaluationInfo::default();
+
+        let mut value = PolicyEvaluationInfo::default();
+        // At or above the floor passes.
+        value.servtd_crl_num = Some(4097);
+        assert!(policy.evaluate(&value, &reference).is_ok());
+        value.servtd_crl_num = Some(5000);
+        assert!(policy.evaluate(&value, &reference).is_ok());
+        // Below the floor (rolled-back CRL) fails closed.
+        value.servtd_crl_num = Some(4096);
+        assert!(policy.evaluate(&value, &reference).is_err());
+        // Missing CRL number while a floor is set fails closed.
+        value.servtd_crl_num = None;
+        assert!(policy.evaluate(&value, &reference).is_err());
+    }
+
     /// Once a CoRIM is attached, `servtd_lookup_by_tdinfo_hash` is
     /// fail-closed: the legacy collateral is no longer consulted, so a hash
     /// the legacy table resolves misses (the CoRIM does not know it), while a
@@ -1082,6 +1171,7 @@ mod test {
             migtd_isvsvn: None,
             pck_crl_num: None,
             root_ca_crl_num: None,
+            servtd_crl_num: None,
         };
         let relative_ref = PolicyEvaluationInfo::default();
         assert!(global_policy.evaluate(&value, &relative_ref).is_ok());
