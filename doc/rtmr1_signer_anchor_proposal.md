@@ -430,6 +430,43 @@ RTMR2 and folds into `tdinfo_hash`:
   be redacted from the RTMR2 extend (like `servtdTcbMapping`), leaving `servtd_crl_num` as the
   sole anti-rollback control.
 
+## Alternative / complement — a `notBefore` floor
+
+A lighter control for the same threat is a **policy floor on the signer leaf's `notBefore`**:
+carry a date in `policyData` and require each signer leaf's `notBefore ≥ floor` during
+verification. On a detected leak the authority releases a new policy whose floor is the
+detection date, rejecting the leaked certificate (and every older one) while newly re-issued
+certs pass. Its appeal over a CRL:
+
+- **Simpler** — a single date in the (already-measured) `policyData`, with no signed CRL
+  artifact, no CRL-signature check, and no serial list. Anti-rollback is inherent: lowering
+  the floor needs a new, measured, re-endorsed policy, so no separate `servtd_crl_num`.
+- **Clock-free** — it compares two *static* values (the policy floor and the cert's fixed
+  `notBefore`), so it is unaffected by the no-trusted-clock constraint that blocks
+  `nextUpdate` / expiry checks.
+- **Unforgeable for the leaf-key case** — `notBefore` is inside the CA-signed
+  `tbsCertificate`, so a stolen **leaf key reusing its existing certificate** cannot change
+  it; the floor rejects it cleanly.
+
+Its limitation — and why it does **not** replace the CRL — is precisely the case the anchor
+introduces:
+
+| Attack | `notBefore` floor | CRL |
+|--------|-------------------|-----|
+| Stolen **leaf key**, reused certificate | ✅ the leaked cert's `notBefore` is below the floor | ✅ revoke the leaf serial |
+| Stolen **intermediate CA** | ❌ the attacker mints a *fresh* leaf with `notBefore = now`, passing any floor | ✅ revoke the **intermediate** serial — the whole subtree is rejected |
+
+Because a stolen intermediate can keep minting current-dated leaves, no `notBefore` floor
+stops it; only revoking the intermediate (CRL) or rotating the root does. The floor is also
+**coarser** — it rejects every certificate issued before the floor, forcing re-issuance of
+uncompromised-but-older certs.
+
+**Recommendation.** Treat a `notBefore` floor as a lightweight **complement** for the common
+leaf-key-leak case, and keep the CRL for intermediate compromise (the anchor's headline new
+exposure), where revoking the intermediate is the only in-guest control that closes it. A
+floor is a small addition: expose the parsed leaf `notBefore` (today the `Validity` field is
+private), add a `greater-or-equal` policy rule like `tcbDate`, and wire it into verification.
+
 ## Residual risks & open questions
 
 - **Stolen key with a not-yet-revoked certificate** stays invisible until the authority detects
