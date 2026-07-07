@@ -1,11 +1,13 @@
-RTMR1 Signer-Anchor Measurement
+RTMR1 Signer-Anchor Measurement & servTD Signer Revocation
 ================================================
 
-> The scope of this proposal is limited to **what MigTD measures into RTMR1**. The
-> RTMR2 / TCB-mapping circular-dependency work is covered separately in
-> [tcb_mapping_design_proposal.md](./tcb_mapping_design_proposal.md); this proposal
-> is the companion change called out there under *"RTMR1 signer anchor for key
-> rotation"*.
+> This proposal has two coupled parts: (1) **what MigTD measures into RTMR1** — a
+> stable *signer anchor* rather than the raw issuer-chain bytes — and (2) the
+> **servTD signer-key revocation** control that mitigates the one security relaxation
+> the anchor introduces. The RTMR2 / TCB-mapping circular-dependency work is covered
+> separately in [tcb_mapping_design_proposal.md](./tcb_mapping_design_proposal.md);
+> the anchor is the companion change called out there under *"RTMR1 signer anchor for
+> key rotation"*.
 > For the concrete current measurement values see
 > [policy_v2_measurements.md](./policy_v2_measurements.md).
 
@@ -314,51 +316,142 @@ controls actually apply:
 accept the stolen-intermediate case as the explicit price of the anchor's rotation/region
 agility, offset by strict intermediate-key protection.
 
-## Implementation sketch — revocation support (effort estimate)
+# Revocation — the servTD signer CRL
 
-Spelled out so the revocation mitigation can be scoped. The **attestation-service** side is
-standard PKI — run CRL/OCSP on the CoRIM `x5chain` with an off-the-shelf verifier — and is not
-detailed here. The **in-guest** side is where the work is; it breaks down as follows.
+The revocation mitigation above is fleshed out here. The **attestation-service** side is
+standard PKI — run CRL/OCSP on the CoRIM `x5chain` with an off-the-shelf verifier — and is
+out of scope. The **in-guest** side is the new work: deliver a Certificate Revocation List
+(CRL) for the servTD signer chain alongside the policy and enforce it fail-closed, reusing
+the existing platform-CRL machinery (`src/crypto/src/crl.rs`; the `pck_crl_num` /
+`root_ca_crl_num` floor pattern) wherever possible.
 
-**Already present (reusable):**
+| Concern | Mechanism |
+|---------|-----------|
+| **Delivery** | `servtdCollateral.servtdCrl` — an optional PEM CRL inside the servTD collateral, co-located with the signers it revokes (`servtdIdentity`, `servtdTcbMapping`, and their issuer chains). |
+| **Authentication** | The CRL's signature is verified against the issuing **CA** in the (RTMR1-anchored) signer chain before any of its contents are trusted. |
+| **Enforcement** | Every certificate in the servTD TCB-mapping and identity signer chains is checked against the CRL; a revoked serial fails closed. Applied to the local policy and — against the *local* CRL — to the peer's chains. |
+| **Anti-rollback** | A monotonic `servtd_crl_num` policy floor rejects a CRL older than the policy requires, mirroring `pck_crl_num` / `root_ca_crl_num`. |
 
-- **CRL parsing** — `src/crypto/src/crl.rs` already decodes an X.509 CRL (`Crl` / `TbsCertList`),
-  including the `revokedCertificates` list (`RevokedCertificate.user_certificate` serials),
-  `thisUpdate` / `nextUpdate`, and the CRL Number extension via `get_crl_number()`.
-- **Monotonic-CRL-number pattern** — the platform flow already stores per-CRL floors in the
-  policy (`pck_crl_num`, `root_ca_crl_num`, `src/policy/src/v2/policy.rs:163-167`) and compares
-  them against `get_crl_number()` of the delivered CRLs (`src/migtd/src/mig_policy.rs:581-583`).
-  The signer-CRL anti-rollback check can copy this verbatim.
-- **Signature primitives** — `verify_signature_with_algorithm` (`src/crypto/src/lib.rs`) already
-  does the ECDSA/chain verification the CRL-signature check needs.
+```
+ ┌──────────────────────── policyData.servtdCollateral ─────────────────────────┐
+ │  servtdIdentity{,IssuerChain}  servtdTcbMapping{,IssuerChain}  (the signers)  │
+ │  servtdCrl        ◄── NEW: PEM CRL for the servTD signer chain                │
+ └──────────────────────────────────────────────────────────────────────────────┘
+                                    │
+        policy verification         ▼        (local self-check, fail-closed)
+   check the TCB-mapping + identity signer chains against servtdCrl
+                                    │
+        migration handshake         ▼        (peer cross-check vs LOCAL servtdCrl)
+   check the peer's signer chains against the local servtdCrl
+                                    │
+        policy evaluation           ▼        (monotonic anti-rollback)
+   servtd_crl_num(servtdCrl) ≥ policy floor
+```
 
-**New work required:**
+## CRL delivery — `servtdCollateral.servtdCrl`
 
-1. **Revocation-by-serial check** (crypto, *small*) — `crl.rs` parses `revokedCertificates` but
-   only exposes `get_crl_number`; add `is_revoked(crl, cert) -> bool` matching a cert's serial
-   against the list. Data is already decoded.
-2. **CRL signature verification** (crypto, *small–medium*) — `get_crl_number` only parses; it does
-   not verify the CRL was signed by the issuing CA. Add verification of the CRL `signatureValue`
-   against the issuer public key before trusting its contents.
-3. **Wire revocation into the signer-chain checks** (crypto + migtd, *medium*) — have
-   `verify_cert_chain_and_signature` (`lib.rs:123`) and/or `validate_peer_cert_chain` (`:290`)
-   check each cert in the mapping/identity chain against the CRL and fail closed if revoked. This
-   touches the hot verification path and both the local and peer flows.
-4. **CRL delivery + schema** (policy, *medium*) — add a slot to carry the servtd signer CRL(s)
-   (analogous to `root_ca_crl` / `pck_crl`, `src/policy/src/v2/collaterals.rs:88-89`) plus a policy
-   floor `servtd_crl_num`. The CRL ships alongside the policy (CFV or collateral), and the policy
-   generator/signing tooling must emit it.
-5. **Anti-rollback enforcement** (migtd, *small*) — compare the delivered signer CRL's
-   `get_crl_number()` against the `servtd_crl_num` floor and reject older; copy
-   `mig_policy.rs:581-583`.
+The signer CRL is an optional PEM field on the servTD collateral object, **not** on the
+platform `collaterals` (which carries `pck_crl` / `root_ca_crl` / `qeIdentity` — a different
+PKI). Co-locating it with the servTD signers keeps `servtdCollateral` a self-contained trust
+bundle. Being optional preserves backward compatibility: a policy without it simply skips the
+revocation check. `servtdCollateral` is part of `policyData` and is measured into RTMR2 —
+except the redacted `servtdTcbMapping` / `servtdTcbMappingIssuerChain` fields — so `servtdCrl`
+is measured (see *Interaction with measurement*).
 
-**Constraint — no trusted clock in-guest.** Time is VMM-supplied, so the guest cannot enforce the
-CRL `nextUpdate` window; in-guest freshness relies on the monotonic CRL number (item 5), while
-time-based freshness is enforced only at the service.
+## In-guest checks
 
-**Bottom line.** Items 1, 2, 5 are small; items 3 and 4 are the bulk (verification-path
-integration and schema/delivery/tooling). No new crypto primitives are needed — CRL decoding,
-hashing, and ECDSA verification all already exist.
+`crl.rs` already decodes an X.509 CRL — its `revokedCertificates` serials and the CRL Number
+extension (`get_crl_number`) — but only *parses*; it neither authenticates the CRL nor matches
+serials. Three checks are added:
+
+- **Serial-revocation lookup** — does a certificate's serial appear in the CRL's
+  `revokedCertificates`? The certificate serial and the CRL entry are compared as unsigned
+  integers so DER sign-padding cannot cause a false miss.
+- **CRL signature verification** — verify the CRL's `signatureValue` over its `tbsCertList`
+  with the issuing CA's public key, pinned to ECDSA-P384/SHA-384 (the algorithm the rest of
+  the crate uses). This is what authenticates the CRL.
+- **Chain-vs-CRL orchestrator** — the composite check the callers use:
+  1. **Authenticate before trust.** Locate the certificate in the signer chain whose `subject`
+     equals the CRL `issuer` **and which is a CA** (`BasicConstraints cA=TRUE`, RFC 5280 — see
+     *Why it is sound §B*), and verify the CRL signature with that CA's key. An issuer not
+     present as a CA in the chain, or a bad signature, is a hard error.
+  2. **Reject on revocation.** If the serial of **any** certificate in the chain is on the CRL,
+     fail closed.
+
+  Freshness/anti-rollback is intentionally left to the policy layer (below) so it can be
+  expressed as a policy rule. A CRL issued by the CA that issued the certificates it lists is
+  the standard X.509 model (RFC 5280); for a chain rooted at a self-signed root with no
+  intermediate, that CA is the root itself.
+
+## Enforcement points
+
+- **Local self-check** — during policy verification (reached at boot via `init_policy`): if
+  `servtdCollateral.servtdCrl` is present, run the orchestrator against **both** the
+  TCB-mapping and identity signer chains and fail closed on a revoked signer. A MigTD whose own
+  policy revokes its signer refuses to start.
+- **Peer cross-check** — during migration (`verify_policy_and_event_log`): after the peer's
+  chains are matched to the local root + leaf Subject by `validate_peer_cert_chain`,
+  additionally check the peer's signer chains against the **local** policy's `servtdCrl`. This
+  backstops a peer that ships a laundered (revocation-free) CRL of its own — the authoritative
+  list is the local one.
+
+## Anti-rollback floor — `servtd_crl_num`
+
+Mirror the existing platform-CRL floors: add a `servtd_crl_num` policy property evaluated
+`greater-or-equal` against the delivered CRL's `get_crl_number()`, plus a matching field in the
+runtime evaluation info. A CRL number below the floor (a rolled-back list), or a missing number
+while a floor is set, fails closed — exactly as `pck_crl_num` / `root_ca_crl_num` behave today.
+
+## Constraint — no trusted clock in-guest
+
+Guest time is VMM-supplied and untrusted, so MigTD cannot enforce the CRL's `nextUpdate`
+validity window. In-guest freshness relies entirely on the monotonic `servtd_crl_num`;
+wall-clock/`nextUpdate` freshness is enforced only at the attestation service.
+
+## Why it is sound (trust dependencies)
+
+- **§A — the CRL number is only as trustworthy as the CRL's authentication.** The floor is read
+  from the delivered CRL by a plain parse; it is meaningful only because the *same* CRL bytes
+  are authenticated during verification, and — in the peer flow — because
+  `validate_peer_cert_chain` binds the peer's chain root to the **local** root, so the peer's
+  CRL must be signed by the shared root it does not control. Unlike the platform `pck_crl` /
+  `root_ca_crl` (authenticated on the quote-verification path), the servTD CRL has no external
+  authenticator; its trust root is the local, RTMR1-anchored signer chain. Consequently
+  **production policies should always ship a `servtdCrl`** (an empty one if nothing is revoked),
+  because the peer cross-check runs only when the local policy carries one.
+- **§B — only a CA may issue the CRL.** The CRL signer must carry `BasicConstraints cA=TRUE`.
+  Without this, a non-CA end-entity leaf — whose private key a peer legitimately holds — could
+  sign its own revocation-free CRL and satisfy both the revocation check and the freshness
+  floor. Requiring a CA means a peer cannot forge a CRL without the shared, uncompromised root
+  key.
+
+## Interaction with measurement
+
+Because `servtdCrl` lives in `servtdCollateral` (part of `policyData`), it is measured into
+RTMR2 and folds into `tdinfo_hash`:
+
+- **Rollback of the CRL is measurement-visible** as well as floor-gated (defense-in-depth).
+- **Updating the CRL churns `tdinfo_hash`** — revoking a signer becomes a policy re-release +
+  re-endorsement. Revocation is a rare, deliberate event, so this is acceptable and matches how
+  the platform `root_ca_crl` / `pck_crl` (also inside the measured `policyData`) behave. If
+  in-place CRL updates without re-endorsement ever become desirable, `servtdCrl` could instead
+  be redacted from the RTMR2 extend (like `servtdTcbMapping`), leaving `servtd_crl_num` as the
+  sole anti-rollback control.
+
+## Residual risks & open questions
+
+- **Stolen key with a not-yet-revoked certificate** stays invisible until the authority detects
+  the compromise and publishes a revoking CRL — inherent to CRL-based revocation.
+- **`nextUpdate` freshness** is not enforceable in-guest (no trusted clock).
+- **Service-side revocation** (CRL/OCSP over the CoRIM `x5chain`, plus `nextUpdate` time-window
+  checks) is standard PKI, tracked separately.
+- **CoRIM delivery.** When the servTD collateral is a signed CoRIM (COSE `x5chain`, RFC 9360),
+  revocation should thread the CRL through the COSE flow or run CRL/OCSP on the `x5chain`.
+- **`cRLSign` KeyUsage.** Optionally require the CRL issuer to assert the `cRLSign` KeyUsage bit
+  in addition to `cA=TRUE`, as defence-in-depth against a mis-issued CA certificate.
+- **Multiple / per-issuer CRLs.** A single CRL authenticated against the signer chain's CA
+  suffices when the mapping and identity issuers share a root; distinct sub-CAs would need one
+  CRL per issuing CA or a small list.
 
 # Notes
 

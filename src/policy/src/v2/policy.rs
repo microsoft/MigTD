@@ -362,7 +362,7 @@ impl<'a> RawPolicyData<'a> {
         // Signer-key revocation (fail-closed): the RTMR1 anchor measures the
         // signer identity but cannot tell a still-valid cert from a revoked one
         // under the same root + subject. Freshness is enforced separately by
-        // `CrlPolicy` (`servtd_crl_num`). See doc/servtd_signer_revocation_proposal.md.
+        // `CrlPolicy` (`servtd_crl_num`). See doc/rtmr1_signer_anchor_proposal.md.
         if let Some(servtd_crl) = servtd_collateral.servtd_crl.as_deref() {
             crypto::verify_signer_chain_not_revoked(
                 servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes(),

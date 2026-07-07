@@ -293,3 +293,29 @@ sibling) stays measured — same anti-rollback property.
 Validation: policy v2 45, v1 26, migtd 42; verifier on regenerated policies —
 normal/pm_b/pmi_b → OK, revoked → `SignerRevoked` (`servtdCollateral.servtdCrl`
 present, `collaterals.servtdCrl` absent). Proposal doc updated to match.
+
+## servTD signer revocation — reference implementation (symbol map)
+
+The revocation *design* is now folded into
+[rtmr1_signer_anchor_proposal.md](./rtmr1_signer_anchor_proposal.md) (§Revocation);
+this notebook is the PoC record. The PoC lands the following symbols (branch
+`one_hash`):
+
+| Concern | Location |
+|---------|----------|
+| Serial-revocation lookup | `src/crypto/src/crl.rs` — `is_serial_revoked` |
+| CRL signature verification (ECDSA-P384/SHA-384) | `src/crypto/src/crl.rs` — `verify_crl_signature` |
+| CRL issuer Name DER | `src/crypto/src/crl.rs` — `get_crl_issuer_der` |
+| CRL number (reused) | `src/crypto/src/crl.rs` — `get_crl_number` |
+| Chain-vs-CRL orchestrator (authenticate → reject; CA-issuer required) | `src/crypto/src/lib.rs` — `verify_signer_chain_not_revoked` |
+| Delivery slot | `src/policy/src/v2/servtd_collateral.rs` — `ServtdCollateral.servtd_crl` |
+| Local self-check + error | `src/policy/src/v2/policy.rs` — `RawPolicyData::verify`; `src/policy/src/lib.rs` — `PolicyError::SignerRevoked` |
+| Anti-rollback floor | `src/policy/src/v2/policy.rs` — `CrlPolicy.servtd_crl_num`, `PolicyEvaluationInfo.servtd_crl_num` |
+| Peer cross-check + floor input | `src/migtd/src/mig_policy.rs` — `verify_policy_and_event_log`, `servtd_crl_num_from_policy` |
+| Generator (`--servtd-crl` embed; empty/revoking CRLs; revoked variant) | `tools/servtd-collateral-generator`; `sh_script/build_AzCVMEmu_policy_and_test.sh` — `generate_servtd_crls` |
+| e2e negative test | `.github/workflows/integration-emu.yml` — *Policy v2 Signer Revocation (Mock Report)* |
+
+Tests: crypto (`is_serial_revoked` true/false/empty; `verify_crl_signature` right/
+wrong key; orchestrator empty/revoked/non-CA-issuer), policy
+(`crl_policy_enforces_servtd_crl_num_floor`,
+`verify_enforces_servtd_signer_revocation`), and the e2e above.
