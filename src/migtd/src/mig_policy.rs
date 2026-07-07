@@ -499,19 +499,13 @@ mod v2 {
         .map_err(|_| PolicyError::PeerCertChainValidation)?;
 
         crypto::validate_peer_cert_chain(
-            local_policy.servtd_identity_issuer_chain.as_bytes(),
-            verified_policy.servtd_identity_issuer_chain.as_bytes(),
-        )
-        .log_err("Peer identity cert chain validation")
-        .map_err(|_| PolicyError::PeerCertChainValidation)?;
-        crypto::validate_peer_cert_chain(
             local_policy.servtd_tcb_mapping_issuer_chain.as_bytes(),
             verified_policy.servtd_tcb_mapping_issuer_chain.as_bytes(),
         )
         .log_err("Peer tcb mapping cert chain validation")
         .map_err(|_| PolicyError::PeerCertChainValidation)?;
 
-        // 3b. Cross-check the peer's signer chains against OUR locally-trusted
+        // 3b. Cross-check the peer's signer chain against OUR locally-trusted
         //     CRL: a peer could ship a laundered (revocation-free) CRL of its
         //     own, so the authoritative revocation list is the local one.
         //     Fail-closed.
@@ -521,12 +515,6 @@ mod v2 {
                 servtd_crl.as_bytes(),
             )
             .log_err("Peer tcb mapping signer revocation check")
-            .map_err(|_| PolicyError::SignerRevoked)?;
-            crypto::verify_signer_chain_not_revoked(
-                verified_policy.servtd_identity_issuer_chain.as_bytes(),
-                servtd_crl.as_bytes(),
-            )
-            .log_err("Peer identity signer revocation check")
             .map_err(|_| PolicyError::SignerRevoked)?;
         }
 
@@ -709,8 +697,6 @@ mod v2 {
             tcb_evaluation_number: Some(tcb_evaluation_number),
             fmspc: Some(fmspc),
             migtd_isvsvn: migtd.as_ref().map(|m| m.isvsvn),
-            migtd_tcb_date: migtd.as_ref().map(|m| m.tcb_date.clone()),
-            migtd_tcb_status: migtd.as_ref().map(|m| m.tcb_status.clone()),
             pck_crl_num: Some(pck_crl_num),
             root_ca_crl_num: Some(root_ca_crl_num),
             servtd_crl_num: servtd_crl_num_from_policy(policy)?,
@@ -746,8 +732,6 @@ mod v2 {
             tcb_evaluation_number: None,
             fmspc: None,
             migtd_isvsvn: migtd.as_ref().map(|m| m.isvsvn),
-            migtd_tcb_date: migtd.as_ref().map(|m| m.tcb_date.clone()),
-            migtd_tcb_status: migtd.as_ref().map(|m| m.tcb_status.clone()),
             pck_crl_num: None,
             root_ca_crl_num: None,
             servtd_crl_num: servtd_crl_num_from_policy(policy)?,

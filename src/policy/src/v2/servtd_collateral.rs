@@ -15,100 +15,17 @@ use crypto::{hash::digest_sha384, SHA384_DIGEST_SIZE};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VerifiedServtdCollateral {
-    pub servtd_identity: TdIdentity,
-    pub servtd_tcb_mapping: TdTcbMapping,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ServtdCollateral<'a> {
     pub major_version: u32,
     pub minor_version: u32,
-    pub servtd_identity_issuer_chain: String,
-    #[serde(borrow)]
-    pub servtd_identity: RawServtdIdentity<'a>,
     pub servtd_tcb_mapping_issuer_chain: String,
+    #[serde(borrow)]
     pub servtd_tcb_mapping: RawServtdTcbMapping<'a>,
-    /// Optional PEM CRL for the servTD signer chain (TCB-mapping / identity
-    /// issuers). When present it is enforced fail-closed in
-    /// `RawPolicyData::verify`, and its CRL number feeds the `servtd_crl_num`
-    /// anti-rollback floor.
+    /// Optional PEM CRL for the servTD signer chain (TCB-mapping issuer).
+    /// When present it is enforced fail-closed in `RawPolicyData::verify`, and
+    /// its CRL number feeds the `servtd_crl_num` anti-rollback floor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub servtd_crl: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RawServtdIdentity<'a> {
-    #[serde(borrow)]
-    pub td_identity: &'a RawValue,
-    pub signature: String,
-}
-
-impl<'a> RawServtdIdentity<'a> {
-    pub fn deserialize_from_json(slice: &'a [u8]) -> Result<Self, PolicyError> {
-        serde_json::from_slice::<RawServtdIdentity>(slice)
-            .map_err(|_| PolicyError::InvalidServtdIdentity)
-    }
-
-    pub fn verify_signature(&self, issuer_chain: &[u8]) -> Result<TdIdentity, PolicyError> {
-        let signature = hex_string_to_bytes(&self.signature)?;
-
-        crypto::verify_cert_chain_and_signature(
-            issuer_chain,
-            self.td_identity.get().as_bytes(),
-            &signature,
-        )
-        .map_err(|_| PolicyError::SignatureVerificationFailed)?;
-
-        serde_json::from_str::<TdIdentity>(self.td_identity.get())
-            .map_err(|_| PolicyError::InvalidServtdIdentity)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TdIdentity {
-    pub id: String,
-    pub version: u32,
-    pub issue_date: String,
-    pub next_update: String,
-    pub tcb_evaluation_number: u32,
-    pub xfam: String,
-    pub attributes: String,
-    pub mr_config_id: String,
-    pub mr_owner: String,
-    pub mr_owner_config: String,
-    pub mrsigner: String,
-    pub isv_prod_id: u16,
-    pub tcb_levels: Vec<TcbLevel>,
-}
-
-impl TdIdentity {
-    pub fn deserialize_from_json(slice: &[u8]) -> Result<Self, PolicyError> {
-        serde_json::from_slice::<TdIdentity>(slice).map_err(|_| PolicyError::InvalidServtdIdentity)
-    }
-
-    pub fn get_tcb_level_by_svn(&self, svn: u16) -> Option<&TcbLevel> {
-        self.tcb_levels
-            .iter()
-            .find(|&level| level.tcb.isvsvn == svn)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TcbLevel {
-    pub tcb: Tcb,
-    pub tcb_date: String,
-    pub tcb_status: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tcb {
-    pub isvsvn: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -398,10 +315,6 @@ mod test {
             serde_json::from_slice(servtd_collateral).expect("Failed to parse collateral");
         assert!(collateral
             .servtd_tcb_mapping
-            .verify_signature(collateral.servtd_tcb_mapping_issuer_chain.as_bytes())
-            .is_ok());
-        assert!(collateral
-            .servtd_identity
             .verify_signature(collateral.servtd_tcb_mapping_issuer_chain.as_bytes())
             .is_ok());
     }
