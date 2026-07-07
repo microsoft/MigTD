@@ -281,18 +281,10 @@ PKI/authorization layer (below).
 
 ## Not introduced here: stolen leaf key (reused certificate)
 
-A stolen **leaf private key** used with the **existing leaf certificate** changes no certificate
-bytes, so it is invisible to RTMR1 under **both** the raw-chain scheme and the anchor —
-`tdinfo_hash` is unchanged either way. This risk therefore exists **with or without this
-proposal** and must be mitigated independently; the anchor neither adds nor removes it.
-
-In both cases the forgery clears every check the runtime performs today
-(`verify_cert_chain_and_signature`, `src/crypto/src/lib.rs:123`; `validate_peer_cert_chain`,
-`:290`) — those enforce only chain integrity, root match, leaf Subject, and the CA attribute,
-with **no revocation, no expiry, and no leaf-key/intermediate pinning** — and the attestation
-service accepts the mapping by CoRIM `x5chain` signature alone. Measurement answers *"what bytes
-are loaded,"* not *"is this signer still authorized"*; the fix is authorization-layer, not
-measurement.
+A stolen **leaf private key** reusing its existing certificate changes no certificate bytes, so
+it is invisible to RTMR1 with or without the anchor — a **pre-existing** risk the anchor neither
+adds nor removes (unlike the stolen-intermediate limitation above, which is new). Like that case,
+it is a signer-authorization question measurement cannot answer, mitigated by revocation (below).
 
 ## Mitigations
 
