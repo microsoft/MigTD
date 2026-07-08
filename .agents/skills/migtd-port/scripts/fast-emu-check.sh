@@ -7,6 +7,10 @@
 # (emu-milestone.sh) at checkpoints and the full gauntlet (see SKILL.md) before
 # pushing.
 #
+# Built in the dev profile (not --release): intel/main fences the insecure test
+# features test_disable_ra_and_accept_all / use-mock-quote out of release builds
+# via compile_error! (src/migtd/src/lib.rs), so the emu smoke must use --debug.
+#
 # Exit 0 only if BOTH scenarios print SUCCESS and return rc 0; otherwise 1.
 #
 # Usage: ./fast-emu-check.sh
@@ -41,14 +45,14 @@ run() {  # name  timeout  cmd...
 }
 
 echo "[1/2] build skip-ra"
-cargo build --release --no-default-features \
+cargo build --no-default-features \
     --features "AzCVMEmu,test_disable_ra_and_accept_all" 2>&1 | tail -2
-run skip-ra 180 ./migtdemu.sh --skip-ra --both --no-sudo --log-level info
+run skip-ra 180 ./migtdemu.sh --skip-ra --both --no-sudo --log-level info --debug
 
 echo "[2/2] build spdm skip-ra"
-cargo build --release --no-default-features \
+cargo build --no-default-features \
     --features "AzCVMEmu,test_disable_ra_and_accept_all,spdm_attestation" 2>&1 | tail -2
-run spdm-skip-ra 180 ./migtdemu.sh --skip-ra --features spdm_attestation --both --no-sudo --log-level info
+run spdm-skip-ra 180 ./migtdemu.sh --skip-ra --features spdm_attestation --both --no-sudo --log-level info --debug
 
 echo
 if [ $RC -eq 0 ]; then echo "fast-emu-check: PASS"; else echo "fast-emu-check: FAIL"; fi

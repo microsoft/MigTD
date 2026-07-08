@@ -199,9 +199,9 @@ if stage_should_run emu; then
     done
 
     # 1. skip-ra
-    step skip-ra__build cargo build --release \
+    step skip-ra__build cargo build \
         --features AzCVMEmu,test_disable_ra_and_accept_all --no-default-features
-    step skip-ra ./migtdemu.sh --skip-ra --both --no-sudo --log-level info
+    step skip-ra ./migtdemu.sh --skip-ra --debug --both --no-sudo --log-level info
 
     # 2. policy-v2
     step policy-v2 ./migtdemu.sh --policy-v2 \
@@ -216,12 +216,12 @@ if stage_should_run emu; then
         --mock-report --features igvm-attest --both --no-sudo --log-level info
 
     # 4. rebind-skip-ra
-    step rebind-skip-ra__build cargo build --release \
+    step rebind-skip-ra__build cargo build \
         --features AzCVMEmu,policy_v2,test_disable_ra_and_accept_all --no-default-features
     step rebind-skip-ra ./migtdemu.sh --operation rebind-prepare \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
-        --skip-ra --both --no-sudo --log-level info
+        --skip-ra --debug --both --no-sudo --log-level info
 
     # 5. rebind-mock
     step rebind-mock ./migtdemu.sh --operation rebind-prepare \
@@ -231,9 +231,9 @@ if stage_should_run emu; then
 
     # 6. spdm-skip-ra
     export SPDM_CONFIG="$REPO_ROOT/config/spdm_config.json"
-    step spdm-skip-ra__build cargo build --release \
+    step spdm-skip-ra__build cargo build \
         --features AzCVMEmu,test_disable_ra_and_accept_all,spdm_attestation --no-default-features
-    step spdm-skip-ra ./migtdemu.sh --skip-ra --features spdm_attestation \
+    step spdm-skip-ra ./migtdemu.sh --skip-ra --debug --features spdm_attestation \
         --both --no-sudo --log-level info
 
     # 7. spdm-policy-v2
@@ -243,12 +243,12 @@ if stage_should_run emu; then
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
 
     # 8. spdm-rebind-skip-ra
-    step spdm-rebind-skip-ra__build cargo build --release \
+    step spdm-rebind-skip-ra__build cargo build \
         --features AzCVMEmu,policy_v2,test_disable_ra_and_accept_all,spdm_attestation --no-default-features
     step spdm-rebind-skip-ra ./migtdemu.sh --operation rebind-prepare \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
-        --skip-ra --features spdm_attestation --both --no-sudo --log-level info
+        --skip-ra --debug --features spdm_attestation --both --no-sudo --log-level info
 
     # 9. mock-quote-retry
     step mock-quote-retry ./migtdemu.sh --mock-report --mock-quote-retry \
