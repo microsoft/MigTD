@@ -4,6 +4,7 @@
 
 #![cfg(feature = "spdm_attestation")]
 
+mod handshake;
 #[cfg(all(feature = "main", feature = "policy_v2", feature = "vmcall-raw"))]
 mod spdm_rebind;
 mod spdm_req;

@@ -4,22 +4,15 @@
 use crate::{
     migration::MigtdMigrationInformation,
     spdm::{
-        spdm_req::{
-            send_and_receive_pub_key, send_and_receive_sdm_rebind_attest_info,
-            send_and_receive_sdm_rebind_info,
-        },
-        spdm_rsp::{rsp_handle_message, ResponderContextEx, ResponderContextExInfo},
+        handshake::{requester_handshake_prelude, run_responder_message_loop},
+        spdm_req::{send_and_receive_sdm_rebind_attest_info, send_and_receive_sdm_rebind_info},
+        spdm_rsp::{ResponderContextEx, ResponderContextExInfo},
         PrivateKeyDer, SpdmAppContextData,
     },
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use codec::{Codec, Writer};
-use spdmlib::{
-    error::{SpdmStatus, SPDM_STATUS_BUFFER_FULL},
-    protocol::SpdmMeasurementSummaryHashType,
-    requester::RequesterContext,
-};
+use spdmlib::{error::SpdmStatus, requester::RequesterContext};
 use zeroize::Zeroize;
 
 pub async fn spdm_requester_rebind_old(
@@ -43,16 +36,7 @@ async fn spdm_requester_rebind_old_inner(
     rebind_info: &MigtdMigrationInformation,
     peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
-    Box::pin(spdm_requester.send_receive_spdm_version()).await?;
-    Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
-    Box::pin(spdm_requester.send_receive_spdm_algorithm()).await?;
-
-    Box::pin(send_and_receive_pub_key(spdm_requester)).await?;
-    let session_id = Box::pin(spdm_requester.send_receive_spdm_key_exchange(
-        0xff,
-        SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeNone,
-    ))
-    .await?;
+    let session_id = requester_handshake_prelude(spdm_requester).await?;
 
     Box::pin(send_and_receive_sdm_rebind_attest_info(
         spdm_requester,
@@ -80,11 +64,15 @@ pub async fn spdm_responder_rebind_new<'a>(
     rebind_info: &'a MigtdMigrationInformation,
     peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
-    spdm_responder_ex.peer_data = peer_data;
     spdm_responder_ex.info = ResponderContextExInfo::RebindInformation(rebind_info);
 
+    let app_context = SpdmAppContextData {
+        migration_info: MigtdMigrationInformation::default(),
+        private_key: PrivateKeyDer::default(),
+    };
+
     // Zeroize the responder key buffer on every return path.
-    let result = spdm_responder_rebind_new_inner(spdm_responder_ex).await;
+    let result = run_responder_message_loop(spdm_responder_ex, peer_data, app_context).await;
     spdm_responder_ex
         .responder_context
         .common
@@ -92,21 +80,4 @@ pub async fn spdm_responder_rebind_new<'a>(
         .zeroize();
 
     result
-}
-
-async fn spdm_responder_rebind_new_inner(
-    spdm_responder_ex: &mut ResponderContextEx<'_>,
-) -> Result<(), SpdmStatus> {
-    let spdm_responder = &mut spdm_responder_ex.responder_context;
-    let mut writer = Writer::init(&mut spdm_responder.common.app_context_data_buffer);
-
-    let responder_app_context = SpdmAppContextData {
-        migration_info: MigtdMigrationInformation::default(),
-        private_key: PrivateKeyDer::default(),
-    };
-    responder_app_context
-        .encode(&mut writer)
-        .map_err(|_| SPDM_STATUS_BUFFER_FULL)?;
-
-    Box::pin(rsp_handle_message(spdm_responder)).await
 }
