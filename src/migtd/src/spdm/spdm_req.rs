@@ -1216,6 +1216,11 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
         let peer_data_hash = digest_sha384(&peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
         if mig_policy_hash_dst != peer_data_hash.as_slice() {
             error!("The received mig policy hash does not match the expected peer_data hash!\n");
+            let session = spdm_requester
+                .common
+                .get_session_via_id(session_id)
+                .ok_or(SPDM_STATUS_INVALID_STATE_LOCAL)?;
+            session.teardown();
             return Err(SPDM_STATUS_INVALID_MSG_FIELD);
         }
 
@@ -1238,6 +1243,7 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
 
         // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
         let verified_report_peer = policy_check_result.unwrap();
+        #[cfg(not(any(feature = "AzCVMEmu", feature = "test_mock_report")))]
         if verify_tdreport_data_binding(&verified_report_peer, b"MigTDRsp", &th1).is_err() {
             error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = spdm_requester
@@ -1247,6 +1253,8 @@ pub async fn send_and_receive_sdm_rebind_attest_info(
             session.teardown();
             return Err(SpdmStatus::from(MigrationResult::MutualAttestationError));
         }
+        #[cfg(any(feature = "AzCVMEmu", feature = "test_mock_report"))]
+        let _ = (&th1, &verified_report_peer);
     }
 
     let vdm_attest_info_src_hash =

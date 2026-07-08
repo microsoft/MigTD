@@ -850,7 +850,7 @@ fi
 echo
 
 #
-# Step 13: Test the policy (optional)
+# Step 13: Test the policy - migration flow (optional)
 #
 # Pass --skip-policy-generation: this script already generated the policy
 # files, so migtdemu.sh must not re-run the generator (which would clobber
@@ -871,7 +871,7 @@ if [[ -n "$EXTRA_FEATURES" ]]; then
 fi
 
 if [ -z "$SKIP_TEST" ]; then
-    echo -e "${BLUE}=== Step 13: Testing Policy ===${NC}"
+    echo -e "${BLUE}=== Step 13: Testing Policy (migration) ===${NC}"
     if [ "$USE_MOCK_REPORT" = true ]; then
         echo "Running with mock report mode: $TEST_CMD"
         echo -e "${YELLOW}Note: Using test_mock_report feature for mock TD reports/quotes${NC}"
@@ -883,17 +883,64 @@ if [ -z "$SKIP_TEST" ]; then
     cd "$PROJECT_ROOT"
     if $TEST_CMD; then
         echo
-        echo -e "${GREEN}✓✓✓ SUCCESS: Policy validation and key exchange completed! ✓✓✓${NC}"
+        echo -e "${GREEN}✓✓✓ SUCCESS: Migration policy validation and key exchange completed! ✓✓✓${NC}"
     else
         echo
-        echo -e "${YELLOW}⚠ Test failed. Check the output above for errors.${NC}"
+        echo -e "${YELLOW}⚠ Migration test failed. Check the output above for errors.${NC}"
         echo "You can manually test with:"
         echo "  $TEST_CMD"
         exit 1
     fi
 else
-    echo -e "${YELLOW}Test skipped. To test manually, run:${NC}"
+    echo -e "${YELLOW}Migration test skipped. To test manually, run:${NC}"
     echo "  $TEST_CMD"
+fi
+
+#
+# Step 14: Test the policy - prepare-rebind flow (optional)
+#
+# Runs the rebind-prepare operation which performs the rebinding handshake
+# (TLS, token exchange, and approval) using the same policy variants.
+REBIND_TEST_CMD="./migtdemu.sh --operation rebind-prepare --src-policy-file $OUTPUT_POLICY_A --src-policy-issuer-chain-file $OUTPUT_CERT_CHAIN_A --dst-policy-file $OUTPUT_POLICY_B --dst-policy-issuer-chain-file $OUTPUT_CERT_CHAIN_B --skip-policy-generation --debug --both"
+if [ "$USE_MOCK_REPORT" = true ]; then
+    REBIND_TEST_CMD="$REBIND_TEST_CMD --mock-report"
+
+    # Add mock quote file if specified
+    if [[ -n "$MOCK_QUOTE_FILE" ]]; then
+        REBIND_TEST_CMD="$REBIND_TEST_CMD --mock-quote-file $MOCK_QUOTE_FILE"
+    fi
+fi
+
+# Add extra features if specified
+if [[ -n "$EXTRA_FEATURES" ]]; then
+    REBIND_TEST_CMD="$REBIND_TEST_CMD --features $EXTRA_FEATURES"
+fi
+
+if [ -z "$SKIP_TEST" ]; then
+    echo
+    echo -e "${BLUE}=== Step 14: Testing Policy (prepare-rebind) ===${NC}"
+    if [ "$USE_MOCK_REPORT" = true ]; then
+        echo "Running with mock report mode: $REBIND_TEST_CMD"
+        echo -e "${YELLOW}Note: Using test_mock_report feature for mock TD reports/quotes${NC}"
+    else
+        echo "Running with real remote attestation: $REBIND_TEST_CMD"
+    fi
+    echo
+
+    cd "$PROJECT_ROOT"
+    if $REBIND_TEST_CMD; then
+        echo
+        echo -e "${GREEN}✓✓✓ SUCCESS: Prepare-rebind policy validation and token exchange completed! ✓✓✓${NC}"
+    else
+        echo
+        echo -e "${YELLOW}⚠ Prepare-rebind test failed. Check the output above for errors.${NC}"
+        echo "You can manually test with:"
+        echo "  $REBIND_TEST_CMD"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}Prepare-rebind test skipped. To test manually, run:${NC}"
+    echo "  $REBIND_TEST_CMD"
 fi
 
 echo
