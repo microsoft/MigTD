@@ -2,6 +2,11 @@
 # Copyright (C) 2011-2021 Intel Corporation. All rights reserved.
 #
 # all targets in this Makefile are for building IGVM images for testing only.
+#
+# For a pinned, reproducible build of these targets inside Docker (recommended
+# for release artifacts), use the wrapper:
+#     ./docker_build_igvm.sh            # build the local tree's IGVM
+#     ./docker_build_igvm.sh --help     # options (target, --clone, output dir)
 
 IGVM_FILE ?= target/release/migtd.igvm
 LOG_LEVEL ?= trace
@@ -31,6 +36,8 @@ help:
 	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy to test the getquote during initialization.(no successful migration expected)"
 	@echo "  build-igvm-mock-quote           - Build IGVM with v2 policy using mock quote data for testing."
 	@echo "  build-igvm-mock-quote-allow-all - Build IGVM with allow-all v2 policy using mock quote data."
+	@echo ""
+	@echo "Reproducible Docker build (wraps the above): ./docker_build_igvm.sh --help"
 
 pre-build:
 	@if ! command -v rustc >/dev/null 2>&1 || ! rustc --version | grep -q "1.88.0"; then \
