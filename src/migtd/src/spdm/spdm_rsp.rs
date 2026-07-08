@@ -188,12 +188,16 @@ async fn spdm_responder_transfer_msk_inner(
 
 pub async fn rsp_handle_message(spdm_responder: &mut ResponderContext) -> Result<(), SpdmStatus> {
     let mut sid = None;
+    let mut iter: u32 = 0;
     loop {
+        iter = iter.wrapping_add(1);
+        log::info!("BC> RSP-LOOP-{} await process_message\n", iter);
         let raw_packet = Arc::new(Mutex::new([0u8; config::RECEIVER_BUFFER_SIZE]));
         let mut raw_packet = raw_packet.lock();
         let raw_packet = raw_packet.deref_mut();
         raw_packet.zeroize();
         let res = Box::pin(spdm_responder.process_message(false, 0, raw_packet)).await;
+        log::info!("BC> RSP-LOOP-{} process_message returned\n", iter);
 
         let session_id = spdm_responder.common.runtime_info.get_last_session_id();
         if session_id.is_some() {
@@ -370,6 +374,7 @@ pub fn handle_exchange_mig_attest_info_req(
     reader: &mut Reader<'_>,
     vendor_defined_rsp_payload: &mut [u8],
 ) -> SpdmResult<usize> {
+    log::info!("BC> RSP-ATT-00 handle_exchange_mig_attest_info_req ENTER\n");
     // Migration attestation messages must be handled only when migration info is set.
     let spdm_responder_ex = unsafe { upcast_mut(responder_context) };
     if !matches!(
@@ -450,8 +455,13 @@ pub fn handle_exchange_mig_attest_info_req(
 
     let report_data = build_report_data(b"MigTDRsp", &th1)?;
 
+    log::info!("BC> RSP-ATT-01 gen_quote_spdm (dst)\n");
     //quote dst
     let quote_dst = gen_quote_spdm(&report_data)?;
+    log::info!(
+        "BC> RSP-ATT-02 gen_quote_spdm done, len={}\n",
+        quote_dst.len()
+    );
     // Self-quote verification is only needed for policy v1, which uses
     // verified_report_local in authenticate_policy(). Policy v2 re-verifies
     // the quote internally via authenticate_remote().
@@ -582,6 +592,7 @@ pub fn handle_exchange_mig_attest_info_req(
             let spdm_responder_ex = upcast_mut(responder_context);
             spdm_responder_ex.peer_data.clone()
         };
+        log::info!("BC> RSP-ATT-03 rsp_verify_peer_attestation_v2 BEGIN\n");
         rsp_verify_peer_attestation_v2(
             &quote_src_vec,
             &event_log_src_vec,
@@ -593,6 +604,7 @@ pub fn handle_exchange_mig_attest_info_req(
             responder_context,
             session_id,
         )?;
+        log::info!("BC> RSP-ATT-04 rsp_verify_peer_attestation_v2 OK\n");
     }
 
     let mut writer = Writer::init(vendor_defined_rsp_payload);
@@ -800,6 +812,7 @@ pub fn handle_exchange_mig_info_req(
     reader: &mut Reader<'_>,
     vendor_defined_rsp_payload: &mut [u8],
 ) -> SpdmResult<usize> {
+    log::info!("BC> RSP-MIG-00 handle_exchange_mig_info_req ENTER\n");
     // The VDM message for secret migration info exchange MUST be sent after mutual attested session establishment.
     let session_id = if let Some(sid) = session_id {
         sid
@@ -884,17 +897,21 @@ pub fn handle_exchange_mig_info_req(
         SpdmAppContextData::read(&mut reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
     let exchange_information = exchange_info(&responder_app_context.migration_info, false)?;
 
+    log::info!("BC> RSP-MIG-01 verify_servtd_attr\n");
     verify_servtd_attr(
         responder_app_context.migration_info.binding_handle,
         &responder_app_context.migration_info.target_td_uuid,
     )?;
+    log::info!("BC> RSP-MIG-02 verify_servtd_attr OK\n");
 
     let mig_ver = cal_mig_version(false, &exchange_information, &remote_information)?;
     set_mig_version(&responder_app_context.migration_info, mig_ver)?;
+    log::info!("BC> RSP-MIG-03 about to write_msk\n");
     write_msk(
         &responder_app_context.migration_info,
         &remote_information.key,
     )?;
+    log::info!("BC> RSP-MIG-04 write_msk OK\n");
 
     // Write APPROVED_SERVTD_EXT_HASH if SERVTD_EXT was received during attestation
     #[cfg(feature = "policy_v2")]

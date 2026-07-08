@@ -114,17 +114,23 @@ async fn spdm_requester_transfer_msk_inner(
     mig_info: &MigtdMigrationInformation,
     #[cfg(feature = "policy_v2")] peer_data: Vec<u8>,
 ) -> Result<(), SpdmStatus> {
+    log::info!("BC> REQ-01 spdm_requester_transfer_msk: send_receive_spdm_version\n");
     Box::pin(spdm_requester.send_receive_spdm_version()).await?;
+    log::info!("BC> REQ-02 send_receive_spdm_capability\n");
     Box::pin(spdm_requester.send_receive_spdm_capability()).await?;
+    log::info!("BC> REQ-03 send_receive_spdm_algorithm\n");
     Box::pin(spdm_requester.send_receive_spdm_algorithm()).await?;
 
+    log::info!("BC> REQ-04 send_and_receive_pub_key\n");
     Box::pin(send_and_receive_pub_key(spdm_requester)).await?;
+    log::info!("BC> REQ-05 send_receive_spdm_key_exchange\n");
     let session_id = Box::pin(spdm_requester.send_receive_spdm_key_exchange(
         0xff,
         SpdmMeasurementSummaryHashType::SpdmMeasurementSummaryHashTypeNone,
     ))
     .await?;
 
+    log::info!("BC> REQ-06 send_and_receive_sdm_migration_attest_info BEGIN\n");
     Box::pin(send_and_receive_sdm_migration_attest_info(
         spdm_requester,
         mig_info,
@@ -133,15 +139,21 @@ async fn spdm_requester_transfer_msk_inner(
         peer_data,
     ))
     .await?;
+    log::info!(
+        "BC> REQ-07 send_and_receive_sdm_migration_attest_info OK; send_receive_spdm_finish\n"
+    );
 
     Box::pin(spdm_requester.send_receive_spdm_finish(Some(0xff), session_id)).await?;
+    log::info!("BC> REQ-08 send_receive_spdm_finish OK; send_and_receive_sdm_exchange_migration_info BEGIN\n");
     Box::pin(send_and_receive_sdm_exchange_migration_info(
         spdm_requester,
         mig_info,
         Some(session_id),
     ))
     .await?;
+    log::info!("BC> REQ-09 send_and_receive_sdm_exchange_migration_info OK; send_receive_spdm_end_session\n");
     Box::pin(spdm_requester.send_receive_spdm_end_session(session_id)).await?;
+    log::info!("BC> REQ-10 spdm_requester_transfer_msk DONE\n");
 
     Ok(())
 }
@@ -355,8 +367,13 @@ pub async fn send_and_receive_sdm_migration_attest_info(
 
     let report_data = build_report_data(b"MigTDReq", &th1)?;
 
+    log::info!("BC> REQ-ATT-01 gen_quote_spdm (src)\n");
     //quote src
     let quote_src = gen_quote_spdm(&report_data)?;
+    log::info!(
+        "BC> REQ-ATT-02 gen_quote_spdm done, len={}\n",
+        quote_src.len()
+    );
     // Self-quote verification is only needed for policy v1, which uses
     // verified_report_local in authenticate_policy(). Policy v2 re-verifies
     // the quote internally via authenticate_remote().
@@ -497,6 +514,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     send_used += request_payload.spdm_encode(&mut spdm_requester.common, &mut writer)?;
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
+    log::info!("BC> REQ-ATT-03 send_receive_spdm_vendor_defined_request_ex (attest_info)\n");
     let response = spdm_requester
         .send_receive_spdm_vendor_defined_request_ex(
             None,
@@ -504,8 +522,12 @@ pub async fn send_and_receive_sdm_migration_attest_info(
             &mut receive_buffer,
         )
         .await?;
+    log::info!(
+        "BC> REQ-ATT-04 attest_info VDM response received, len={}\n",
+        response.len()
+    );
 
-    //Format checks
+    // Format checks
     let mut reader = Reader::init(response);
     let _response_header =
         SpdmMessageHeader::read(&mut reader).ok_or(SPDM_STATUS_INVALID_MSG_SIZE)?;
@@ -599,16 +621,21 @@ pub async fn send_and_receive_sdm_migration_attest_info(
     )?;
 
     #[cfg(feature = "policy_v2")]
-    verify_peer_attestation_v2(
-        &quote_dst_vec,
-        &event_log_dst_vec,
-        mig_policy_hash_dst,
-        &peer_data,
-        &th1,
-        spdm_requester,
-        session_id,
-    )?;
+    {
+        log::info!("BC> REQ-ATT-05 verify_peer_attestation_v2 BEGIN\n");
+        verify_peer_attestation_v2(
+            &quote_dst_vec,
+            &event_log_dst_vec,
+            mig_policy_hash_dst,
+            &peer_data,
+            &th1,
+            spdm_requester,
+            session_id,
+        )?;
+        log::info!("BC> REQ-ATT-06 verify_peer_attestation_v2 OK\n");
+    }
 
+    log::info!("BC> REQ-ATT-07 building VDM transcript before finish\n");
     let vdm_attest_info_src_hash =
         digest_sha384(&send_buffer[..send_used]).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
     let vdm_attest_info_dst_hash = digest_sha384(response).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
@@ -625,6 +652,7 @@ pub async fn send_and_receive_sdm_migration_attest_info(
         error!("Cannot get session id. Attestation failed.\n");
         return Err(SPDM_STATUS_INVALID_STATE_LOCAL);
     }
+    log::info!("BC> REQ-ATT-08 send_and_receive_sdm_migration_attest_info return Ok\n");
 
     Ok(())
 }
@@ -698,18 +726,32 @@ fn verify_peer_attestation_v2(
     spdm_requester: &mut RequesterContext,
     session_id: u32,
 ) -> SpdmResult {
+    log::info!(
+        "BC> REQ-V2-01 enter verify_peer_attestation_v2 quote_peer.len={} event_log_peer.len={} mig_policy_hash_peer.len={} peer_data.len={}\n",
+        quote_peer.len(),
+        event_log_peer.len(),
+        mig_policy_hash_peer.len(),
+        peer_data.len()
+    );
     // 1. Verify peer-data hash matches the value bound in the certificate
     let peer_data_hash = digest_sha384(peer_data).map_err(|_| SPDM_STATUS_CRYPTO_ERROR)?;
+    log::info!("BC> REQ-V2-02 digest_sha384(peer_data) ok\n");
     if mig_policy_hash_peer != peer_data_hash.as_slice() {
         error!("The received mig policy hash does not match the expected peer_data hash!\n");
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
+    log::info!("BC> REQ-V2-03 mig_policy_hash matches peer_data_hash\n");
 
     // 2. Authenticate remote (includes quote verification internally)
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
+        log::info!("BC> REQ-V2-04 calling mig_policy::authenticate_remote(is_src=true)\n");
         let policy_check_result =
             mig_policy::authenticate_remote(true, quote_peer, peer_data, event_log_peer);
+        log::info!(
+            "BC> REQ-V2-05 authenticate_remote returned ok={}\n",
+            policy_check_result.is_ok()
+        );
         if let Err(e) = &policy_check_result {
             error!("Policy v2 check failed, below is the detail information:\n");
             error!("{:x?}\n", e);
@@ -728,6 +770,7 @@ fn verify_peer_attestation_v2(
             feature = "use-mock-quote"
         )))]
         {
+            log::info!("BC> REQ-V2-06 verify_report_data_binding\n");
             let verified_report_peer = policy_check_result.unwrap();
             if verify_report_data_binding(&verified_report_peer, b"MigTDRsp", th1).is_err() {
                 error!("Peer REPORTDATA does not match expected TH1 binding!\n");
@@ -738,9 +781,11 @@ fn verify_peer_attestation_v2(
                 session.teardown();
                 return Err(SpdmStatus::from(MigrationResult::MutualAttestationError));
             }
+            log::info!("BC> REQ-V2-07 verify_report_data_binding ok\n");
         }
     }
 
+    log::info!("BC> REQ-V2-08 verify_peer_attestation_v2 return Ok\n");
     Ok(())
 }
 
@@ -826,6 +871,9 @@ async fn send_and_receive_sdm_exchange_migration_info(
     send_used += request_payload.spdm_encode(&mut spdm_requester.common, &mut writer)?;
 
     let mut receive_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
+    log::info!(
+        "BC> REQ-MIG-01 send_receive_spdm_vendor_defined_request_ex (exchange_migration_info)\n"
+    );
     let response = spdm_requester
         .send_receive_spdm_vendor_defined_request_ex(
             session_id,
@@ -833,6 +881,10 @@ async fn send_and_receive_sdm_exchange_migration_info(
             &mut receive_buffer,
         )
         .await?;
+    log::info!(
+        "BC> REQ-MIG-02 exchange_migration_info VDM response received, len={}\n",
+        response.len()
+    );
 
     // Format checks
     let mut reader = Reader::init(response);
@@ -918,8 +970,9 @@ async fn send_and_receive_sdm_exchange_migration_info(
 
     let mig_ver = cal_mig_version(true, &exchange_information, &remote_information)?;
     set_mig_version(mig_info, mig_ver)?;
+    log::info!("BC> REQ-MIG-03 about to write_msk\n");
     write_msk(mig_info, &remote_information.key)?;
-    log::info!("Set MSK and report status\n");
+    log::info!("BC> REQ-MIG-04 write_msk OK; Set MSK and report status\n");
 
     Ok(())
 }
