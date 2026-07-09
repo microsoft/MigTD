@@ -85,6 +85,7 @@ TOOLS_DIR="$PROJECT_ROOT/target/release"
 # Input Files
 POLICY_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_data_raw.json"
 POLICY_ALLOW_ALL_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_allow_all_data_raw.json"
+POLICY_REJECT_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_reject_data_raw.json"
 TD_IDENTITY_TEMPLATE="$SOURCE_MATERIAL_DIR/td_identity.json"
 TCB_MAPPING_TEMPLATE="$SOURCE_MATERIAL_DIR/tcb_mapping.json"
 COLLATERALS_FILE="$SOURCE_MATERIAL_DIR/collateral_thim.json"
@@ -207,6 +208,7 @@ MOCK_QUOTE_FILE=""
 FETCH_COLLATERALS=false
 AZURE_REGION="useast"
 ALLOW_ALL=false
+REJECT=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -224,6 +226,10 @@ while [[ $# -gt 0 ]]; do
             ALLOW_ALL=true
             shift
             ;;
+        --reject)
+            REJECT=true
+            shift
+            ;;
         --fetch-collaterals)
             FETCH_COLLATERALS=true
             shift
@@ -238,6 +244,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --output-dir DIR             Output directory for generated files (default: config/Azure)"
             echo "  --allow-all                  Use allow-all policy rules (no TCB/platform/servtd checks)"
+            echo "  --reject                     Use reject policy (bad FMSPC — migration will be rejected)"
             echo "  --skip-test                  Skip running the MigTD test at the end"
             echo "  --fetch-collaterals          Fetch fresh collaterals from Azure THIM before generating policy"
             echo "  --azure-region REGION        Azure region for THIM (useast, westus, northeurope)"
@@ -281,6 +288,9 @@ mkdir -p "$CERT_DIR"
 if [ "$ALLOW_ALL" = true ]; then
     ACTIVE_POLICY_DATA_RAW="$POLICY_ALLOW_ALL_DATA_RAW"
     echo -e "${YELLOW}Using allow-all policy rules (no TCB/platform/servtd checks)${NC}"
+elif [ "$REJECT" = true ]; then
+    ACTIVE_POLICY_DATA_RAW="$POLICY_REJECT_DATA_RAW"
+    echo -e "${YELLOW}Using reject policy (bad FMSPC — migration will be rejected)${NC}"
 else
     ACTIVE_POLICY_DATA_RAW="$POLICY_DATA_RAW"
 fi
