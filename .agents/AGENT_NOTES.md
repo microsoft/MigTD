@@ -10,7 +10,7 @@ review-specific.
 
 > **Living document.** This file is intended to accumulate institutional
 > knowledge over time, contributed by both human collaborators and AI agents.
-> See §11 ("Reflect and update") at the bottom — every agent should reread
+> See §12 ("Reflect and update") at the bottom — every agent should reread
 > these notes at session start and propose updates at session end if something
 > non-obvious was learned.
 
@@ -290,7 +290,29 @@ artefact.
 
 ---
 
-## 11. Reflect and update these notes
+## 11. Decisions made
+
+Record here concrete, non-obvious engineering *decisions* (feature/commit
+kept vs. dropped, and why) — as opposed to sections 5/9 above, which are
+domain facts and anti-patterns. This is a decision log, not a design doc:
+keep entries to a sentence or two, cite the commit/SHA that acted on the
+decision.
+
+- **Dropped the peer-leaf-certificate-expiration check**
+  (`crypto::validate_peer_leaf_expiration`, previously enforced in
+  `mig_policy.rs` for both the Policy and ServTDTCBMapping issuer chains on
+  `integration2`). Reason: it rejects a destination whose signing cert
+  expires before the source's, which blocks legitimate cert/key-rotation
+  operations where a newly-issued destination cert intentionally has a
+  shorter overlap/validity window than the cert it is rotating away from.
+  Simplifies rotation operations. Dropped via
+  `git rebase --onto <parent> <commit> integration2` (no later commit
+  touched `src/crypto/src/lib.rs`, `src/crypto/src/x509.rs`, or
+  `src/migtd/src/mig_policy.rs`, so the drop was conflict-free); verified
+  by a tree-diff-equivalence check plus `cargo fmt --check` and
+  `cargo xtask lib-test --crates migtd` (60 passed) before and after.
+
+## 12. Reflect and update these notes
 
 **Every agent must reread this file at session start, and reflect on it at
 session end.** If during the session you:
