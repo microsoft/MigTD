@@ -257,8 +257,8 @@ impl<'a> RawPolicyData<'a> {
 
         // The outer policy-blob signature is no longer part of the trust model
         // (integrity comes from RTMR2). Parse policyData directly.
-        let policy_data: PolicyData<'a> = serde_json::from_str(self.policy_data.get())
-            .map_err(|_| PolicyError::InvalidPolicy)?;
+        let policy_data: PolicyData<'a> =
+            serde_json::from_str(self.policy_data.get()).map_err(|_| PolicyError::InvalidPolicy)?;
 
         // Verify servtd collateral signature using its embedded chain
         let servtd_collateral = &policy_data.servtd_collateral;
@@ -1005,7 +1005,9 @@ mod test {
                 .tdinfo_hash,
         )
         .unwrap();
-        assert!(verified.servtd_lookup_by_tdinfo_hash(&legacy_hash).is_some());
+        assert!(verified
+            .servtd_lookup_by_tdinfo_hash(&legacy_hash)
+            .is_some());
 
         // Attach a CoRIM that only knows the pipeline sample's release
         // (hash 347c6170…79286384 -> svn 1).
@@ -1013,7 +1015,9 @@ mod test {
         verified.set_servtd_corim(ServtdCorim::decode(tcb, 0).unwrap());
 
         // Fail-closed: the legacy hash is no longer resolvable (no fallback).
-        assert!(verified.servtd_lookup_by_tdinfo_hash(&legacy_hash).is_none());
+        assert!(verified
+            .servtd_lookup_by_tdinfo_hash(&legacy_hash)
+            .is_none());
 
         // ...but a hash the CoRIM knows resolves through it.
         let corim_hash = hex_string_to_bytes(
@@ -1272,7 +1276,6 @@ mod test {
             &[TcbStatus::Revoked],
         );
     }
-
 
     #[test]
     fn test_policy_tcb_evaluation_number() {

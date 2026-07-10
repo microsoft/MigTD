@@ -311,7 +311,9 @@ mod test {
     fn migration_td_env() -> EnvironmentMap {
         EnvironmentMap {
             class: Some(class()),
-            instance: Some(InstanceIdChoice::Bytes(MIGRATION_TD_INSTANCE_BYTES.to_vec())),
+            instance: Some(InstanceIdChoice::Bytes(
+                MIGRATION_TD_INSTANCE_BYTES.to_vec(),
+            )),
             group: None,
         }
     }
@@ -354,7 +356,10 @@ mod test {
         };
         ConditionalEndorsementSeriesTriple::new(
             condition,
-            vec![ConditionalSeriesRecord::new(vec![selection], vec![addition])],
+            vec![ConditionalSeriesRecord::new(
+                vec![selection],
+                vec![addition],
+            )],
         )
     }
 

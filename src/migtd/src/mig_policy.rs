@@ -662,9 +662,7 @@ mod v2 {
     /// signer CRL is present (`servtdCollateral.servtdCrl`). `None` when it is
     /// absent (backward compatibility); `Some(n)` feeds the `servtd_crl_num`
     /// anti-rollback floor.
-    fn servtd_crl_num_from_policy(
-        policy: &VerifiedPolicy,
-    ) -> Result<Option<u32>, PolicyError> {
+    fn servtd_crl_num_from_policy(policy: &VerifiedPolicy) -> Result<Option<u32>, PolicyError> {
         policy
             .servtd_crl
             .as_deref()

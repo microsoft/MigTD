@@ -255,8 +255,7 @@ pub fn verify_cose_sign1_es384_x5chain(
     verify_certificate_chain(&chain)?;
 
     // 2. COSE signature over `tbs` by the leaf key (raw r||s, fixed-width).
-    let leaf =
-        x509::Certificate::from_der(x5chain_der[0]).map_err(|_| Error::ParseCertificate)?;
+    let leaf = x509::Certificate::from_der(x5chain_der[0]).map_err(|_| Error::ParseCertificate)?;
     let leaf_pubkey = extract_public_key_from_cert(&leaf)?;
     ecdsa::ecdsa_verify_with_algorithm(
         &leaf_pubkey,

@@ -14,8 +14,7 @@ const CRL_NUMBER_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.20
 /// ECDSA-with-SHA384 signature algorithm OID (1.2.840.10045.4.3.3). The only
 /// CRL signature algorithm supported in-guest, matching the rest of the crypto
 /// crate.
-const ECDSA_WITH_SHA384_OID: ObjectIdentifier =
-    ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
+const ECDSA_WITH_SHA384_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
 
 #[derive(Sequence)]
 pub struct Crl<'a> {
