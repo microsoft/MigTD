@@ -209,6 +209,9 @@ FETCH_COLLATERALS=false
 AZURE_REGION="useast"
 ALLOW_ALL=false
 REJECT=false
+CERT_DIR_OVERRIDE=""
+MEASURED_IMAGE=""
+MEASURED_MANIFEST="$PROJECT_ROOT/config/Azure/servtd_info.json"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -238,6 +241,18 @@ while [[ $# -gt 0 ]]; do
             AZURE_REGION="$2"
             shift 2
             ;;
+        --cert-dir)
+            CERT_DIR_OVERRIDE="$2"
+            shift 2
+            ;;
+        --measured-image)
+            MEASURED_IMAGE="$2"
+            shift 2
+            ;;
+        --measured-manifest)
+            MEASURED_MANIFEST="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo
@@ -249,6 +264,21 @@ while [[ $# -gt 0 ]]; do
             echo "  --fetch-collaterals          Fetch fresh collaterals from Azure THIM before generating policy"
             echo "  --azure-region REGION        Azure region for THIM (useast, westus, northeurope)"
             echo "                               (default: useast, applies with --fetch-collaterals)"
+            echo "  --cert-dir DIR               Reuse (or persist) the signing key + issuer chain in DIR"
+            echo "                               instead of a throwaway temp dir. If DIR already contains"
+            echo "                               a key + issuer chain, they are reused as-is (no new"
+            echo "                               certs generated, private key NOT deleted at the end)."
+            echo "                               Needed for a stable RTMR1 across multiple invocations,"
+            echo "                               e.g. the two-phase measure-then-bind tcb_mapping flow."
+            echo "  --measured-image IGVM        Override the tcb_mapping mrtd/rtmr0/rtmr1 with the REAL"
+            echo "                               measurements of an already-built MigTD IGVM, instead of"
+            echo "                               the mock report's synthetic values. Pairs with --cert-dir"
+            echo "                               in a two-phase build: (1) build a placeholder-policy image"
+            echo "                               with a persistent cert dir, (2) re-run with --measured-image"
+            echo "                               pointing at that image + the same --cert-dir to bind the real"
+            echo "                               measurements into the signed tcb_mapping/policy."
+            echo "  --measured-manifest FILE     Manifest used to measure --measured-image (default:"
+            echo "                               config/Azure/servtd_info.json)"
             echo "  -h, --help                   Show this help message"
             echo
             echo "Examples:"
@@ -282,6 +312,10 @@ echo
 
 # Ensure output directory exists
 mkdir -p "$OUTPUT_DIR"
+if [ -n "$CERT_DIR_OVERRIDE" ]; then
+    CERT_DIR="$CERT_DIR_OVERRIDE"
+    PRIVATE_KEY="$CERT_DIR/policy_signing_pkcs8.key"
+fi
 mkdir -p "$CERT_DIR"
 
 # Select which policy data file to use
@@ -438,6 +472,36 @@ MRSIGNER=$(jq -r '.mrsigner // "000000000000000000000000000000000000000000000000
 ISV_PROD_ID=$(jq -r '.isvProdId // 0' "$REPORT_DATA_FILE")
 ISVSVN=$(jq -r '.isvsvn // 1' "$REPORT_DATA_FILE")
 
+# Optionally override MRTD/RTMR0/RTMR1 (the tcb_mapping measurement key) with
+# the REAL measurements of an already-built MigTD image, instead of the mock
+# report's synthetic values. td_identity.json's other fields (XFAM, attributes,
+# mrConfigId/mrOwner/mrOwnerConfig/mrsigner, isvProdId/isvsvn) are unaffected
+# by this: they describe the guest's runtime report, not the image binary, and
+# are independent of policy content (unlike RTMR1, which is chain-dependent).
+if [ -n "$MEASURED_IMAGE" ]; then
+    echo "Building migtd-hash..."
+    (cd "$PROJECT_ROOT" && cargo build --release -p migtd-hash 2>&1 | grep -E "(Compiling|Finished|error)") || true
+    if [ ! -f "$TOOLS_DIR/migtd-hash" ]; then
+        echo -e "${RED}Error: Tool 'migtd-hash' not found at $TOOLS_DIR/migtd-hash${NC}" >&2
+        exit 1
+    fi
+    # Resolve to absolute paths since we're running from $TEMP_DIR.
+    MEASURED_IMAGE_ABS="$MEASURED_IMAGE"
+    [[ "$MEASURED_IMAGE_ABS" = /* ]] || MEASURED_IMAGE_ABS="$PROJECT_ROOT/$MEASURED_IMAGE"
+    MEASURED_MANIFEST_ABS="$MEASURED_MANIFEST"
+    [[ "$MEASURED_MANIFEST_ABS" = /* ]] || MEASURED_MANIFEST_ABS="$PROJECT_ROOT/$MEASURED_MANIFEST"
+    MEASURED_TD_INFO="$TEMP_DIR/measured_td_info.json"
+    "$TOOLS_DIR/migtd-hash" \
+        --manifest "$MEASURED_MANIFEST_ABS" \
+        --image "$MEASURED_IMAGE_ABS" \
+        --policy-v2 \
+        --output-td-info "$MEASURED_TD_INFO" >/dev/null
+    MRTD=$(jq -r '.mrtd' "$MEASURED_TD_INFO")
+    RTMR0=$(jq -r '.rtmr0' "$MEASURED_TD_INFO")
+    RTMR1=$(jq -r '.rtmr1' "$MEASURED_TD_INFO")
+    echo -e "${YELLOW}Overriding tcb_mapping measurements with real values measured from: $MEASURED_IMAGE${NC}"
+fi
+
 echo "Extracted measurements:"
 echo "  MRTD: ${MRTD:0:32}..."
 echo "  RTMR0: ${RTMR0:0:32}..."
@@ -509,7 +573,11 @@ echo
 # Step 5: Generate certificates and signing key
 #
 echo -e "${BLUE}=== Step 5: Generating Certificates ===${NC}"
-generate_certificates "$CERT_DIR" "P384" 365
+if [ -n "$CERT_DIR_OVERRIDE" ] && [ -f "$PRIVATE_KEY" ] && [ -f "$CERT_DIR/policy_issuer_chain.pem" ]; then
+    echo "Reusing existing certificate chain + signing key in: $CERT_DIR"
+else
+    generate_certificates "$CERT_DIR" "P384" 365
+fi
 
 echo -e "${GREEN}✓ Certificates generated in: $CERT_DIR${NC}"
 echo
@@ -599,7 +667,9 @@ echo
 # Step 12: Securely delete private key
 #
 echo -e "${BLUE}=== Step 12: Cleaning Up Private Key ===${NC}"
-if [ -f "$PRIVATE_KEY" ]; then
+if [ -n "$CERT_DIR_OVERRIDE" ]; then
+    echo -e "${YELLOW}Keeping private key (--cert-dir reuse requested): $PRIVATE_KEY${NC}"
+elif [ -f "$PRIVATE_KEY" ]; then
     shred -u "$PRIVATE_KEY" 2>/dev/null || rm -f "$PRIVATE_KEY"
     echo -e "${GREEN}✓ Private key securely deleted${NC}"
 fi
