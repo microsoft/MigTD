@@ -1045,6 +1045,87 @@ mod test {
         policy.verify(issuer_chain).unwrap();
     }
 
+    /// SVN-only deployment: a policy whose `servtdCollateral` ships **no**
+    /// `servtdIdentity` (nor `servtdIdentityIssuerChain`) must still verify.
+    /// The optional TD Identity is absent, so:
+    ///   * `verify()` succeeds (the independent `servtdTcbMapping` signature
+    ///     and its RTMR1 anchor binding are unaffected by the missing identity);
+    ///   * `servtd_identity` / `servtd_identity_issuer_chain` are `None`;
+    ///   * a servtd lookup resolves the SVN but leaves `tcb_date` / `tcb_status`
+    ///     unset (there is no date/status source without TD Identity).
+    ///
+    /// The fixture is derived from `policy_v2.json` by dropping the two
+    /// identity fields; the mapping signature signs only the `tdTcbMapping`
+    /// bytes, so it remains valid.
+    #[test]
+    fn test_verify_policy_svn_only_no_identity() {
+        use crate::v2::hex_string_to_bytes;
+
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2_svn_only.json");
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+        let verified = policy.verify(issuer_chain).unwrap();
+
+        assert!(verified.servtd_identity.is_none());
+        assert!(verified.servtd_identity_issuer_chain.is_none());
+
+        // The SVN resolves, but there is no date/status without TD Identity.
+        let known_hash = hex_string_to_bytes(
+            &verified.servtd_tcb_mapping.svn_mappings[0]
+                .td_measurements
+                .tdinfo_hash,
+        )
+        .unwrap();
+        let lookup = verified
+            .servtd_lookup_by_tdinfo_hash(&known_hash)
+            .expect("known hash resolves");
+        assert!(lookup.tcb_date.is_none());
+        assert!(lookup.tcb_status.is_none());
+    }
+
+    /// SVN-only policy evaluation: with no TD Identity present, a `migtdIdentity`
+    /// policy that uses only an `isvsvn` bar passes, while a `tcbStatus` /
+    /// `tcbDate` bar fails closed because `migtd_tcb_status` / `migtd_tcb_date`
+    /// are unpopulated (there is no date/status source without TD Identity).
+    #[test]
+    fn servtd_policy_svn_only_bars_and_fail_closed() {
+        // SVN value present but no date/status (identity-absent lookup).
+        let mut value = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(5),
+            ..Default::default()
+        };
+        let relative = PolicyEvaluationInfo::default();
+
+        // isvsvn-only bar: passes when the SVN qualifies.
+        let svn_only: ServtdPolicy = serde_json::from_str(
+            r#"{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":5}}}"#,
+        )
+        .unwrap();
+        assert!(svn_only.evaluate(&value, &relative).is_ok());
+
+        // A tcbStatus bar with no TD Identity present fails closed.
+        let status_bar: ServtdPolicy = serde_json::from_str(
+            r#"{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":5},"tcbStatusAccepted":{"operation":"string-equal","reference":"UpToDate"}}}"#,
+        )
+        .unwrap();
+        assert!(status_bar.evaluate(&value, &relative).is_err());
+
+        // A tcbDate bar with no TD Identity present also fails closed.
+        let date_bar: ServtdPolicy = serde_json::from_str(
+            r#"{"migtdIdentity":{"tcbDate":{"operation":"greater-or-equal","reference":"2024-01-01T00:00:00Z"}}}"#,
+        )
+        .unwrap();
+        assert!(date_bar.evaluate(&value, &relative).is_err());
+
+        // Once the (optional) TD Identity supplies date/status, the same bars
+        // are satisfiable.
+        value.migtd_tcb_status = Some("UpToDate".to_string());
+        value.migtd_tcb_date = Some("2025-01-01T00:00:00Z".to_string());
+        assert!(status_bar.evaluate(&value, &relative).is_ok());
+        assert!(date_bar.evaluate(&value, &relative).is_ok());
+    }
+
     /// The outer policy-blob signature has been removed from the trust model.
     /// A policy with **no** outer `signature` field must still deserialize and
     /// verify — integrity is established by the RTMR2 measurement, checked

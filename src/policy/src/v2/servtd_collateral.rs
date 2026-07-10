@@ -428,6 +428,35 @@ mod test {
         assert!(identity.get_tcb_level_by_svn(2).is_none());
     }
 
+    #[test]
+    fn servtd_collateral_identity_is_optional() {
+        // With TD Identity present, both optional fields deserialize.
+        let with_identity = r#"{
+            "majorVersion": 1,
+            "minorVersion": 0,
+            "servtdTcbMappingIssuerChain": "chain",
+            "servtdTcbMapping": { "tdTcbMapping": {}, "signature": "aa" },
+            "servtdIdentityIssuerChain": "chain",
+            "servtdIdentity": { "tdIdentity": {}, "signature": "bb" }
+        }"#;
+        let coll: ServtdCollateral =
+            serde_json::from_slice(with_identity.as_bytes()).expect("parse with identity");
+        assert!(coll.servtd_identity.is_some());
+        assert!(coll.servtd_identity_issuer_chain.is_some());
+
+        // SVN-only: omitting the identity fields is valid and leaves them None.
+        let svn_only = r#"{
+            "majorVersion": 1,
+            "minorVersion": 0,
+            "servtdTcbMappingIssuerChain": "chain",
+            "servtdTcbMapping": { "tdTcbMapping": {}, "signature": "aa" }
+        }"#;
+        let coll: ServtdCollateral =
+            serde_json::from_slice(svn_only.as_bytes()).expect("parse svn-only");
+        assert!(coll.servtd_identity.is_none());
+        assert!(coll.servtd_identity_issuer_chain.is_none());
+    }
+
     /// Regression test for the TDINFO packed-size constant. The packed buffer
     /// MUST be exactly 512 bytes (attributes(8) + xfam(8) + 8×SHA384(48) +
     /// reserved(0x70)). If `TDINFO_PACKED_SIZE` is off by even one field, the
