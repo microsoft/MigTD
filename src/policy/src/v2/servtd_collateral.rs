@@ -64,8 +64,6 @@ pub struct TdTcbMapping {
     pub version: u32,
     pub issue_date: String,
     pub next_update: String,
-    pub mr_signer: String,
-    pub isv_prod_id: u16,
     pub svn_mappings: Vec<SvnMapping>,
 }
 
