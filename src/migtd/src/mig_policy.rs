@@ -505,6 +505,25 @@ mod v2 {
         .log_err("Peer tcb mapping cert chain validation")
         .map_err(|_| PolicyError::PeerCertChainValidation)?;
 
+        // Validate the peer's optional TD Identity issuer chain against ours
+        // when both sides ship one. If exactly one side has it, the chains do
+        // not match and it fails closed.
+        match (
+            local_policy.servtd_identity_issuer_chain.as_deref(),
+            verified_policy.servtd_identity_issuer_chain.as_deref(),
+        ) {
+            (Some(local_identity_chain), Some(peer_identity_chain)) => {
+                crypto::validate_peer_cert_chain(
+                    local_identity_chain.as_bytes(),
+                    peer_identity_chain.as_bytes(),
+                )
+                .log_err("Peer td identity cert chain validation")
+                .map_err(|_| PolicyError::PeerCertChainValidation)?;
+            }
+            (None, None) => {}
+            _ => return Err(PolicyError::PeerCertChainValidation),
+        }
+
         // 3b. Cross-check the peer's signer chain against OUR locally-trusted
         //     CRL: a peer could ship a laundered (revocation-free) CRL of its
         //     own, so the authoritative revocation list is the local one.
@@ -516,6 +535,16 @@ mod v2 {
             )
             .log_err("Peer tcb mapping signer revocation check")
             .map_err(|_| PolicyError::SignerRevoked)?;
+            if let Some(peer_identity_chain) =
+                verified_policy.servtd_identity_issuer_chain.as_deref()
+            {
+                crypto::verify_signer_chain_not_revoked(
+                    peer_identity_chain.as_bytes(),
+                    servtd_crl.as_bytes(),
+                )
+                .log_err("Peer td identity signer revocation check")
+                .map_err(|_| PolicyError::SignerRevoked)?;
+            }
         }
 
         // 4. Check the integrity of the policy with its event log
@@ -695,6 +724,8 @@ mod v2 {
             tcb_evaluation_number: Some(tcb_evaluation_number),
             fmspc: Some(fmspc),
             migtd_isvsvn: migtd.as_ref().map(|m| m.isvsvn),
+            migtd_tcb_status: migtd.as_ref().and_then(|m| m.tcb_status.clone()),
+            migtd_tcb_date: migtd.as_ref().and_then(|m| m.tcb_date.clone()),
             pck_crl_num: Some(pck_crl_num),
             root_ca_crl_num: Some(root_ca_crl_num),
             servtd_crl_num: servtd_crl_num_from_policy(policy)?,
@@ -730,6 +761,8 @@ mod v2 {
             tcb_evaluation_number: None,
             fmspc: None,
             migtd_isvsvn: migtd.as_ref().map(|m| m.isvsvn),
+            migtd_tcb_status: migtd.as_ref().and_then(|m| m.tcb_status.clone()),
+            migtd_tcb_date: migtd.as_ref().and_then(|m| m.tcb_date.clone()),
             pck_crl_num: None,
             root_ca_crl_num: None,
             servtd_crl_num: servtd_crl_num_from_policy(policy)?,

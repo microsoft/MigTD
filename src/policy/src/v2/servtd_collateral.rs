@@ -21,11 +21,100 @@ pub struct ServtdCollateral<'a> {
     pub servtd_tcb_mapping_issuer_chain: String,
     #[serde(borrow)]
     pub servtd_tcb_mapping: RawServtdTcbMapping<'a>,
-    /// Optional PEM CRL for the servTD signer chain (TCB-mapping issuer).
-    /// When present it is enforced fail-closed in `RawPolicyData::verify`, and
-    /// its CRL number feeds the `servtd_crl_num` anti-rollback floor.
+    /// Optional TD Identity issuer chain (PEM). Present only when the optional
+    /// `servtdIdentity` is shipped; bound to the RTMR1 signer anchor in
+    /// `RawPolicyData::verify`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servtd_identity_issuer_chain: Option<String>,
+    /// Optional MigTD TD Identity (`isvsvn -> (tcb_date, tcb_status)`).
+    ///
+    /// JSON-only and optional (there is no CoRIM form). When present it lets
+    /// migration policy use `tcbDate` / `tcbStatus` bars; when absent, policy
+    /// is driven by the ISV SVN alone. See
+    /// `doc/corim_attestation_design.md` §3.2.
+    #[serde(borrow, default, skip_serializing_if = "Option::is_none")]
+    pub servtd_identity: Option<RawServtdIdentity<'a>>,
+    /// Optional PEM CRL for the servTD signer chain (TCB-mapping / identity
+    /// issuers). When present it is enforced fail-closed in
+    /// `RawPolicyData::verify`, and its CRL number feeds the `servtd_crl_num`
+    /// anti-rollback floor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub servtd_crl: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawServtdIdentity<'a> {
+    #[serde(borrow)]
+    pub td_identity: &'a RawValue,
+    pub signature: String,
+}
+
+impl<'a> RawServtdIdentity<'a> {
+    pub fn deserialize_from_json(slice: &'a [u8]) -> Result<Self, PolicyError> {
+        serde_json::from_slice::<RawServtdIdentity>(slice)
+            .map_err(|_| PolicyError::InvalidServtdIdentity)
+    }
+
+    pub fn verify_signature(&self, issuer_chain: &[u8]) -> Result<TdIdentity, PolicyError> {
+        let signature = hex_string_to_bytes(&self.signature)?;
+
+        crypto::verify_cert_chain_and_signature(
+            issuer_chain,
+            self.td_identity.get().as_bytes(),
+            &signature,
+        )
+        .map_err(|_| PolicyError::SignatureVerificationFailed)?;
+
+        serde_json::from_str::<TdIdentity>(self.td_identity.get())
+            .map_err(|_| PolicyError::InvalidServtdIdentity)
+    }
+}
+
+/// MigTD TD Identity (optional, JSON-only), simplified per the hash-based
+/// TCB-mapping redesign.
+///
+/// Because the TCB Mapping now matches by `SERVTD_INFO_HASH`, TD Identity no
+/// longer describes the MigTD's `TDINFO_STRUCT`; the former register
+/// descriptors (`xfam`, `attributes`, `mrConfigId`, `mrOwner`,
+/// `mrOwnerConfig`, MRTD/RTMRs) and the SGX-enclave `mrsigner` / `isvProdId`
+/// fields are dropped. It reduces to an envelope plus an
+/// `isvsvn -> (tcb_date, tcb_status)` table. See
+/// `doc/corim_attestation_design.md` §3.2.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TdIdentity {
+    pub id: String,
+    pub version: u32,
+    pub issue_date: String,
+    pub next_update: String,
+    pub tcb_levels: Vec<TcbLevel>,
+}
+
+impl TdIdentity {
+    pub fn deserialize_from_json(slice: &[u8]) -> Result<Self, PolicyError> {
+        serde_json::from_slice::<TdIdentity>(slice).map_err(|_| PolicyError::InvalidServtdIdentity)
+    }
+
+    pub fn get_tcb_level_by_svn(&self, svn: u16) -> Option<&TcbLevel> {
+        self.tcb_levels
+            .iter()
+            .find(|&level| level.tcb.isvsvn == svn)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TcbLevel {
+    pub tcb: Tcb,
+    pub tcb_date: String,
+    pub tcb_status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tcb {
+    pub isvsvn: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -315,6 +404,28 @@ mod test {
             .servtd_tcb_mapping
             .verify_signature(collateral.servtd_tcb_mapping_issuer_chain.as_bytes())
             .is_ok());
+    }
+
+    #[test]
+    fn td_identity_simplified_parse_and_lookup() {
+        // The simplified TD Identity carries only the envelope + tcbLevels;
+        // the dropped TDINFO / SGX-enclave fields must not be required.
+        let json = r#"{
+            "id": "identity-1",
+            "version": 1,
+            "issueDate": "2025-01-01T00:00:00Z",
+            "nextUpdate": "2026-01-01T00:00:00Z",
+            "tcbLevels": [
+                { "tcb": { "isvsvn": 1 }, "tcbDate": "2025-01-01T00:00:00Z", "tcbStatus": "UpToDate" },
+                { "tcb": { "isvsvn": 3 }, "tcbDate": "2025-06-01T00:00:00Z", "tcbStatus": "OutOfDate" }
+            ]
+        }"#;
+        let identity = TdIdentity::deserialize_from_json(json.as_bytes()).unwrap();
+        let level = identity.get_tcb_level_by_svn(3).expect("svn 3 present");
+        assert_eq!(level.tcb.isvsvn, 3);
+        assert_eq!(level.tcb_date, "2025-06-01T00:00:00Z");
+        assert_eq!(level.tcb_status, "OutOfDate");
+        assert!(identity.get_tcb_level_by_svn(2).is_none());
     }
 
     /// Regression test for the TDINFO packed-size constant. The packed buffer

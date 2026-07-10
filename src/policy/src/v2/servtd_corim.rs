@@ -159,7 +159,13 @@ impl ServtdCorim {
     /// Returns `None` if the hash is not endorsed by this CoRIM.
     pub fn lookup_by_tdinfo_hash(&self, tdinfo_hash: &[u8]) -> Option<ServtdLookup> {
         let isvsvn = self.svn_for_hash(tdinfo_hash)?;
-        Some(ServtdLookup { isvsvn })
+        // The CoRIM path endorses `hash -> SVN` only; there is no CoRIM form of
+        // TD Identity, so date/status are left unset.
+        Some(ServtdLookup {
+            isvsvn,
+            tcb_date: None,
+            tcb_status: None,
+        })
     }
 }
 
