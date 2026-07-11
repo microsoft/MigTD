@@ -298,10 +298,19 @@ generate_certificates() {
     #   - identity_signing_{a,b}  : signs td_identity  (embedded in servtd_collateral)
     # Variant "a" uses the same logical leaf for all three; variant "b" rotates
     # one or more of them depending on the test mode.
+    #
+    # The TCB-mapping and TD-Identity leaves share a SINGLE servTD-signer subject
+    # ("MigTD TCB Mapping Issuer"). `RawPolicyData::verify` binds BOTH the
+    # embedded servtdTcbMappingIssuerChain and the (optional) servtdIdentityIssuerChain
+    # to the same RTMR1 signer anchor as the CFV chain (= mapping_issuer_chain);
+    # since the anchor is SHA384(root DER + leaf-subject DER), the identity and
+    # mapping signers MUST share root + leaf subject or verification fails closed
+    # with PolicyError::SignerAnchorMismatch. Rotating the identity key (variant
+    # "b") keeps the same subject, so the anchor stays stable.
     for family_subject in \
         "policy_signing:/CN=MigTD Policy Issuer/O=Intel Corporation" \
         "mapping_signing:/CN=MigTD TCB Mapping Issuer/O=Intel Corporation" \
-        "identity_signing:/CN=MigTD TD Identity Issuer/O=Intel Corporation"; do
+        "identity_signing:/CN=MigTD TCB Mapping Issuer/O=Intel Corporation"; do
         local family="${family_subject%%:*}"
         local subject="${family_subject#*:}"
         # Default to the script's leaf_subject for the policy family to preserve
