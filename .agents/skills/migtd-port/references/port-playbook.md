@@ -1,3 +1,11 @@
+---
+type: Playbook
+title: MigTD Port Playbook — integration → intel/main
+description: Durable heuristics and worked example for forward-porting Microsoft-fork MigTD changes onto an intel/main-based branch.
+tags: [port, cherry-pick, integration, intel-main]
+timestamp: 2026-07-10T19:26:55+00:00
+---
+
 # Port playbook — durable heuristics + worked example
 
 Companion to `SKILL.md`. The first half is reusable for **any** `integration → intel/main`

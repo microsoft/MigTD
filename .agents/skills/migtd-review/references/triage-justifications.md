@@ -1,3 +1,11 @@
+---
+type: Reference
+title: MigTD Review Triage Justifications
+description: Rationale patterns for accepting or rejecting review findings, including common false-positive categories.
+tags: [review, triage, false-positives, security]
+timestamp: 2026-07-10T19:26:55+00:00
+---
+
 # Boilerplate triage justifications
 
 Reusable text for the `--note` arg of `clawpatch triage`. Adapt the file:line and specifics.

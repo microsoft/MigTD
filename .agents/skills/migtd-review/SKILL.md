@@ -335,5 +335,6 @@ Some bugs surface in MigTD but live in submodules (`deps/td-shim`, `deps/spdm-rs
 
 - `references/build-features.md` — full feature gating + which crates compile when.
 - `references/triage-justifications.md` — boilerplate justifications for the most common false-positives.
+- `references/security-test-areas.md` — static analysis, fuzz targets by area, and the secure-review checklist for external-input boundaries.
 - `scripts/list_open_findings.sh` — list open clawpatch findings.
 - `scripts/create_review_issues.sh` — template to create GH issues from body files.

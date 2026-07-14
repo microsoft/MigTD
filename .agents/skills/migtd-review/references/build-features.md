@@ -1,3 +1,11 @@
+---
+type: Reference
+title: MigTD Build Features
+description: Feature-gating map of which crates and code paths compile under which Cargo feature combinations.
+tags: [build, cargo-features, feature-gating]
+timestamp: 2026-07-10T19:26:55+00:00
+---
+
 # Build features — what compiles when
 
 Source: `src/migtd/Cargo.toml`, `src/devices/Cargo.toml`, `Cargo.toml` workspace.

@@ -1,3 +1,11 @@
+---
+type: Reference
+title: Init_TDINFO and ServtdExt Usage Summary
+description: Definitions of TDINFO_STRUCT/ServtdExt and how they are used and cross-checked across the migration and rebinding paths.
+tags: [attestation, tdinfo, servtd, migration, rebinding]
+timestamp: 2026-07-10T19:26:55+00:00
+---
+
 # Init_TDINFO and ServtdExt Usage Summary
 
 > Reflects the integration2 code (SERVTD_EXT always opted-in; `verify_servtd_info_hash`

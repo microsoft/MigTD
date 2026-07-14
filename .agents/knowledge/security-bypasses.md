@@ -1,3 +1,11 @@
+---
+type: Reference
+title: MigTD Security Bypasses — Feature Comparison
+description: Catalogue of verification checks bypassed under AzCVMEmu/test_mock_report/use-mock-quote build features, and why each is bypassed.
+tags: [security, build-features, attestation, spdm, tls]
+timestamp: 2026-07-10T19:26:55+00:00
+---
+
 # MigTD Security Bypasses — Feature Comparison
 
 This document catalogues the verification checks bypassed under the
