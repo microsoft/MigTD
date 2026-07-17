@@ -87,7 +87,6 @@ mod v2 {
     const SERVTD_ATTR_IGNORE_RTMR2: u64 = 0x100_0000_0000;
     const SERVTD_ATTR_IGNORE_RTMR3: u64 = 0x200_0000_0000;
 
-
     /// Compute the outer `tdinfo_hash` (attr=0) for the TD described by a
     /// `TdInfo` returned by `TDG.MR.REPORT`. This is the canonical lookup key
     /// for `servtd_tcb_mapping` after the TCB-mapping redesign.
