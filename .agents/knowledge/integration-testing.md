@@ -46,14 +46,19 @@ to be provisioned).
   ```bash
   ./sh_script/Azure/tip/build_tip_package.sh --out out/tip-package
   ```
-  Produces `test-migtd-{accept-all,reject-all,real,getquote-all}.igvm` + `.hash`
-  pairs — same naming the Azure OS PR gate consumes from the
-  `TDX_LM_IGVM_Binaries` vpack, so this validates MigTD changes with
-  source-built binaries before they ship as a vpack.
+  Produces regular `test-migtd-{accept-all,reject-all,real,getquote-all}.igvm`
+  pairs and `_mock_quote` counterparts for accept-all, reject-all, and real
+  policy. Regular images use IGVMAgent GetQuote; mock-quote images use built-in
+  quote data.
 - `migtd-hash --manifest config/Azure/servtd_info.json --image <image>
-  --policy-v2 --calc-servtd-hash` — the printed **last line** (96 hex chars)
-  is the servtd hash written to `<image>.hash` (`MigTdHash` on the host side).
+  --policy-v2` — the printed **last line** (96 hex chars) is the direct
+  `SERVTD_INFO_HASH` written to `<image>.hash` (`MigTdHash` on the host side).
+  Do not use `--calc-servtd-hash`; that outer TDREPORT hash fails prebind.
 - Test cases: accept-all, reject-all, real-policy (FMSPC/TCB match),
-  getquote-all, rebind (re-register with a different hash), cycle (repeat N×).
+  getquote-all, mock-quote/no-agent smoke test, ServTdExt prebind layout,
+  rebind (re-register with a different hash), cycle (repeat N×).
+- For lab-blade setup failures, generic `Move-VM` errors, MigTD serial capture,
+  ServTD hash verification, and VMMS/Worker ETW diagnosis, use the
+  [`migtd-tip-troubleshoot`](../skills/migtd-tip-troubleshoot/SKILL.md) skill.
 - Out of scope here: production signing/release, and the QEMU/vsock/serial
   flow above (Azure uses `vmcall-raw`, not virtio/vsock).

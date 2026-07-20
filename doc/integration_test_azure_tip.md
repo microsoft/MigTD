@@ -49,20 +49,25 @@ and its hash, not a signed release.
 `sh_script/Azure/tip/build_tip_package.sh` performs, per variant:
 
 1. `./sh_script/preparation.sh` — submodules + build prep.
-2. Generate the signed policy + issuer chain with
+2. For regular variants, generate the signed policy + issuer chain with
    `sh_script/Azure/build_azure_mock_test.sh --skip-test [--allow-all|--reject|
    <default real>] [--fetch-collaterals]` →
    `config/Azure/policy_v2_signed.json` + `config/Azure/policy_issuer_chain.pem`.
-3. Build the IGVM:
+3. Build regular IGVMs with:
    `cargo image --policy-v2 --debug --image-format igvm --no-default-features
    --features vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,
    spdm_attestation,igvm-attest --policy-issuer-chain <chain> --policy <policy>
    --output <image>` (add `test-get-quote` for the getquote variant).
-4. Compute the host mapping hash:
+   Build `_mock_quote` variants through the matching targets in
+   `sh_script/Azure/Makefile`; these replace `igvm-attest` with
+   `use-mock-quote`.
+4. Compute the host prebind hash:
    `migtd-hash --manifest config/Azure/servtd_info.json --image <image>
-   --policy-v2 --calc-servtd-hash`. The tool prints an `MRTD Hash: …` line first,
-   then the 48-byte **servtd hash** as the last line — that final 96-char hex is
-   written to `<image>.hash` (the host reads it as `MigTdHash`).
+   --policy-v2`. The tool prints an `MRTD Hash: …` line first, then the 48-byte
+   **SERVTD_INFO_HASH** as the last line. That final 96-char hex is written to
+   `<image>.hash`; Hyper-V passes it directly to `TDH.SERVTD.PREBIND`.
+   `--calc-servtd-hash` must not be used here because it produces the distinct
+   outer TDREPORT `SERVTD_HASH`.
 
 No dummy/base rebuild and no production signing are needed: the policy is built
 from the `config/Azure/` templates (measurements via `azcvm-extract-report`) and
@@ -78,7 +83,11 @@ signed with a local test key by `build_azure_mock_test.sh`.
 | `test-migtd-reject-all.igvm` + `.hash` | bad-FMSPC (`DEADBEEF0000`) → migration **rejected** |
 | `test-migtd-real.igvm` + `.hash` | real `config/Azure/policy_data_raw.json` (FMSPC `90C06F000000`) → succeeds iff node FMSPC/TCB match (MigTD-only extra) |
 | `test-migtd-getquote-all.igvm` + `.hash` | GetQuote initialization image |
-| `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1`, `README.md` | host test scripts |
+| `test-migtd-accept-all_mock_quote.igvm` + `.hash` | allow-all policy with `use-mock-quote`; no host GetQuote agent required |
+| `test-migtd-reject-all_mock_quote.igvm` + `.hash` | reject policy with `use-mock-quote` |
+| `test-migtd-real_mock_quote.igvm` + `.hash` | policy generated from mock measurements with `use-mock-quote` |
+| `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1`, `README.md` | migration test scripts |
+| `Test-TdxServTdExtPrebind.ps1` | validates both prebound ServTdExt hash slots and reserved zero ranges after target startup |
 
 ## 5. Manual lab-blade test
 
@@ -98,6 +107,18 @@ Copy `out/tip-package/` to the TDX lab blade, then in an **elevated** PowerShell
 # or a single case
 .\Invoke-TdxLmLoopback.ps1 -IgvmFilePath .\test-migtd-accept-all.igvm -PowerTestPath C:\path\to\PowerTest
 .\Invoke-TdxLmLoopback.ps1 -IgvmFilePath .\test-migtd-reject-all.igvm -ExpectReject -PowerTestPath C:\path\to\PowerTest
+
+# fully IGVMAgent-independent smoke test
+.\Invoke-TdxLmLoopback.ps1 `
+    -IgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
+    -PowerTestPath C:\path\to\PowerTest `
+    -NoPersistentSecrets
+
+# validate prebind ServTdExt without Move-VM
+.\Test-TdxServTdExtPrebind.ps1 `
+    -IgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
+    -PowerTestPath C:\path\to\PowerTest `
+    -NoPersistentSecrets
 ```
 
 Each case performs: `New-TestHcsMigTd → Start-HcsSystem →
@@ -115,9 +136,14 @@ settings: HCS schema 2.1, VM version 12.5, 1 vCPU, 512 MB.
 3. **real policy** → succeeds when the node's FMSPC/TCB match `policy_data_raw.json`;
    `policy_reject_data_raw.json` is the negative twin.
 4. **getquote-all** → exercises the initialization GetQuote path.
-5. **rebind** → register a second image (different hash) while a TD is bound, then
+5. **mock-quote variants** → exercise migration without host GHCI GetQuote;
+   combine with `-NoPersistentSecrets` to avoid all IGVMAgent calls.
+6. **ServTdExt prebind** → after target startup, verify the 272-byte runtime
+   extension contains the expected hash at offsets 0 and 112 with zero
+   attributes/reserved ranges.
+7. **rebind** → register a second image (different hash) while a TD is bound, then
    re-migrate (`Set-TestMigTdMeasurements` / new `.hash`).
-6. **cycle** → repeat a case N times.
+8. **cycle** → repeat a case N times.
 
 `TdxLiveMigrationUtilities.psm1` provides the host interfaces; reuse is optional —
 any driver hitting the same HCS/VMM cmdlets works.
