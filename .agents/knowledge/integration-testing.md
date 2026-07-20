@@ -44,12 +44,18 @@ to be provisioned).
   `Enable-LoopbackMigration`.
 - Build package:
   ```bash
-  ./sh_script/Azure/tip/build_tip_package.sh --out out/tip-package
+  ./sh_script/Azure/tip/build_tip_package.sh \
+      --out out/tip-package \
+      --os-root /path/to/os.2020 \
+      --hcstest-dir /path/to/prebuilt/HCSTest \
+      --secfw-file /path/to/secfw_test_GenuineIntel.dll
   ```
   Produces regular `test-migtd-{accept-all,reject-all,real,getquote-all}.igvm`
   pairs and `_mock_quote` counterparts for accept-all, reject-all, and real
-  policy. Regular images use IGVMAgent GetQuote; mock-quote images use built-in
-  quote data.
+  policy, plus build-matched PowerTest/HCSTest dependencies and an optional
+  test SecFw. HCSTest must be a prebuilt package containing its v2 netfx DLL;
+  source alone is insufficient. Regular images use IGVMAgent GetQuote;
+  mock-quote images use built-in quote data.
 - `migtd-hash --manifest config/Azure/servtd_info.json --image <image>
   --policy-v2` — the printed **last line** (96 hex chars) is the direct
   `SERVTD_INFO_HASH` written to `<image>.hash` (`MigTdHash` on the host side).

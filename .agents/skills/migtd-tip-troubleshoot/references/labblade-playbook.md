@@ -12,11 +12,27 @@ Build all variants on Linux:
 ```bash
 ./sh_script/Azure/tip/build_tip_package.sh \
     --out out/tip-package \
-    --fetch-collaterals
+    --fetch-collaterals \
+    --os-root <OS_ROOT> \
+    --hcstest-dir <HCSTEST_SOURCE> \
+    --secfw-file <SECFW_FILE>
 ```
 
 Copy `out/tip-package` to the TDX host. The package contains accept-all,
-reject-all, real-policy, and getquote-all IGVM/hash pairs.
+reject-all, real-policy, and getquote-all IGVM/hash pairs plus build-matched
+PowerTest and HCSTest dependencies. `HCSTEST_SOURCE` must be the prebuilt
+package containing `netfx\Microsoft.HostCompute.Test.PowerShell.v2.dll`, not
+the C# source directory.
+
+From a fresh elevated Windows PowerShell, install dependencies and configure
+the host:
+
+```powershell
+.\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
+```
+
+Reboot if setup reports a Secure Firmware change, then run
+`.\Run-TipTests.ps1`.
 
 ## 2. PowerTest and HCSTest dependency chain
 

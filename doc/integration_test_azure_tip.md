@@ -68,6 +68,13 @@ and its hash, not a signed release.
    `<image>.hash`; Hyper-V passes it directly to `TDH.SERVTD.PREBIND`.
    `--calc-servtd-hash` must not be used here because it produces the distinct
    outer TDREPORT `SERVTD_HASH`.
+5. Bundle PowerTest from the matching OS enlistment, a prebuilt HCSTest v2
+   package from that build's `test_automation_bins`, and the matching test
+   Secure Firmware when available. The HCSTest source directory is not enough:
+   the package must contain
+   `netfx\Microsoft.HostCompute.Test.PowerShell.v2.dll`. Supply the prebuilt
+   module explicitly with `--hcstest-dir`; the builder does not hardcode or
+   infer a `\\winbuilds` location.
 
 No dummy/base rebuild and no production signing are needed: the policy is built
 from the `config/Azure/` templates (measurements via `azcvm-extract-report`) and
@@ -88,21 +95,34 @@ signed with a local test key by `build_azure_mock_test.sh`.
 | `test-migtd-real_mock_quote.igvm` + `.hash` | policy generated from mock measurements with `use-mock-quote` |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1`, `README.md` | migration test scripts |
 | `Test-TdxServTdExtPrebind.ps1` | validates both prebound ServTdExt hash slots and reserved zero ranges after target startup |
+| `Install-TipDependencies.ps1` | installs bundled modules and optional test SecFw on the blade |
+| `dependencies/PowerTest`, `dependencies/HCSTest` | build-matched host test modules |
+| `dependencies/SecFw` | optional build-matched `secfw_test_GenuineIntel.dll` |
 
 ## 5. Manual lab-blade test
 
 Build on the Linux host:
 
 ```bash
-./sh_script/Azure/tip/build_tip_package.sh --out out/tip-package
+./sh_script/Azure/tip/build_tip_package.sh \
+    --out out/tip-package \
+    --os-root /path/to/os.2020 \
+    --hcstest-dir /path/to/prebuilt/HCSTest \
+    --secfw-file /path/to/secfw_test_GenuineIntel.dll
 # add --fetch-collaterals to refresh Azure THIM collateral for the real variant
 ```
 
 Copy `out/tip-package/` to the TDX lab blade, then in an **elevated** PowerShell:
 
 ```powershell
-# one-time host prep (loopback migration, test SecFw — may reboot)
-.\Run-TipTests.ps1 -PackageDir . -PowerTestPath C:\path\to\PowerTest -InitializeHost
+# one-time dependency install and host prep; reboot if requested
+.\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
+
+# default agent-independent migration + ServTdExt tests
+.\Run-TipTests.ps1
+
+# optionally add regular IGVMAgent-dependent cases
+.\Run-TipTests.ps1 -IncludeAgentCases
 
 # or a single case
 .\Invoke-TdxLmLoopback.ps1 -IgvmFilePath .\test-migtd-accept-all.igvm -PowerTestPath C:\path\to\PowerTest
@@ -111,13 +131,11 @@ Copy `out/tip-package/` to the TDX lab blade, then in an **elevated** PowerShell
 # fully IGVMAgent-independent smoke test
 .\Invoke-TdxLmLoopback.ps1 `
     -IgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-    -PowerTestPath C:\path\to\PowerTest `
     -NoPersistentSecrets
 
 # validate prebind ServTdExt without Move-VM
 .\Test-TdxServTdExtPrebind.ps1 `
     -IgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-    -PowerTestPath C:\path\to\PowerTest `
     -NoPersistentSecrets
 ```
 

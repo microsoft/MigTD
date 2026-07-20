@@ -192,5 +192,5 @@ if ($StagingToolPath) {
 
 $results | Format-Table -AutoSize -Wrap
 if ($results.Status -contains 'FAIL') {
-    exit 1
+    throw 'TDX live-migration lab-blade validation failed. Review the failed checks above.'
 }

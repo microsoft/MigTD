@@ -19,6 +19,7 @@ Never hardcode a developer's mount points or OS enlistment:
 | `POWERTEST_PATH` | Installed PowerTest module directory | `C:\Program Files\WindowsPowerShell\Modules\PowerTest` |
 | `OS_ROOT` | Optional Windows OS source enlistment | `Q:\src\os\os.2020` |
 | `HCSTEST_SOURCE` | Optional prebuilt HCSTest folder from winbuilds | `\\winbuilds\...\test_automation_bins\vm\test\compute\HCSTest` |
+| `SECFW_FILE` | Optional matching test Secure Firmware DLL | `\\winbuilds\...\secfw_test_GenuineIntel.dll` |
 | `OUTPUT_DIR` | Diagnostic bundle destination | `D:\logs\tdxlm-20260719` |
 
 If `OS_ROOT` is available, reference paths are:
@@ -33,7 +34,18 @@ If `OS_ROOT` is available, reference paths are:
 
 ## Workflow
 
-1. **Validate the host and modules**
+1. **Install bundled dependencies and configure the host**
+
+   ```powershell
+   cd <PACKAGE_DIR>
+   .\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
+   ```
+
+   Run setup from a fresh elevated Windows PowerShell. Reboot if it reports a
+   Secure Firmware change, then run `.\Run-TipTests.ps1` for the default
+   mock-quote/no-secrets migration and ServTdExt checks.
+
+2. **Validate the host and modules**
 
    ```powershell
    <REPO_ROOT>\.agents\skills\migtd-tip-troubleshoot\scripts\Test-TdxLmLabBlade.ps1 `
@@ -44,7 +56,7 @@ If `OS_ROOT` is available, reference paths are:
    `-HcsTestSource <HCSTEST_SOURCE>` if HCSTest v2 is not installed.
    In a built TiP package, the same helpers are under `troubleshooting\`.
 
-2. **Run the package with serial capture**
+3. **Run the package with serial capture**
 
    ```powershell
    cd <PACKAGE_DIR>
@@ -65,7 +77,7 @@ If `OS_ROOT` is available, reference paths are:
        -CaptureSerial
    ```
 
-3. **Verify the host prebind hash**
+4. **Verify the host prebind hash**
 
    ```powershell
    <REPO_ROOT>\.agents\skills\migtd-tip-troubleshoot\scripts\Test-MigTdHashBinding.ps1 `
@@ -84,7 +96,7 @@ If `OS_ROOT` is available, reference paths are:
    computes the outer TDREPORT `SERVTD_HASH`; using it for prebind causes
    `TDX_SERVTD_INFO_HASH_MISMATCH`.
 
-4. **Validate the target ServTdExt after prebind**
+5. **Validate the target ServTdExt after prebind**
 
    ```powershell
    .\Test-TdxServTdExtPrebind.ps1 `
