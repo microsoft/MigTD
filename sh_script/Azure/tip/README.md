@@ -23,13 +23,15 @@ git submodule update --init --recursive deps/td-shim deps/spdm-rs deps/linux-sgx
 ./sh_script/preparation.sh
 ```
 
-On GCC >= 14 the vendored linux-sgx DCAP C code needs the new default errors
-demoted back to warnings; export this before building:
+Set the C toolchain the MigTD/td-shim build expects:
 
 ```bash
 export CC=clang AR=llvm-ar
-export CFLAGS="-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
 ```
+
+On GCC >= 14 the vendored linux-sgx DCAP C code would otherwise fail to
+compile; `src/attestation/build.rs` detects this and demotes those errors back
+to warnings automatically, so no manual `CFLAGS` override is needed.
 
 ### 1.1 Build the package
 

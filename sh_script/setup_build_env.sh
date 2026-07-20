@@ -24,10 +24,9 @@
 # After running this once, a typical build is just:
 #   source "$HOME/.cargo/env"
 #   export CC=clang AR=llvm-ar
-#   export CFLAGS="-Wno-error=incompatible-pointer-types \
-#                  -Wno-error=implicit-function-declaration \
-#                  -Wno-error=int-conversion"   # only needed on GCC >= 14
 #   ./sh_script/Azure/tip/build_tip_package.sh --os-root ... --hcstest-dir ...
+# (On GCC >= 14, src/attestation/build.rs auto-demotes the legacy linux-sgx DCAP
+#  errors, so no manual CFLAGS override is needed.)
 # ==============================================================================
 set -euo pipefail
 
@@ -59,7 +58,7 @@ APT_PACKAGES=(
   libtss2-dev
 )
 
-RUST_COMPONENTS=(rust-src llvm-tools)
+RUST_COMPONENTS=(rust-src llvm-tools rustfmt clippy)
 RUST_TARGET="x86_64-unknown-none"
 
 apt_oneliner() {
@@ -138,8 +137,6 @@ cat <<'EOF'
 === Done. To build, in a fresh shell run: ===
   source "$HOME/.cargo/env"
   export CC=clang AR=llvm-ar
-  # GCC >= 14 promotes some old linux-sgx DCAP warnings to errors; demote them:
-  export CFLAGS="-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
   # Initialize submodules + apply patches (first time only):
   git submodule update --init --recursive deps/td-shim deps/spdm-rs deps/linux-sgx
   ./sh_script/preparation.sh

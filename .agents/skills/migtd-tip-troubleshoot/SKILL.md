@@ -24,15 +24,17 @@ git submodule update --init --recursive deps/td-shim deps/spdm-rs deps/linux-sgx
 ./sh_script/preparation.sh
 ```
 
-Then build (on GCC >= 14, demote the vendored linux-sgx DCAP warnings that
-modern GCC turns into hard errors):
+Then build:
 
 ```bash
 export CC=clang AR=llvm-ar
-export CFLAGS="-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
 ./sh_script/Azure/tip/build_tip_package.sh \
     --os-root <OS_ROOT> --hcstest-dir <HCSTEST_DIR> --fetch-collaterals
 ```
+
+On GCC >= 14 the vendored linux-sgx DCAP C code would fail to compile;
+`src/attestation/build.rs` auto-demotes those errors to warnings, so no manual
+`CFLAGS` override is needed.
 
 `--os-root` supplies PowerTest from the OS enlistment; `--hcstest-dir` must be a
 prebuilt HCSTest v2 package (with `netfx/Microsoft.HostCompute.Test.PowerShell.v2.dll`).
