@@ -19,7 +19,7 @@ param(
     [string]$HashFilePath = "$IgvmFilePath.hash",
     [string]$MigTdId = 'tipmigtd',
     [string]$VmName = 'tiptd',
-    [Parameter(Mandatory)] [string]$PowerTestPath,
+    [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
     [switch]$NoPersistentSecrets,
     [switch]$CaptureSerial,
     [ValidateRange(0, 60)] [int]$SerialDrainTimeoutSeconds = 30

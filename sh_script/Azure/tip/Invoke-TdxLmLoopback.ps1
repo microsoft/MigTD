@@ -20,7 +20,7 @@ param(
     [string]$MigTdId = 'tipmigtd',
     [string]$VmName = 'tiptd',
     [switch]$ExpectReject,
-    [string]$PowerTestPath,
+    [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
     [ValidateRange(0, 300)]
     [int]$StartupDelaySeconds = 0,
     # Validate the target VM's 272-byte ServTdExt after prebind/start, then

@@ -24,6 +24,10 @@
 # Usage:
 #   ./sh_script/Azure/tip/build_tip_package.sh [--out DIR] [--fetch-collaterals]
 #                                              [--azure-region R] [--variants LIST]
+#                                              [--os-root DIR]
+#                                              [--powertest-dir DIR]
+#                                              [--hcstest-dir DIR]
+#                                              [--secfw-file FILE]
 # ==============================================================================
 set -euo pipefail
 
@@ -36,6 +40,10 @@ VARIANTS="accept-all,reject-all,real,getquote-all,accept-all_mock_quote,reject-a
 FETCH_ARGS=()
 FEATURES="vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation,igvm-attest"
 LOG_LEVEL="info"
+OS_ROOT=""
+POWERTEST_DIR=""
+HCSTEST_DIR=""
+SECFW_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,10 +51,18 @@ while [[ $# -gt 0 ]]; do
     --variants) VARIANTS="$2"; shift 2;;
     --fetch-collaterals) FETCH_ARGS=(--fetch-collaterals); shift;;
     --azure-region) FETCH_ARGS+=(--azure-region "$2"); shift 2;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0;;
+    --os-root) OS_ROOT="$2"; shift 2;;
+    --powertest-dir) POWERTEST_DIR="$2"; shift 2;;
+    --hcstest-dir) HCSTEST_DIR="$2"; shift 2;;
+    --secfw-file) SECFW_FILE="$2"; shift 2;;
+    -h|--help) sed -n '2,35p' "$0"; exit 0;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
+
+if [[ -n "$OS_ROOT" ]]; then
+  POWERTEST_DIR="${POWERTEST_DIR:-$OS_ROOT/src/onecore/vm/test/common/powershell/PowerTest}"
+fi
 
 MOCK="sh_script/Azure/build_azure_mock_test.sh"
 MANIFEST="config/Azure/servtd_info.json"
@@ -61,17 +77,7 @@ CERT_DIR="$OUT_DIR/.certs"
 POLICY_FFS_GUID="0BE92DC3-6221-4C98-87C1-8EEFFD70DE5A"
 POLICY_ISSUER_CHAIN_FFS_GUID="3F2FB27A-9596-431C-A68D-D3EAB39F8AEB"
 TROUBLESHOOT_DIR=".agents/skills/migtd-tip-troubleshoot/scripts"
-
-echo "=== TiP package build ==="
-echo "Output: $OUT_DIR"
-if [[ ! -d "$TROUBLESHOOT_DIR" ]]; then
-  echo "Missing troubleshooting helpers: $TROUBLESHOOT_DIR" >&2
-  exit 1
-fi
-mkdir -p "$OUT_DIR"
-./sh_script/preparation.sh
-cargo build -p migtd-hash --release
-HASH_BIN="target/release/migtd-hash"
+RESOLVED_POWERTEST_DIR=""
 
 gen_policy()  { chmod +x "$MOCK"; "./$MOCK" --skip-test "${FETCH_ARGS[@]}" "$@"; }
 build_image() { cargo image --policy-v2 --debug --image-format igvm --no-default-features \
@@ -104,6 +110,71 @@ emit() {  # name
   "$HASH_BIN" --manifest "$MANIFEST" --image "$base" --policy-v2 | tail -n1 | tr -d '[:space:]' > "$base.hash"
   echo "  built $name  hash=$(cat "$base.hash")"
 }
+
+resolve_powertest_dir() {
+  local source="$1"
+  if [[ -f "$source/PowerTest.psd1" ]]; then
+    printf '%s\n' "$source"
+  elif [[ -f "$source/Modules/PowerTest.psd1" ]]; then
+    printf '%s\n' "$source/Modules"
+  else
+    echo "PowerTest.psd1 not found under: $source" >&2
+    return 1
+  fi
+}
+
+validate_dependencies() {
+  if [[ -z "$POWERTEST_DIR" ]]; then
+    echo "PowerTest source is required; pass --os-root or --powertest-dir." >&2
+    return 1
+  fi
+  RESOLVED_POWERTEST_DIR="$(resolve_powertest_dir "$POWERTEST_DIR")"
+
+  if [[ -z "$HCSTEST_DIR" ]]; then
+    echo "HCSTest v2 package is required; pass --hcstest-dir with a locally accessible prebuilt module directory." >&2
+    return 1
+  fi
+  if [[ ! -f "$HCSTEST_DIR/HCSTest.psd1" ]]; then
+    echo "HCSTest.psd1 not found under: $HCSTEST_DIR" >&2
+    return 1
+  fi
+  if [[ ! -f "$HCSTEST_DIR/netfx/Microsoft.HostCompute.Test.PowerShell.v2.dll" ]]; then
+    echo "HCSTest v2 netfx binary not found under: $HCSTEST_DIR" >&2
+    echo "The OS source directory alone is insufficient; use the matching prebuilt HCSTest package from test_automation_bins." >&2
+    return 1
+  fi
+
+  if [[ -n "$SECFW_FILE" && ! -f "$SECFW_FILE" ]]; then
+    echo "SecFw file not found: $SECFW_FILE" >&2
+    return 1
+  fi
+}
+
+copy_dependencies() {
+  local dependencies_dir="$OUT_DIR/dependencies"
+
+  rm -rf "$dependencies_dir"
+  mkdir -p "$dependencies_dir/PowerTest" "$dependencies_dir/HCSTest"
+  cp -a "$RESOLVED_POWERTEST_DIR/." "$dependencies_dir/PowerTest/"
+  cp -a "$HCSTEST_DIR/." "$dependencies_dir/HCSTest/"
+
+  if [[ -n "$SECFW_FILE" ]]; then
+    mkdir -p "$dependencies_dir/SecFw"
+    cp "$SECFW_FILE" "$dependencies_dir/SecFw/secfw_test_GenuineIntel.dll"
+  fi
+}
+
+echo "=== TiP package build ==="
+echo "Output: $OUT_DIR"
+if [[ ! -d "$TROUBLESHOOT_DIR" ]]; then
+  echo "Missing troubleshooting helpers: $TROUBLESHOOT_DIR" >&2
+  exit 1
+fi
+validate_dependencies
+mkdir -p "$OUT_DIR"
+./sh_script/preparation.sh
+cargo build -p migtd-hash --release
+HASH_BIN="target/release/migtd-hash"
 
 IFS=',' read -ra LIST <<< "$VARIANTS"
 for v in "${LIST[@]}"; do
@@ -150,4 +221,5 @@ cp sh_script/Azure/tip/*.ps1 sh_script/Azure/tip/README.md "$OUT_DIR/" 2>/dev/nu
 mkdir -p "$OUT_DIR/troubleshooting"
 cp "$TROUBLESHOOT_DIR"/*.ps1 "$OUT_DIR/troubleshooting/"
 cp "$TROUBLESHOOT_DIR"/*.wprp "$OUT_DIR/troubleshooting/"
+copy_dependencies
 echo "=== done ==="; ls -lh "$OUT_DIR"

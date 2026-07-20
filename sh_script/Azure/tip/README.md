@@ -6,7 +6,12 @@ package to the TDX host, run loopback migrations manually.
 ## 1. Build (Linux)
 
 ```bash
-./sh_script/Azure/tip/build_tip_package.sh --out out/tip-package --fetch-collaterals
+./sh_script/Azure/tip/build_tip_package.sh \
+    --out out/tip-package \
+    --fetch-collaterals \
+    --os-root /path/to/os.2020 \
+    --hcstest-dir /path/to/prebuilt/HCSTest \
+    --secfw-file /path/to/secfw_test_GenuineIntel.dll
 ```
 
 Produces in `out/tip-package/`:
@@ -22,6 +27,9 @@ Produces in `out/tip-package/`:
 | `test-migtd-real_mock_quote.igvm` + `.hash` | policy generated from mock measurements with built-in mock quote |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1` | migration test scripts |
 | `Test-TdxServTdExtPrebind.ps1` | start a prebound TD and validate both ServTdExt hash slots and zero padding |
+| `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, and optional test SecFw |
+| `dependencies/PowerTest`, `dependencies/HCSTest` | build-matched host test modules |
+| `dependencies/SecFw` | optional build-matched test Secure Firmware |
 
 `.hash` is the direct `SERVTD_INFO_HASH` the host passes to
 `TDH.SERVTD.PREBIND` as `MigTdHash`. Built with MigTD-native tooling only
@@ -34,15 +42,27 @@ the host IGVMAgent GetQuote path. Their sibling `.hash` files are still direct
 
 ## 2. Run (TDX labblade, elevated PowerShell)
 
-Copy `out/tip-package` to the host, then:
+The builder takes PowerTest from the OS source enlistment when `--os-root` is
+specified. The HCSTest location is never inferred or hardcoded: pass its
+locally accessible directory with `--hcstest-dir` (for example, a mounted copy
+from `\\winbuilds`). HCSTest must be a prebuilt package containing
+`netfx\Microsoft.HostCompute.Test.PowerShell.v2.dll`; source alone is not
+installable. `--secfw-file` is optional when the matching test Secure Firmware
+is already installed separately on the blade.
+
+Copy `out/tip-package` to the host, open a fresh elevated Windows PowerShell,
+then:
 
 ```powershell
-# one-time host prep (loopback migration, test SecFw — may reboot)
-.\Run-TipTests.ps1 -PackageDir . -PowerTestPath C:\path\to\PowerTest -InitializeHost
+# One-time dependency install and host prep. Reboot if requested, then rerun
+# without -InstallDependencies.
+.\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
 
-# single case
-.\Invoke-TdxLmLoopback.ps1 -IgvmFilePath .\test-migtd-accept-all.igvm -PowerTestPath C:\path\to\PowerTest
-.\Invoke-TdxLmLoopback.ps1 -IgvmFilePath .\test-migtd-reject-all.igvm -ExpectReject -PowerTestPath C:\path\to\PowerTest
+# Default suite: agent-independent mock-quote migration + ServTdExt validation.
+.\Run-TipTests.ps1
+
+# Also run regular IGVMAgent-dependent policy cases.
+.\Run-TipTests.ps1 -IncludeAgentCases
 ```
 
 Each case: start MigTD → register hash → create TDX VM → `Move-VM -DestinationHost
