@@ -5,6 +5,34 @@ package to the TDX host, run loopback migrations manually.
 
 ## 1. Build (Linux)
 
+### 1.0 One-time build-environment setup (fresh host)
+
+On a clean Debian/Ubuntu box, install the full toolchain (system packages via a
+single `sudo apt-get install`, plus Rust + the `x86_64-unknown-none` target) with:
+
+```bash
+./sh_script/setup_build_env.sh          # sudo apt install + rustup/toolchain
+# or just print the one-line apt command:  ./sh_script/setup_build_env.sh --print-apt
+```
+
+Then initialize submodules and apply patches (first time only):
+
+```bash
+source "$HOME/.cargo/env"
+git submodule update --init --recursive deps/td-shim deps/spdm-rs deps/linux-sgx
+./sh_script/preparation.sh
+```
+
+On GCC >= 14 the vendored linux-sgx DCAP C code needs the new default errors
+demoted back to warnings; export this before building:
+
+```bash
+export CC=clang AR=llvm-ar
+export CFLAGS="-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+```
+
+### 1.1 Build the package
+
 ```bash
 ./sh_script/Azure/tip/build_tip_package.sh \
     --out out/tip-package \

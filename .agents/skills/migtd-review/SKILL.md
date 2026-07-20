@@ -199,7 +199,7 @@ If an EMU test fails after a fix:
 
 ## 6. Running EMU integration tests locally
 
-Prerequisites: Rust 1.88.0, nasm, clang, libtss2-dev, pkg-config, jq, and `bash sh_script/preparation.sh` has been run (see §2).
+Prerequisites: Rust 1.88.0, nasm, clang, libtss2-dev, pkg-config, jq, and `bash sh_script/preparation.sh` has been run (see §2). On a fresh host, install the full toolchain in one shot with `./sh_script/setup_build_env.sh` (single `sudo apt-get install` + rustup/toolchain/`x86_64-unknown-none`; `--print-apt` shows just the apt one-liner).
 
 Working tests on Ubuntu 24.04 (skip-RA paths):
 

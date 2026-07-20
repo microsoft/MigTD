@@ -8,6 +8,36 @@ description: Troubleshoot Azure TiP / TDX lab-blade MigTD loopback migration fai
 Use this skill for real-hardware Azure TiP / TDX loopback migration failures.
 The canonical test package is `sh_script/Azure/tip/`.
 
+## Building the package (Linux)
+
+To (re)build the TiP package from source on a fresh Debian/Ubuntu host, first
+bootstrap the build environment once with the reusable setup script:
+
+```bash
+# System toolchain (single sudo apt install) + Rust + x86_64-unknown-none target
+<REPO_ROOT>/sh_script/setup_build_env.sh
+# print only the apt one-liner:  sh_script/setup_build_env.sh --print-apt
+# apt step only / rust step only: --apt-only / --rust-only
+
+source "$HOME/.cargo/env"
+git submodule update --init --recursive deps/td-shim deps/spdm-rs deps/linux-sgx
+./sh_script/preparation.sh
+```
+
+Then build (on GCC >= 14, demote the vendored linux-sgx DCAP warnings that
+modern GCC turns into hard errors):
+
+```bash
+export CC=clang AR=llvm-ar
+export CFLAGS="-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion"
+./sh_script/Azure/tip/build_tip_package.sh \
+    --os-root <OS_ROOT> --hcstest-dir <HCSTEST_DIR> --fetch-collaterals
+```
+
+`--os-root` supplies PowerTest from the OS enlistment; `--hcstest-dir` must be a
+prebuilt HCSTest v2 package (with `netfx/Microsoft.HostCompute.Test.PowerShell.v2.dll`).
+See `sh_script/Azure/tip/README.md` for full build/run details.
+
 ## Parameters
 
 Never hardcode a developer's mount points or OS enlistment:
