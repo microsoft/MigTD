@@ -17,6 +17,9 @@
 #                                 the real policy is (re-)signed, and re-enrolled
 #                                 into the already-built image's CFV in place.
 #   test-migtd-getquote-all.igvm GetQuote init test image
+#   test-migtd-accept-all_mock_quote.igvm allow-all policy + built-in mock quote
+#   test-migtd-reject-all_mock_quote.igvm reject policy + built-in mock quote
+#   test-migtd-real_mock_quote.igvm       policy from mock measurements + mock quote
 #
 # Usage:
 #   ./sh_script/Azure/tip/build_tip_package.sh [--out DIR] [--fetch-collaterals]
@@ -29,7 +32,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 OUT_DIR="$PROJECT_ROOT/out/tip-package"
-VARIANTS="accept-all,reject-all,real,getquote-all"
+VARIANTS="accept-all,reject-all,real,getquote-all,accept-all_mock_quote,reject-all_mock_quote,real_mock_quote"
 FETCH_ARGS=()
 FEATURES="vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation,igvm-attest"
 LOG_LEVEL="info"
@@ -57,9 +60,14 @@ IMG="target/debug/migtd.igvm"
 CERT_DIR="$OUT_DIR/.certs"
 POLICY_FFS_GUID="0BE92DC3-6221-4C98-87C1-8EEFFD70DE5A"
 POLICY_ISSUER_CHAIN_FFS_GUID="3F2FB27A-9596-431C-A68D-D3EAB39F8AEB"
+TROUBLESHOOT_DIR=".agents/skills/migtd-tip-troubleshoot/scripts"
 
 echo "=== TiP package build ==="
 echo "Output: $OUT_DIR"
+if [[ ! -d "$TROUBLESHOOT_DIR" ]]; then
+  echo "Missing troubleshooting helpers: $TROUBLESHOOT_DIR" >&2
+  exit 1
+fi
 mkdir -p "$OUT_DIR"
 ./sh_script/preparation.sh
 cargo build -p migtd-hash --release
@@ -69,6 +77,12 @@ gen_policy()  { chmod +x "$MOCK"; "./$MOCK" --skip-test "${FETCH_ARGS[@]}" "$@";
 build_image() { cargo image --policy-v2 --debug --image-format igvm --no-default-features \
                   --features "$2" --log-level "$LOG_LEVEL" \
                   --policy-issuer-chain "$CHAIN" --policy "$POLICY" --output "$IMG"; }
+build_make_image() {
+  local target="$1"
+  make -C sh_script/Azure "$target" \
+    IGVM_FILE="$PROJECT_ROOT/$IMG" \
+    LOG_LEVEL="$LOG_LEVEL"
+}
 # Re-enroll a (re-)signed policy + issuer chain into an already-built IGVM's
 # CFV in place, without rebuilding MigTD/td-shim (MRTD is unaffected: only the
 # CFV content changes, RTMR0/RTMR1 are also unaffected since they don't cover
@@ -84,8 +98,10 @@ enroll_policy() {
 emit() {  # name
   local name="$1" base="$OUT_DIR/test-migtd-$1.igvm"
   cp "$IMG" "$base"
-  # Plain hex servtd hash -> the host reads this as MigTdHash (last line; migtd-hash also prints an MRTD line).
-  "$HASH_BIN" --manifest "$MANIFEST" --image "$base" --policy-v2 --calc-servtd-hash | tail -n1 | tr -d '[:space:]' > "$base.hash"
+  # Hyper-V passes MigTdHash directly to TDH.SERVTD.PREBIND as SERVTD_INFO_HASH.
+  # Do not use --calc-servtd-hash here: that produces the outer TDREPORT
+  # SERVTD_HASH and TDH.SERVTD.BIND rejects it with TDX_SERVTD_INFO_HASH_MISMATCH.
+  "$HASH_BIN" --manifest "$MANIFEST" --image "$base" --policy-v2 | tail -n1 | tr -d '[:space:]' > "$base.hash"
   echo "  built $name  hash=$(cat "$base.hash")"
 }
 
@@ -114,9 +130,24 @@ for v in "${LIST[@]}"; do
       emit real
       ;;
     getquote-all) gen_policy --allow-all; build_image "$v" "$FEATURES,test-get-quote"; emit getquote-all;;
+    accept-all_mock_quote)
+      build_make_image build-igvm-mock-quote-allow-all
+      emit accept-all_mock_quote
+      ;;
+    reject-all_mock_quote)
+      build_make_image build-igvm-reject
+      emit reject-all_mock_quote
+      ;;
+    real_mock_quote)
+      build_make_image build-igvm-mock-quote
+      emit real_mock_quote
+      ;;
     *) echo "skip unknown variant: $v" >&2;;
   esac
 done
 
 cp sh_script/Azure/tip/*.ps1 sh_script/Azure/tip/README.md "$OUT_DIR/" 2>/dev/null || true
+mkdir -p "$OUT_DIR/troubleshooting"
+cp "$TROUBLESHOOT_DIR"/*.ps1 "$OUT_DIR/troubleshooting/"
+cp "$TROUBLESHOOT_DIR"/*.wprp "$OUT_DIR/troubleshooting/"
 echo "=== done ==="; ls -lh "$OUT_DIR"
