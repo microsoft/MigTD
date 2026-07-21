@@ -146,8 +146,8 @@ If `OS_ROOT` is available, reference paths are:
 
    ```powershell
    .\Test-TdxLmRebind.ps1 `
-       -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-       -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+       -OldIgvmFilePath .\test-migtd_mock_quote.igvm `
+       -NewIgvmFilePath .\test-migtd_mock_quote_rebind.igvm
    ```
 
    The inputs may be different files or the same file. For equal hashes, the
@@ -163,6 +163,20 @@ If `OS_ROOT` is available, reference paths are:
    rebind and waits up to 30 seconds for terminal rebind logs before cleanup.
    Host policy is `DisabledByDefault`; the test VM is explicitly set to
    `EnabledIfHostPermits` before its migration-policy hash is assigned.
+
+   Policy leaf-key rotation uses the same policy SVN, root CA, and leaf Subject
+   Name with a different leaf key. Each peer authenticates the other peer's
+   signed TCB mapping; the destination does not require future peer measurements
+   in its local mapping. Test both directions:
+
+   ```powershell
+   .\Test-TdxLmRebind.ps1 `
+       -OldIgvmFilePath .\test-migtd_mock_quote.igvm `
+       -NewIgvmFilePath .\test-migtd_mock_quote_key_rotation.igvm
+   .\Test-TdxLmRebind.ps1 `
+       -OldIgvmFilePath .\test-migtd_mock_quote_key_rotation.igvm `
+       -NewIgvmFilePath .\test-migtd_mock_quote.igvm
+   ```
 
 7. **Capture Hyper-V diagnostics around one clean repro**
 

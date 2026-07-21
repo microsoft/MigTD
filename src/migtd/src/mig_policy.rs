@@ -331,23 +331,19 @@ mod v2 {
             );
         }
 
-        // Verify the init tdinfo against servtd_ext hash
+        // Verify the init TDINFO against the source's ServtdExt hash.
+        //
+        // Do not require these measurements to appear in the destination's
+        // local TCB mapping. The authenticated source report carries the
+        // current source policy signer and SVN. In production, the owner
+        // cross-check above enforces source policy SVN >= init policy SVN;
+        // the current REVERT_ME test mode only logs that failure. A local
+        // measurement allowlist would require an older policy to predict
+        // future MigTD images and would prevent migration back and forth
+        // during policy signing-key rotation.
         let servtd_ext_src_obj =
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
-        let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
-        #[cfg(not(feature = "use-mock-quote"))]
-        let _engine_svn = policy
-            .servtd_tcb_mapping
-            .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
-                &init_td_info.mrtd,
-                &init_td_info.rtmr0,
-                &init_td_info.rtmr1,
-                Some(&init_td_info.rtmr2),
-                Some(&init_td_info.rtmr3),
-            ))
-            .ok_or(PolicyError::SvnMismatch)?;
-        #[cfg(feature = "use-mock-quote")]
-        log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
+        verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
 
         // If backward policy exists, evaluate the migration src based on it.
         let relative_reference = get_local_tcb_evaluation_info()?;
@@ -655,13 +651,28 @@ mod v2 {
         tdreport: &TdxReport,
         policy: &VerifiedPolicy,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
+        #[cfg(feature = "use-mock-quote")]
+        let mock_tdreport = attestation::tdreport::tdcall_report(
+            &[0u8; attestation::tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE],
+        )
+        .map_err(|_| PolicyError::GetTdxReport)?;
+        #[cfg(feature = "use-mock-quote")]
+        let mapping_tdreport = {
+            log::warn!(
+                "use-mock-quote: deriving rebinding MigTD TCB metadata from the mock quote report\n"
+            );
+            &mock_tdreport
+        };
+        #[cfg(not(feature = "use-mock-quote"))]
+        let mapping_tdreport = tdreport;
+
         let migtd_svn = policy.servtd_tcb_mapping.get_engine_svn_by_measurements(
             &Measurements::new_from_bytes(
-                &tdreport.td_info.mrtd,
-                &tdreport.td_info.rtmr0,
-                &tdreport.td_info.rtmr1,
-                Some(&tdreport.td_info.rtmr2),
-                Some(&tdreport.td_info.rtmr3),
+                &mapping_tdreport.td_info.mrtd,
+                &mapping_tdreport.td_info.rtmr0,
+                &mapping_tdreport.td_info.rtmr1,
+                Some(&mapping_tdreport.td_info.rtmr2),
+                Some(&mapping_tdreport.td_info.rtmr3),
             ),
         );
 
@@ -891,8 +902,7 @@ mod v2 {
 
     /// Destination-side migration helper: verify the source MigTD's
     /// quote/event log, cross-check init TDINFO against the quote's
-    /// supplemental data, verify init TDINFO integrity against ServtdExt,
-    /// and allowlist-gate init measurements against servtd_tcb_mapping.
+    /// supplemental data, and verify init TDINFO integrity against ServtdExt.
     ///
     /// This mirrors the checks that `authenticate_rebinding_old` performs
     /// for the rebinding path, ensuring parity between migration and
@@ -933,13 +943,12 @@ mod v2 {
             false,
         )?;
 
-        // Cross-check init TDINFO against MROWNER/MROWNERCONFIG from
-        // verified quote supplemental data, verify init TDINFO integrity
-        // against ServtdExt hash, and allowlist-gate init measurements.
+        // Cross-check init TDINFO against MROWNER/MROWNERCONFIG from the
+        // verified quote supplemental data and verify its integrity against
+        // the source's ServtdExt hash.
         //
         // Skipped when running with mock quotes/reports that carry static
-        // test data — the mock init TDINFO does not have measurements
-        // that match the policy servtd_tcb_mapping.
+        // test data without the production MROWNER/MROWNERCONFIG binding.
         #[cfg(not(any(
             feature = "AzCVMEmu",
             feature = "test_mock_report",
@@ -951,24 +960,13 @@ mod v2 {
             // Verify init TDINFO integrity against ServtdExt hash
             let servtd_ext_obj =
                 ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
-            let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_obj)?;
+            verify_init_tdinfo(init_tdinfo, &servtd_ext_obj)?;
 
-            // Allowlist gate: init MigTD measurements must be in servtd_tcb_mapping.
-            // Under use-mock-quote the MRTD belongs to a different binary (mock build)
-            // and won't be in the tcb_mapping generated for the production image.
-            #[cfg(not(feature = "use-mock-quote"))]
-            let _engine_svn = policy
-                .servtd_tcb_mapping
-                .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
-                    &init_td_info.mrtd,
-                    &init_td_info.rtmr0,
-                    &init_td_info.rtmr1,
-                    Some(&init_td_info.rtmr2),
-                    Some(&init_td_info.rtmr3),
-                ))
-                .ok_or(PolicyError::SvnMismatch)?;
-            #[cfg(feature = "use-mock-quote")]
-            log::warn!("use-mock-quote: skipping get_engine_svn_by_measurements allowlist check\n");
+            // The authenticated source MROWNERCONFIG comparison above enforces
+            // source policy SVN >= init policy SVN. The destination's local TCB
+            // mapping is deliberately not consulted: requiring it to contain
+            // the source/init measurements would make independently issued
+            // policy-leaf rotations unable to migrate back and forth.
         }
 
         Ok(suppl_data)

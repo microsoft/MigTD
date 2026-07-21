@@ -50,12 +50,20 @@ to be provisioned).
       --hcstest-dir /path/to/prebuilt/HCSTest \
       --secfw-file /path/to/secfw_test_GenuineIntel.dll
   ```
-  Produces regular `test-migtd-{accept-all,reject-all,real,getquote-all}.igvm`
-  pairs and `_mock_quote` counterparts for accept-all, reject-all, and real
-  policy, plus build-matched PowerTest/HCSTest dependencies and an optional
-  test SecFw. HCSTest must be a prebuilt package containing its v2 netfx DLL;
-  source alone is insufficient. Regular images use IGVMAgent GetQuote;
-  mock-quote images use built-in quote data.
+  Produces `test-migtd.igvm` for the default real policy, named
+  `test-migtd-{accept-all,reject-all,getquote-all}.igvm` policy variants, and
+  `_mock_quote` counterparts. The default and mock-quote policy builds each
+  also have a `_rebind` image whose otherwise identical policy has `policySvn` incremented
+  by one and is signed by the same key. HCSTest must be a prebuilt package
+  containing its v2 netfx DLL; source alone is insufficient. Regular images
+  use IGVMAgent GetQuote; mock-quote images use built-in quote data.
+  `test-migtd_key_rotation.igvm` and
+  `test-migtd_mock_quote_key_rotation.igvm` keep the baseline policy SVN and
+  root/leaf Subject Name but rotate the outer policy leaf key, allowing
+  bidirectional rebind. Each peer trusts the other's authenticated TCB mapping;
+  no image must list future rotation measurements in its local mapping.
+  `Run-TipTests.ps1` runs both mock-quote directions by
+  default and both regular-quote directions with `-IncludeAgentCases`.
 - `migtd-hash --manifest config/Azure/servtd_info.json --image <image>
   --policy-v2` — the printed **last line** (96 hex chars) is the direct
   `SERVTD_INFO_HASH` written to `<image>.hash` (`MigTdHash` on the host side).

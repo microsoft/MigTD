@@ -27,9 +27,9 @@ param(
     # clean up without issuing Move-VM.
     [switch]$ServTdExtOnly,
     # Sets GuestStateIsolationMode=NoPersistentSecrets before startup. OpenHCL
-    # then suppresses target-VM host attestation. Regular MigTD images still use
-    # IGVMAgent for GHCI GetQuote; pair this with a _mock_quote image to bypass
-    # IGVMAgent completely. This changes the target VM security profile.
+    # then suppresses target-VM host attestation. A _mock_quote MigTD image uses
+    # built-in quote data and does not call IGVMAgent for GetQuote. This changes
+    # the target VM security profile.
     [switch]$NoPersistentSecrets,
     [ValidateRange(0, 60)]
     [int]$SerialDrainTimeoutSeconds = 30,
@@ -125,16 +125,21 @@ function Test-ServTdExtLayout {
 function Wait-ForFinalQuoteRetry {
     param(
         [string]$LogPath,
-        [int]$TimeoutSeconds
+        [int]$TimeoutSeconds,
+        [bool]$HostOperationSucceeded = $false,
+        [bool]$UsesMockQuote = $false
     )
 
-    if (-not $LogPath -or -not (Test-Path $LogPath) -or $TimeoutSeconds -eq 0) {
+    if ($UsesMockQuote -or -not $LogPath -or -not (Test-Path $LogPath) -or
+        $TimeoutSeconds -eq 0) {
         return
     }
 
-    $text = Get-Content $LogPath -Raw -ErrorAction SilentlyContinue
-    if ($text -notmatch 'GetQuote returned Busy \(attempt 5/6\)' -or
-        $text -match 'GetQuote failed after 6 attempts|get_quote_with_retry failed') {
+    $busyMarker = 'GetQuote returned Busy (attempt 5/6)'
+    $terminalPattern = 'Quote generated successfully|GetQuote failed after 6 attempts|get_quote_with_retry failed'
+    $text = [string](Get-Content $LogPath -Raw -ErrorAction SilentlyContinue)
+    $busyIndex = $text.LastIndexOf($busyMarker, [System.StringComparison]::Ordinal)
+    if ($busyIndex -lt 0 -or $text.Substring($busyIndex) -match $terminalPattern) {
         return
     }
 
@@ -142,13 +147,18 @@ function Wait-ForFinalQuoteRetry {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         Start-Sleep -Milliseconds 250
-        $text = Get-Content $LogPath -Raw -ErrorAction SilentlyContinue
-        if ($text -match 'GetQuote failed after 6 attempts|get_quote_with_retry failed') {
+        $text = [string](Get-Content $LogPath -Raw -ErrorAction SilentlyContinue)
+        $busyIndex = $text.LastIndexOf($busyMarker, [System.StringComparison]::Ordinal)
+        if ($busyIndex -lt 0 -or $text.Substring($busyIndex) -match $terminalPattern) {
             return
         }
     } while ((Get-Date) -lt $deadline)
 
-    Write-Warning 'Timed out waiting for the final GetQuote retry log; stopping MigTD.'
+    if ($HostOperationSucceeded) {
+        Write-Host 'Host operation succeeded; no terminal GetQuote retry marker was observed before cleanup.'
+    } else {
+        Write-Warning 'Timed out waiting for the final GetQuote retry log; stopping MigTD.'
+    }
 }
 
 if ($PowerTestPath) {
@@ -238,8 +248,15 @@ if (-not (Test-Path $HashFilePath)) { throw "Hash file not found: $HashFilePath"
 
 $MigTdHash = (Get-Content $HashFilePath -Raw).Trim()
 Write-Host "MigTD: $IgvmFilePath  hash=$MigTdHash"
+$usesMockQuote = [System.IO.Path]::GetFileName($IgvmFilePath) -match '_mock_quote'
+if ($usesMockQuote) {
+    Write-Host 'MigTD attestation path: built-in mock quote; no IGVMAgent GetQuote call will be made.'
+} else {
+    Write-Host 'MigTD attestation path: IGVMAgent-backed GetQuote.'
+}
 
 $migTd = $null; $td = $null; $serialJob = $null; $serialLogPath = $null
+$hostOperationSucceeded = $false
 try {
     $migTd = New-TestHcsMigTd -Id $MigTdId -IgvmFilePath (Resolve-Path $IgvmFilePath) -GuestStateDirectory . -EnableSerial:$CaptureSerial -Force
 
@@ -289,7 +306,7 @@ try {
             Import-Module $ivmUtilitiesPath -Force
         }
         $td | Set-GuestStateIsolationMode -IsolationMode NoPersistentSecrets
-        Write-Host 'Configured NoPersistentSecrets; target-VM OpenHCL attestation is suppressed. MigTD GetQuote still uses IGVMAgent.'
+        Write-Host 'Configured NoPersistentSecrets; target-VM OpenHCL attestation is suppressed.'
     }
     $td | Set-VmMigratablePolicy -MigratablePolicy EnabledIfHostPermits | Out-Null
     $migratablePolicy = [string]($td | Get-VmMigratablePolicy)
@@ -320,6 +337,7 @@ try {
             -TargetVmName $VmName `
             -ExpectedHash $MigTdHash `
             -ModuleRoot $PowerTestPath
+        $hostOperationSucceeded = $true
         Write-Host 'PASS: ServTdExt contains the prebound hash in both binding slots with expected zero padding.'
         return
     }
@@ -329,9 +347,11 @@ try {
 
     if ($ExpectReject) {
         if (-not $moveErr) { throw "FAIL: migration succeeded but rejection expected" }
+        $hostOperationSucceeded = $true
         Write-Host "PASS: migration rejected as expected ($($moveErr[0]))"
     } else {
         if ($moveErr)     { throw "FAIL: migration failed: $($moveErr[0])" }
+        $hostOperationSucceeded = $true
         Write-Host "PASS: migration succeeded"
     }
 }
@@ -344,7 +364,9 @@ finally {
     if ($serialJob) {
         Wait-ForFinalQuoteRetry `
             -LogPath $serialLogPath `
-            -TimeoutSeconds $SerialDrainTimeoutSeconds
+            -TimeoutSeconds $SerialDrainTimeoutSeconds `
+            -HostOperationSucceeded:$hostOperationSucceeded `
+            -UsesMockQuote:$usesMockQuote
     }
     if ($migTd)  { Stop-HcsSystem $migTd -ErrorAction SilentlyContinue; $migTd.Close() }
     if ($serialJob) {

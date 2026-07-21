@@ -44,17 +44,25 @@ to warnings automatically, so no manual `CFLAGS` override is needed.
     --secfw-file /path/to/secfw_test_GenuineIntel.dll
 ```
 
+Use `--skip-dependencies` for an image-and-test-script-only package when
+PowerTest and HCSTest v2 are already installed on the TiP host.
+
 Produces in `out/tip-package/`:
 
 | File | Role |
 |------|------|
 | `test-migtd-accept-all.igvm` + `.hash` | allow-all policy → migration succeeds |
 | `test-migtd-reject-all.igvm` + `.hash` | bad-FMSPC policy → migration rejected |
-| `test-migtd-real.igvm` + `.hash` | `config/Azure/policy_data_raw.json` → succeeds if node FMSPC/TCB match |
+| `test-migtd.igvm` + `.hash` | `config/Azure/policy_data_raw.json` → succeeds if node FMSPC/TCB match |
+| `test-migtd_rebind.igvm` + `.hash` | same real policy and signer with `policySvn` incremented by one |
+| `test-migtd_key_rotation.igvm` + `.hash` | same real policy SVN/root/leaf Subject Name, signed by a new policy leaf key |
 | `test-migtd-getquote-all.igvm` + `.hash` | GetQuote init image |
 | `test-migtd-accept-all_mock_quote.igvm` + `.hash` | allow-all policy with built-in mock quote |
 | `test-migtd-reject-all_mock_quote.igvm` + `.hash` | reject policy with built-in mock quote |
-| `test-migtd-real_mock_quote.igvm` + `.hash` | policy generated from mock measurements with built-in mock quote |
+| `test-migtd_mock_quote.igvm` + `.hash` | policy generated from mock measurements with built-in mock quote |
+| `test-migtd_mock_quote_rebind.igvm` + `.hash` | same mock-quote real policy and signer with `policySvn` incremented by one |
+| `test-migtd_mock_quote_key_rotation.igvm` + `.hash` | mock-quote counterpart signed by the rotated policy leaf key |
+| `test-migtd{,_rebind,_key_rotation,_mock_quote,_mock_quote_rebind,_mock_quote_key_rotation}.policy.json` | signed policy snapshot embedded in the corresponding image |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1` | migration test scripts |
 | `Test-TdxServTdExtPrebind.ps1` | start a prebound TD and validate both ServTdExt hash slots and zero padding |
 | `Test-TdxLmRebind.ps1` | rebind a running TD between two same- or different-image MigTD instances |
@@ -66,10 +74,39 @@ Produces in `out/tip-package/`:
 `TDH.SERVTD.PREBIND` as `MigTdHash`. Built with MigTD-native tooling only
 (`cargo image`, `migtd-hash`, `build_azure_mock_test.sh`).
 
-The `_mock_quote` variants are built through the corresponding targets in
-`sh_script/Azure/Makefile` with the `use-mock-quote` feature. They do not use
-the host IGVMAgent GetQuote path. Their sibling `.hash` files are still direct
+The `_mock_quote` variants use the `use-mock-quote` feature and do not use the
+host IGVMAgent GetQuote path. Their sibling `.hash` files are still direct
 `SERVTD_INFO_HASH` values calculated from each final emitted IGVM.
+
+Each real-policy variant is emitted as an original/rebind pair. The rebind
+policy is derived from the fully merged original `policyData` and changes only
+`policySvn`, incrementing it by one before signing with the same policy key.
+The real-quote pair uses a two-phase measure-then-bind build so its ServTD TCB
+mapping contains the final image's real MRTD/RTMR0/RTMR1. The mock-quote pair
+keeps the static mock measurements; migration and rebinding both derive MigTD
+TCB metadata from the mock quote rather than the live TDREPORT.
+The builder calculates each image's final runtime TD Info Hash independently.
+If a pair ever produces equal hashes, the rebind test handles that case with
+its synthetic second mapping key.
+
+The key-rotation variants keep `policySvn` unchanged so rebind is authorized
+in both directions. Their outer policy certificate uses a new key, but chains
+to the same root CA and carries the same leaf Subject Name. TD identity and TCB
+mapping collateral remain signed by the original leaf, isolating the test to
+rotation of the policy-signing leaf. Each image carries a signed TCB mapping for
+its own measurements; after the peer mapping chain passes the same-root and
+same-Subject-Name checks, the peer mapping supplies its MigTD SVN and identity.
+The destination does not require the source/init measurements in its local TCB
+mapping, so an older image does not need to predict a future rotation image.
+
+For regular attestation, ServTdExt binds the supplied init TDINFO and the
+authenticated source MROWNER/MROWNERCONFIG check enforces that the source policy
+signer matches the init signer and that source policy SVN is greater than or
+equal to init policy SVN. The local TCB-mapping lookup does not contribute to
+that ordering and is intentionally omitted, allowing migration and rebinding
+back and forth during a key-rotation rollout. The current `REVERT_ME` test mode
+logs some MROWNER/MROWNERCONFIG failures instead of aborting; production must
+restore those checks as hard failures.
 
 ## 2. Run (TDX labblade, elevated PowerShell)
 
@@ -191,9 +228,24 @@ IGVMs. They may be different files or the same file:
 
 ```powershell
 .\Test-TdxLmRebind.ps1 `
-    -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-    -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+    -OldIgvmFilePath .\test-migtd_mock_quote.igvm `
+    -NewIgvmFilePath .\test-migtd_mock_quote_rebind.igvm
 ```
+
+To exercise policy leaf-key rotation in both directions:
+
+```powershell
+.\Test-TdxLmRebind.ps1 `
+    -OldIgvmFilePath .\test-migtd_mock_quote.igvm `
+    -NewIgvmFilePath .\test-migtd_mock_quote_key_rotation.igvm
+.\Test-TdxLmRebind.ps1 `
+    -OldIgvmFilePath .\test-migtd_mock_quote_key_rotation.igvm `
+    -NewIgvmFilePath .\test-migtd_mock_quote.igvm
+```
+
+`Run-TipTests.ps1` runs these two mock-quote rotation cases by default. With
+`-IncludeAgentCases`, it also runs both directions between `test-migtd.igvm`
+and `test-migtd_key_rotation.igvm`.
 
 Runtime `TD Info Hash` values parsed from the two serial logs are authoritative,
 so sibling `.hash` files may be stale or absent. Existing `.hash` files are

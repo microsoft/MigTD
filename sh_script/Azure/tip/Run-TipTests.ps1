@@ -3,7 +3,8 @@
   Run the TiP loopback test suite over a built package directory.
 
 .DESCRIPTION
-  Runs an agent-independent mock-quote migration and ServTdExt prebind check.
+  Runs agent-independent mock-quote migration, ServTdExt prebind, and
+  bidirectional policy leaf-key rotation rebind checks.
   Optionally installs bundled dependencies, configures the host, and runs the
   regular IGVMAgent-dependent policy cases.
 
@@ -46,13 +47,13 @@ if ($InstallDependencies) {
 }
 
 $cases = @(
-    @{ Name = 'accept-all_mock_quote'; Reject = $false; NoSecrets = $true }
+    @{ Name = 'accept-all_mock_quote'; File = 'test-migtd-accept-all_mock_quote.igvm'; Reject = $false; NoSecrets = $true }
 )
 if ($IncludeAgentCases) {
     $cases += @(
-        @{ Name = 'accept-all'; Reject = $false; NoSecrets = $false },
-        @{ Name = 'real'; Reject = $false; NoSecrets = $false },
-        @{ Name = 'reject-all'; Reject = $true; NoSecrets = $false }
+        @{ Name = 'accept-all'; File = 'test-migtd-accept-all.igvm'; Reject = $false; NoSecrets = $false },
+        @{ Name = 'policy'; File = 'test-migtd.igvm'; Reject = $false; NoSecrets = $false },
+        @{ Name = 'reject-all'; File = 'test-migtd-reject-all.igvm'; Reject = $true; NoSecrets = $false }
     )
 }
 
@@ -62,7 +63,7 @@ if (-not (Test-Path $loopback)) {
 }
 $results = @()
 foreach ($c in $cases) {
-    $igvm = Join-Path $PackageDir "test-migtd-$($c.Name).igvm"
+    $igvm = Join-Path $PackageDir $c.File
     if (-not (Test-Path $igvm)) { Write-Warning "skip $($c.Name): $igvm not found"; continue }
     Write-Host "`n=== $($c.Name) ==="
     try {
@@ -89,6 +90,54 @@ if (Test-Path $prebindIgvm) {
         $results += [pscustomobject]@{ Case = 'ServTdExt prebind'; Result = 'PASS' }
     } catch {
         $results += [pscustomobject]@{ Case = 'ServTdExt prebind'; Result = "FAIL: $_" }
+    }
+}
+
+$rebindScript = Join-Path $PackageDir 'Test-TdxLmRebind.ps1'
+if (-not (Test-Path $rebindScript)) {
+    throw "Rebind test script not found: $rebindScript"
+}
+$rotationCases = @(
+    @{
+        Name = 'mock-quote key rotation forward'
+        Old = 'test-migtd_mock_quote.igvm'
+        New = 'test-migtd_mock_quote_key_rotation.igvm'
+    },
+    @{
+        Name = 'mock-quote key rotation backward'
+        Old = 'test-migtd_mock_quote_key_rotation.igvm'
+        New = 'test-migtd_mock_quote.igvm'
+    }
+)
+if ($IncludeAgentCases) {
+    $rotationCases += @(
+        @{
+            Name = 'key rotation forward'
+            Old = 'test-migtd.igvm'
+            New = 'test-migtd_key_rotation.igvm'
+        },
+        @{
+            Name = 'key rotation backward'
+            Old = 'test-migtd_key_rotation.igvm'
+            New = 'test-migtd.igvm'
+        }
+    )
+}
+
+foreach ($c in $rotationCases) {
+    $oldIgvm = Join-Path $PackageDir $c.Old
+    $newIgvm = Join-Path $PackageDir $c.New
+    if (-not (Test-Path $oldIgvm) -or -not (Test-Path $newIgvm)) {
+        Write-Warning "skip $($c.Name): required image missing"
+        continue
+    }
+    Write-Host "`n=== $($c.Name) ==="
+    try {
+        & $rebindScript -OldIgvmFilePath $oldIgvm -NewIgvmFilePath $newIgvm `
+            -PowerTestPath $PowerTestPath -CaptureSerial:$CaptureSerial
+        $results += [pscustomobject]@{ Case = $c.Name; Result = 'PASS' }
+    } catch {
+        $results += [pscustomobject]@{ Case = $c.Name; Result = "FAIL: $_" }
     }
 }
 

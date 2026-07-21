@@ -202,6 +202,81 @@ generate_certificates() {
     rm -f "$output_dir/policy_signing.csr"
 }
 
+validate_rotated_leaf_certificates() {
+    local source_dir="$1"
+    local rotated_dir="$2"
+    local source_subject rotated_subject
+
+    if ! cmp -s "$source_dir/root_ca.pem" "$rotated_dir/root_ca.pem"; then
+        echo "Error: Rotated leaf does not use the original root CA." >&2
+        exit 1
+    fi
+
+    source_subject=$(openssl x509 -in "$source_dir/policy_signing.pem" \
+        -noout -subject -nameopt RFC2253)
+    rotated_subject=$(openssl x509 -in "$rotated_dir/policy_signing.pem" \
+        -noout -subject -nameopt RFC2253)
+    if [ "$source_subject" != "$rotated_subject" ]; then
+        echo "Error: Rotated leaf Subject Name differs from the original." >&2
+        exit 1
+    fi
+
+    if cmp -s \
+        <(openssl pkey -in "$source_dir/policy_signing.key" -pubout 2>/dev/null) \
+        <(openssl pkey -in "$rotated_dir/policy_signing.key" -pubout 2>/dev/null); then
+        echo "Error: Rotated leaf reused the original public key." >&2
+        exit 1
+    fi
+}
+
+generate_rotated_leaf_certificates() {
+    local source_dir="$1"
+    local output_dir="$2"
+    local curve_name
+    local hash_algo
+    local leaf_subject="/CN=MigTD Policy Issuer/O=Microsoft Corporation"
+
+    for file in root_ca.key root_ca.pem policy_signing.key policy_signing.pem; do
+        if [ ! -f "$source_dir/$file" ]; then
+            echo "Error: Cannot rotate leaf; missing $source_dir/$file" >&2
+            exit 1
+        fi
+    done
+
+    mkdir -p "$output_dir"
+    cp "$source_dir/root_ca.key" "$output_dir/root_ca.key"
+    cp "$source_dir/root_ca.pem" "$output_dir/root_ca.pem"
+
+    curve_name=$(get_curve_name "P384")
+    hash_algo=$(get_hash_algorithm "P384")
+
+    echo "Generating rotated policy signing private key..."
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:$curve_name \
+        -out "$output_dir/policy_signing.key"
+    openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt \
+        -in "$output_dir/policy_signing.key" \
+        -out "$output_dir/policy_signing_pkcs8.key"
+    openssl req -new \
+        -key "$output_dir/policy_signing.key" \
+        -out "$output_dir/policy_signing.csr" \
+        -subj "$leaf_subject"
+    openssl x509 -req \
+        -in "$output_dir/policy_signing.csr" \
+        -CA "$output_dir/root_ca.pem" \
+        -CAkey "$output_dir/root_ca.key" \
+        -CAcreateserial \
+        -out "$output_dir/policy_signing.pem" \
+        -days 365 \
+        -$hash_algo \
+        -extensions v3_ca \
+        -extfile <(echo -e "[v3_ca]\nkeyUsage = digitalSignature")
+    cat "$output_dir/policy_signing.pem" "$output_dir/root_ca.pem" \
+        > "$output_dir/policy_issuer_chain.pem"
+    rm -f "$output_dir/policy_signing.csr"
+
+    validate_rotated_leaf_certificates "$source_dir" "$output_dir"
+}
+
 # Parse command line arguments
 USE_MOCK_REPORT=false
 MOCK_QUOTE_FILE=""
@@ -210,6 +285,8 @@ AZURE_REGION="useast"
 ALLOW_ALL=false
 REJECT=false
 CERT_DIR_OVERRIDE=""
+SERVTD_CERT_DIR_OVERRIDE=""
+ROTATE_LEAF_FROM=""
 MEASURED_IMAGE=""
 MEASURED_MANIFEST="$PROJECT_ROOT/config/Azure/servtd_info.json"
 
@@ -245,6 +322,14 @@ while [[ $# -gt 0 ]]; do
             CERT_DIR_OVERRIDE="$2"
             shift 2
             ;;
+        --rotate-leaf-from)
+            ROTATE_LEAF_FROM="$2"
+            shift 2
+            ;;
+        --servtd-cert-dir)
+            SERVTD_CERT_DIR_OVERRIDE="$2"
+            shift 2
+            ;;
         --measured-image)
             MEASURED_IMAGE="$2"
             shift 2
@@ -270,6 +355,11 @@ while [[ $# -gt 0 ]]; do
             echo "                               certs generated, private key NOT deleted at the end)."
             echo "                               Needed for a stable RTMR1 across multiple invocations,"
             echo "                               e.g. the two-phase measure-then-bind tcb_mapping flow."
+            echo "  --rotate-leaf-from DIR       Generate/reuse a new policy leaf key in --cert-dir,"
+            echo "                               signed by DIR's root CA with the same leaf Subject Name."
+            echo "  --servtd-cert-dir DIR        Sign TD identity and TCB mapping collateral with DIR's"
+            echo "                               existing key/chain while the outer policy uses --cert-dir."
+            echo "                               This supports policy-leaf-only key rotation."
             echo "  --measured-image IGVM        Override the tcb_mapping mrtd/rtmr0/rtmr1 with the REAL"
             echo "                               measurements of an already-built MigTD IGVM, instead of"
             echo "                               the mock report's synthetic values. Pairs with --cert-dir"
@@ -316,6 +406,8 @@ if [ -n "$CERT_DIR_OVERRIDE" ]; then
     CERT_DIR="$CERT_DIR_OVERRIDE"
     PRIVATE_KEY="$CERT_DIR/policy_signing_pkcs8.key"
 fi
+SERVTD_CERT_DIR="${SERVTD_CERT_DIR_OVERRIDE:-$CERT_DIR}"
+SERVTD_PRIVATE_KEY="$SERVTD_CERT_DIR/policy_signing_pkcs8.key"
 mkdir -p "$CERT_DIR"
 
 # Select which policy data file to use
@@ -573,13 +665,24 @@ echo
 # Step 5: Generate certificates and signing key
 #
 echo -e "${BLUE}=== Step 5: Generating Certificates ===${NC}"
-if [ -n "$CERT_DIR_OVERRIDE" ] && [ -f "$PRIVATE_KEY" ] && [ -f "$CERT_DIR/policy_issuer_chain.pem" ]; then
+if [ -n "$ROTATE_LEAF_FROM" ] &&
+   [ -f "$PRIVATE_KEY" ] &&
+   [ -f "$CERT_DIR/policy_issuer_chain.pem" ]; then
+    echo "Reusing rotated certificate chain + signing key in: $CERT_DIR"
+    validate_rotated_leaf_certificates "$ROTATE_LEAF_FROM" "$CERT_DIR"
+elif [ -n "$ROTATE_LEAF_FROM" ]; then
+    generate_rotated_leaf_certificates "$ROTATE_LEAF_FROM" "$CERT_DIR"
+elif [ -n "$CERT_DIR_OVERRIDE" ] && [ -f "$PRIVATE_KEY" ] && [ -f "$CERT_DIR/policy_issuer_chain.pem" ]; then
     echo "Reusing existing certificate chain + signing key in: $CERT_DIR"
 else
     generate_certificates "$CERT_DIR" "P384" 365
 fi
 
 echo -e "${GREEN}✓ Certificates generated in: $CERT_DIR${NC}"
+if [ ! -f "$SERVTD_PRIVATE_KEY" ] || [ ! -f "$SERVTD_CERT_DIR/policy_issuer_chain.pem" ]; then
+    echo "Error: ServTD signing key/chain not found in: $SERVTD_CERT_DIR" >&2
+    exit 1
+fi
 echo
 
 #
@@ -589,7 +692,7 @@ echo -e "${BLUE}=== Step 6: Signing TD Identity ===${NC}"
 "$TOOLS_DIR/json-signer" \
     --sign \
     --name "tdIdentity" \
-    --private-key "$PRIVATE_KEY" \
+    --private-key "$SERVTD_PRIVATE_KEY" \
     --input "$TD_IDENTITY_UPDATED" \
     --output "$TD_IDENTITY_SIGNED"
 
@@ -603,7 +706,7 @@ echo -e "${BLUE}=== Step 7: Signing TCB Mapping ===${NC}"
 "$TOOLS_DIR/json-signer" \
     --sign \
     --name "tdTcbMapping" \
-    --private-key "$PRIVATE_KEY" \
+    --private-key "$SERVTD_PRIVATE_KEY" \
     --input "$TCB_MAPPING_UPDATED" \
     --output "$TCB_MAPPING_SIGNED"
 
@@ -614,8 +717,8 @@ echo
 # Step 8: Generate servtd_collateral.json
 #
 echo -e "${BLUE}=== Step 8: Generating ServTD Collateral ===${NC}"
-IDENTITY_CHAIN="$CERT_DIR/policy_issuer_chain.pem"
-MAPPING_CHAIN="$CERT_DIR/policy_issuer_chain.pem"
+IDENTITY_CHAIN="$SERVTD_CERT_DIR/policy_issuer_chain.pem"
+MAPPING_CHAIN="$SERVTD_CERT_DIR/policy_issuer_chain.pem"
 
 "$TOOLS_DIR/servtd-collateral-generator" \
     --identity "$TD_IDENTITY_SIGNED" \

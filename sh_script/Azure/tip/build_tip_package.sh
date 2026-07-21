@@ -9,17 +9,21 @@
 # Variants built:
 #   test-migtd-accept-all.igvm   allow-all policy        -> migration succeeds
 #   test-migtd-reject-all.igvm   bad-FMSPC policy        -> migration rejected
-#   test-migtd-real.igvm         config/Azure policy     -> succeeds if node matches
+#   test-migtd.igvm              config/Azure policy     -> succeeds if node matches
+#   test-migtd_rebind.igvm       same policy/signing key with policySvn + 1
 #                                 Built in two phases: a placeholder policy is
 #                                 built and measured first (MRTD/RTMR0/RTMR1 do
 #                                 not depend on policy content), then those real
 #                                 measurements are bound into tcb_mapping.json,
 #                                 the real policy is (re-)signed, and re-enrolled
 #                                 into the already-built image's CFV in place.
+#   test-migtd_key_rotation.igvm same policy SVN/root/subject with a new leaf key
 #   test-migtd-getquote-all.igvm GetQuote init test image
 #   test-migtd-accept-all_mock_quote.igvm allow-all policy + built-in mock quote
 #   test-migtd-reject-all_mock_quote.igvm reject policy + built-in mock quote
-#   test-migtd-real_mock_quote.igvm       policy from mock measurements + mock quote
+#   test-migtd_mock_quote.igvm       policy from mock measurements + mock quote
+#   test-migtd_mock_quote_rebind.igvm same mock-quote policy with policySvn + 1
+#   test-migtd_mock_quote_key_rotation.igvm same mock policy with a new leaf key
 #
 # Usage:
 #   ./sh_script/Azure/tip/build_tip_package.sh [--out DIR] [--fetch-collaterals]
@@ -28,6 +32,7 @@
 #                                              [--powertest-dir DIR]
 #                                              [--hcstest-dir DIR]
 #                                              [--secfw-file FILE]
+#                                              [--skip-dependencies]
 # ==============================================================================
 set -euo pipefail
 
@@ -36,14 +41,17 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 OUT_DIR="$PROJECT_ROOT/out/tip-package"
-VARIANTS="accept-all,reject-all,real,getquote-all,accept-all_mock_quote,reject-all_mock_quote,real_mock_quote"
+VARIANTS="accept-all,reject-all,real,real_key_rotation,getquote-all,accept-all_mock_quote,reject-all_mock_quote,real_mock_quote,real_mock_quote_key_rotation"
 FETCH_ARGS=()
-FEATURES="vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation,igvm-attest"
+FEATURES_BASE="vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation"
+FEATURES_REAL_QUOTE="$FEATURES_BASE,igvm-attest"
+FEATURES_MOCK_QUOTE="$FEATURES_BASE,use-mock-quote"
 LOG_LEVEL="info"
 OS_ROOT=""
 POWERTEST_DIR=""
 HCSTEST_DIR=""
 SECFW_FILE=""
+INCLUDE_DEPENDENCIES=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --powertest-dir) POWERTEST_DIR="$2"; shift 2;;
     --hcstest-dir) HCSTEST_DIR="$2"; shift 2;;
     --secfw-file) SECFW_FILE="$2"; shift 2;;
+    --skip-dependencies) INCLUDE_DEPENDENCIES=false; shift;;
     -h|--help) sed -n '2,35p' "$0"; exit 0;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
   esac
@@ -69,11 +78,14 @@ MANIFEST="config/Azure/servtd_info.json"
 POLICY="config/Azure/policy_v2_signed.json"
 CHAIN="config/Azure/policy_issuer_chain.pem"
 IMG="target/debug/migtd.igvm"
-# Persistent cert dir for the "real" variant's two-phase build: reused across
-# both gen_policy invocations so the policy issuer chain (and thus RTMR1)
-# stays byte-identical between the dummy-measurement pass and the final,
-# real-measurement-bound pass. See "real)" case below.
-CERT_DIR="$OUT_DIR/.certs"
+TOOLS_DIR="target/release"
+BUILD_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$BUILD_TMP_DIR"' EXIT
+# Reuse one temporary signing key for every real-policy pair. This keeps the
+# signer identity stable between the original and bumped-SVN images without
+# placing a private key in the generated package.
+CERT_DIR="$BUILD_TMP_DIR/policy-certs"
+ROTATED_CERT_DIR="$BUILD_TMP_DIR/policy-certs-rotated"
 POLICY_FFS_GUID="0BE92DC3-6221-4C98-87C1-8EEFFD70DE5A"
 POLICY_ISSUER_CHAIN_FFS_GUID="3F2FB27A-9596-431C-A68D-D3EAB39F8AEB"
 TROUBLESHOOT_DIR=".agents/skills/migtd-tip-troubleshoot/scripts"
@@ -89,6 +101,17 @@ build_make_image() {
     IGVM_FILE="$PROJECT_ROOT/$IMG" \
     LOG_LEVEL="$LOG_LEVEL"
 }
+artifact_stem() {
+  case "$1" in
+    default) printf 'test-migtd\n';;
+    default_rebind) printf 'test-migtd_rebind\n';;
+    mock_quote) printf 'test-migtd_mock_quote\n';;
+    mock_quote_rebind) printf 'test-migtd_mock_quote_rebind\n';;
+    key_rotation) printf 'test-migtd_key_rotation\n';;
+    mock_quote_key_rotation) printf 'test-migtd_mock_quote_key_rotation\n';;
+    *) printf 'test-migtd-%s\n' "$1";;
+  esac
+}
 # Re-enroll a (re-)signed policy + issuer chain into an already-built IGVM's
 # CFV in place, without rebuilding MigTD/td-shim (MRTD is unaffected: only the
 # CFV content changes, RTMR0/RTMR1 are also unaffected since they don't cover
@@ -102,13 +125,93 @@ enroll_policy() {
       -o "$PROJECT_ROOT/$IMG" )
 }
 emit() {  # name
-  local name="$1" base="$OUT_DIR/test-migtd-$1.igvm"
+  local name="$1" stem base
+  stem="$(artifact_stem "$name")"
+  base="$OUT_DIR/$stem.igvm"
   cp "$IMG" "$base"
   # Hyper-V passes MigTdHash directly to TDH.SERVTD.PREBIND as SERVTD_INFO_HASH.
   # Do not use --calc-servtd-hash here: that produces the outer TDREPORT
   # SERVTD_HASH and TDH.SERVTD.BIND rejects it with TDX_SERVTD_INFO_HASH_MISMATCH.
   "$HASH_BIN" --manifest "$MANIFEST" --image "$base" --policy-v2 | tail -n1 | tr -d '[:space:]' > "$base.hash"
-  echo "  built $name  hash=$(cat "$base.hash")"
+  echo "  built $stem  hash=$(cat "$base.hash")"
+}
+
+emit_real_policy_pair() { # name
+  local name="$1"
+  local original_stem rebind_stem
+  local original_policy="$BUILD_TMP_DIR/$name-policy-original.json"
+  local rebind_policy_data="$BUILD_TMP_DIR/$name-policy-rebind-data.json"
+  local original_svn rebind_svn actual_rebind_svn
+
+  cp "$POLICY" "$original_policy"
+  original_svn="$(jq -er '.policyData.policySvn | numbers' "$original_policy")"
+  rebind_svn=$((original_svn + 1))
+  original_stem="$(artifact_stem "$name")"
+  rebind_stem="$(artifact_stem "${name}_rebind")"
+
+  emit "$name"
+  cp "$original_policy" "$OUT_DIR/$original_stem.policy.json"
+
+  # Preserve the complete merged policyData object and change only policySvn,
+  # then sign it with the same key as the original image.
+  jq -c --argjson svn "$rebind_svn" \
+    '.policyData | .policySvn = $svn' \
+    "$original_policy" | tr -d '\n' > "$rebind_policy_data"
+  "$TOOLS_DIR/json-signer" \
+    --sign \
+    --name policyData \
+    --private-key "$CERT_DIR/policy_signing_pkcs8.key" \
+    --input "$rebind_policy_data" \
+    --output "$POLICY"
+
+  if ! diff -u \
+      <(jq -S '.policyData | del(.policySvn)' "$original_policy") \
+      <(jq -S '.policyData | del(.policySvn)' "$POLICY"); then
+    echo "Bumped policy for $name differs from the original beyond policySvn." >&2
+    return 1
+  fi
+  actual_rebind_svn="$(jq -er '.policyData.policySvn | numbers' "$POLICY")"
+  if [[ "$actual_rebind_svn" -ne "$rebind_svn" ]]; then
+    echo "Bumped policy for $name has policySvn=$actual_rebind_svn, expected $rebind_svn." >&2
+    return 1
+  fi
+
+  enroll_policy
+  emit "${name}_rebind"
+  cp "$POLICY" "$OUT_DIR/$rebind_stem.policy.json"
+  echo "  policy pair $original_stem: policySvn $original_svn -> $rebind_svn (same signer)"
+}
+
+emit_policy_image() { # name
+  local name="$1"
+  local stem
+  stem="$(artifact_stem "$name")"
+  emit "$name"
+  cp "$POLICY" "$OUT_DIR/$stem.policy.json"
+}
+
+verify_key_rotation_policy() {
+  local baseline_policy="$1"
+  local rotated_policy="$2"
+  local baseline_svn rotated_svn
+
+  baseline_svn="$(jq -er '.policyData.policySvn | numbers' "$baseline_policy")"
+  rotated_svn="$(jq -er '.policyData.policySvn | numbers' "$rotated_policy")"
+  if [[ "$baseline_svn" -ne "$rotated_svn" ]]; then
+    echo "Key rotation changed policySvn: $baseline_svn -> $rotated_svn" >&2
+    return 1
+  fi
+  diff -u \
+    <(jq -S '.policyData | del(.servtdCollateral)' "$baseline_policy") \
+    <(jq -S '.policyData | del(.servtdCollateral)' "$rotated_policy")
+  for chain in servtdIdentityIssuerChain servtdTcbMappingIssuerChain; do
+    if [[ "$(jq -r ".policyData.servtdCollateral.$chain" "$baseline_policy")" != \
+          "$(jq -r ".policyData.servtdCollateral.$chain" "$rotated_policy")" ]]; then
+      echo "Key rotation unexpectedly changed embedded $chain." >&2
+      return 1
+    fi
+  done
+  echo "  verified policy leaf rotation at unchanged policySvn $baseline_svn"
 }
 
 resolve_powertest_dir() {
@@ -170,8 +273,17 @@ if [[ ! -d "$TROUBLESHOOT_DIR" ]]; then
   echo "Missing troubleshooting helpers: $TROUBLESHOOT_DIR" >&2
   exit 1
 fi
-validate_dependencies
+if [[ "$INCLUDE_DEPENDENCIES" == true ]]; then
+  validate_dependencies
+else
+  echo "Host dependency bundling disabled (--skip-dependencies)."
+fi
 mkdir -p "$OUT_DIR"
+find "$OUT_DIR" -maxdepth 1 -type f \
+  \( -name 'test-migtd*.igvm' -o \
+     -name 'test-migtd*.igvm.hash' -o \
+     -name 'test-migtd*.policy.json' \) \
+  -delete
 ./sh_script/preparation.sh
 cargo build -p migtd-hash --release
 HASH_BIN="target/release/migtd-hash"
@@ -180,8 +292,8 @@ IFS=',' read -ra LIST <<< "$VARIANTS"
 for v in "${LIST[@]}"; do
   echo "--- $v ---"
   case "$v" in
-    accept-all)   gen_policy --allow-all; build_image "$v" "$FEATURES"; emit accept-all;;
-    reject-all)   gen_policy --reject;    build_image "$v" "$FEATURES"; emit reject-all;;
+    accept-all)   gen_policy --allow-all; build_image "$v" "$FEATURES_REAL_QUOTE"; emit accept-all;;
+    reject-all)   gen_policy --reject;    build_image "$v" "$FEATURES_REAL_QUOTE"; emit reject-all;;
     real)
       # Two-phase measure-then-bind build (see doc/ port notes): MRTD/RTMR0/RTMR1
       # don't depend on policy content, so phase 1 can use a placeholder/mock-
@@ -189,7 +301,7 @@ for v in "${LIST[@]}"; do
       mkdir -p "$CERT_DIR"
       # Phase 1: dummy policy (mock measurements), real cert chain (persisted).
       gen_policy --cert-dir "$CERT_DIR"
-      build_image "$v" "$FEATURES"
+      build_image "$v" "$FEATURES_REAL_QUOTE"
       # Phase 2: measure the REAL MRTD/RTMR0/RTMR1 of the just-built image and
       # bind them into tcb_mapping.json (instead of the mock-report values),
       # then re-sign the policy against it, reusing the SAME cert dir so the
@@ -198,9 +310,27 @@ for v in "${LIST[@]}"; do
       # Re-enroll the newly-signed policy + issuer chain into the already-
       # built image's CFV in place (no rebuild needed).
       enroll_policy
-      emit real
+      emit_real_policy_pair default
       ;;
-    getquote-all) gen_policy --allow-all; build_image "$v" "$FEATURES,test-get-quote"; emit getquote-all;;
+    real_key_rotation)
+      mkdir -p "$CERT_DIR" "$ROTATED_CERT_DIR"
+      # Ensure the baseline root exists, then create a distinct leaf key with
+      # the same Subject Name under that exact root CA.
+      gen_policy --cert-dir "$CERT_DIR"
+      baseline_policy="$BUILD_TMP_DIR/key-rotation-baseline.json"
+      cp "$POLICY" "$baseline_policy"
+      gen_policy --cert-dir "$ROTATED_CERT_DIR" --rotate-leaf-from "$CERT_DIR" \
+        --servtd-cert-dir "$CERT_DIR"
+      build_image "$v" "$FEATURES_REAL_QUOTE"
+      gen_policy --cert-dir "$ROTATED_CERT_DIR" --rotate-leaf-from "$CERT_DIR" \
+        --servtd-cert-dir "$CERT_DIR" \
+        --measured-image "$IMG" \
+        --measured-manifest "$MANIFEST"
+      verify_key_rotation_policy "$baseline_policy" "$POLICY"
+      enroll_policy
+      emit_policy_image key_rotation
+      ;;
+    getquote-all) gen_policy --allow-all; build_image "$v" "$FEATURES_REAL_QUOTE,test-get-quote"; emit getquote-all;;
     accept-all_mock_quote)
       build_make_image build-igvm-mock-quote-allow-all
       emit accept-all_mock_quote
@@ -210,8 +340,21 @@ for v in "${LIST[@]}"; do
       emit reject-all_mock_quote
       ;;
     real_mock_quote)
-      build_make_image build-igvm-mock-quote
-      emit real_mock_quote
+      mkdir -p "$CERT_DIR"
+      gen_policy --cert-dir "$CERT_DIR"
+      build_image "$v" "$FEATURES_MOCK_QUOTE"
+      emit_real_policy_pair mock_quote
+      ;;
+    real_mock_quote_key_rotation)
+      mkdir -p "$CERT_DIR" "$ROTATED_CERT_DIR"
+      gen_policy --cert-dir "$CERT_DIR"
+      baseline_policy="$BUILD_TMP_DIR/mock-key-rotation-baseline.json"
+      cp "$POLICY" "$baseline_policy"
+      gen_policy --cert-dir "$ROTATED_CERT_DIR" --rotate-leaf-from "$CERT_DIR" \
+        --servtd-cert-dir "$CERT_DIR"
+      verify_key_rotation_policy "$baseline_policy" "$POLICY"
+      build_image "$v" "$FEATURES_MOCK_QUOTE"
+      emit_policy_image mock_quote_key_rotation
       ;;
     *) echo "skip unknown variant: $v" >&2;;
   esac
@@ -221,5 +364,9 @@ cp sh_script/Azure/tip/*.ps1 sh_script/Azure/tip/README.md "$OUT_DIR/" 2>/dev/nu
 mkdir -p "$OUT_DIR/troubleshooting"
 cp "$TROUBLESHOOT_DIR"/*.ps1 "$OUT_DIR/troubleshooting/"
 cp "$TROUBLESHOOT_DIR"/*.wprp "$OUT_DIR/troubleshooting/"
-copy_dependencies
+if [[ "$INCLUDE_DEPENDENCIES" == true ]]; then
+  copy_dependencies
+else
+  rm -rf "$OUT_DIR/dependencies"
+fi
 echo "=== done ==="; ls -lh "$OUT_DIR"

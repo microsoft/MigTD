@@ -19,12 +19,17 @@
 .EXAMPLE
   .\Test-TdxLmRebind.ps1 `
       -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-      -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+      -NewIgvmFilePath .\test-migtd_mock_quote.igvm
 
 .EXAMPLE
   .\Test-TdxLmRebind.ps1 `
       -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
       -NewIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm
+
+.EXAMPLE
+  .\Test-TdxLmRebind.ps1 `
+      -OldIgvmFilePath .\test-migtd_mock_quote.igvm `
+      -NewIgvmFilePath .\test-migtd_mock_quote_key_rotation.igvm
 #>
 [CmdletBinding()]
 param(
@@ -234,7 +239,8 @@ function Wait-ForFinalRebindLogs {
     param(
         [string[]]$InstanceIds,
         [int]$TimeoutSeconds,
-        [int]$RequestGraceSeconds = 5
+        [int]$RequestGraceSeconds = 5,
+        [bool]$HostOperationSucceeded = $false
     )
 
     if ($TimeoutSeconds -eq 0) {
@@ -270,9 +276,14 @@ function Wait-ForFinalRebindLogs {
             } else {
                 ''
             }
-            if ($text -match 'Processing StartRebinding request') {
+            if ($text -match ('Processing StartRebinding request|' +
+                'Pre-Session-Message Version|' +
+                'finalize_spdm_session: body error|' +
+                'Failure during rebinding status code')) {
                 $started += $capture.InstanceId
-                if ($text -match 'ReportStatus for rebinding completed|Failed to report status for StartRebinding') {
+                if ($text -match ('ReportStatus for rebinding completed|' +
+                    'Failed to report status for StartRebinding|' +
+                    'Failure during rebinding status code')) {
                     $completed += $capture.InstanceId
                 }
             }
@@ -292,7 +303,11 @@ function Wait-ForFinalRebindLogs {
             $settledState = ''
         }
         if ($started.Count -eq 0 -and (Get-Date) -ge $start.AddSeconds($RequestGraceSeconds)) {
-            Write-Warning 'No MigTD logged Processing StartRebinding; the host failed before delivering operation 2.'
+            if ($HostOperationSucceeded) {
+                Write-Host 'Host rebind succeeded; no rebinding marker was observed in the captured serial logs.'
+            } else {
+                Write-Warning 'No MigTD rebinding activity was observed before the host rebind operation failed.'
+            }
             return
         }
 
@@ -301,9 +316,17 @@ function Wait-ForFinalRebindLogs {
 
     if ($started.Count -gt 0) {
         $missing = @($started | Where-Object { $_ -notin $completed })
-        Write-Warning "Timed out waiting for terminal rebind logs from: $($missing -join ', ')"
+        if ($HostOperationSucceeded) {
+            Write-Host "Host rebind succeeded; terminal serial markers were not observed from: $($missing -join ', ')"
+        } else {
+            Write-Warning "Timed out waiting for terminal rebind logs from: $($missing -join ', ')"
+        }
     } else {
-        Write-Warning 'Timed out without observing a MigTD StartRebinding request.'
+        if ($HostOperationSucceeded) {
+            Write-Host 'Host rebind succeeded; no StartRebinding marker was observed in the captured serial logs.'
+        } else {
+            Write-Warning 'Timed out without observing a MigTD StartRebinding request.'
+        }
     }
 }
 
@@ -395,10 +418,25 @@ $newHashFileValue = Read-MigTdHash $NewHashFilePath -Required:(-not $CaptureSeri
 $oldHash = $oldHashFileValue
 $newHash = $newHashFileValue
 $newMappingHash = $null
+$oldUsesMockQuote = [System.IO.Path]::GetFileName($OldIgvmFilePath) -match '_mock_quote'
+$newUsesMockQuote = [System.IO.Path]::GetFileName($NewIgvmFilePath) -match '_mock_quote'
+
+if ($oldUsesMockQuote) {
+    Write-Host 'Old MigTD uses built-in mock quote; no IGVMAgent GetQuote call will be made.'
+} else {
+    Write-Host 'Old MigTD uses IGVMAgent-backed GetQuote.'
+}
+if ($newUsesMockQuote) {
+    Write-Host 'New MigTD uses built-in mock quote; no IGVMAgent GetQuote call will be made.'
+} else {
+    Write-Host 'New MigTD uses IGVMAgent-backed GetQuote.'
+}
 
 $oldMigTd = $null
 $newMigTd = $null
 $vm = $null
+$rebindAttempted = $false
+$rebindSucceeded = $false
 try {
     if ($oldHashFileValue) {
         Remove-VmHostMigrationTdMapping -MigTdHash $oldHashFileValue -ErrorAction SilentlyContinue
@@ -467,6 +505,7 @@ try {
     Assert-MigTdRunning -Instance $oldMigTd -Role 'Old'
     Assert-MigTdRunning -Instance $newMigTd -Role 'New'
     Write-Host 'Triggering UpgradeMigrationPolicy rebind.'
+    $rebindAttempted = $true
     try {
         $vm | Update-VmMigrationPolicy
     } catch {
@@ -485,14 +524,16 @@ try {
     if ($vm.State -ne 'Running') {
         throw "TD stopped during rebind (state=$($vm.State))."
     }
+    $rebindSucceeded = $true
     Write-Host "PASS: '$VmName' rebound to the new MigTD and remained running."
     Write-Host "Current migration policy: $newHash"
 }
 finally {
-    if ($CaptureSerial -and ($oldMigTd -or $newMigTd)) {
+    if ($CaptureSerial -and $rebindAttempted) {
         Wait-ForFinalRebindLogs `
             -InstanceIds @($OldMigTdId, $NewMigTdId) `
-            -TimeoutSeconds $SerialDrainTimeoutSeconds
+            -TimeoutSeconds $SerialDrainTimeoutSeconds `
+            -HostOperationSucceeded:$rebindSucceeded
     }
     if ($vm) {
         $vm | Stop-VM -Force -ErrorAction SilentlyContinue
