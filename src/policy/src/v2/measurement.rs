@@ -325,6 +325,28 @@ pub fn compute_signer_anchor_from_chain_pem(
     compute_signer_anchor(&root_der, &leaf_eku_oid)
 }
 
+/// Resolve a signer anchor from either representation carried in the CFV /
+/// exchanged with a peer:
+///
+/// * a **precomputed 48-byte anchor** (exactly `SHA384_DIGEST_SIZE` bytes) —
+///   returned as-is (the CoRIM-only enrollment form, which does not carry a
+///   full PEM), or
+/// * a **PEM issuer chain** (leaf-first) — the anchor is derived via
+///   [`compute_signer_anchor_from_chain_pem`] (the legacy JSON form).
+///
+/// This lets the runtime accept either enrollment/exchange form and bind the
+/// same RTMR1 anchor. A PEM is never 48 bytes, so the discriminator is
+/// unambiguous.
+pub fn resolve_signer_anchor(input: &[u8]) -> Result<[u8; SHA384_DIGEST_SIZE], PolicyError> {
+    if input.len() == SHA384_DIGEST_SIZE {
+        let mut anchor = [0u8; SHA384_DIGEST_SIZE];
+        anchor.copy_from_slice(input);
+        Ok(anchor)
+    } else {
+        compute_signer_anchor_from_chain_pem(input)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

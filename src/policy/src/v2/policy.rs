@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-use alloc::{collections::BTreeMap, string::String, string::ToString, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use core::{
     cmp::Ordering,
     convert::{TryFrom, TryInto},
@@ -12,12 +12,13 @@ use serde_json::{self, value::RawValue};
 
 use crate::{
     v2::{
-        bytes_to_hex_string, compute_signer_anchor_from_chain_pem,
+        bytes_to_hex_string, compute_signer_anchor_from_chain_pem, resolve_signer_anchor,
         measurement::extract_canonical_policy_data_bytes, policy, verify_event_hash,
     },
     CcEvent, Collaterals, EventName, PolicyError, Report, ServtdCollateral, TdIdentity,
     TdTcbMapping,
 };
+use crypto::SHA384_DIGEST_SIZE;
 
 #[cfg(feature = "servtd_corim")]
 use crate::v2::ServtdCorim;
@@ -212,8 +213,10 @@ pub struct VerifiedPolicy<'a> {
     /// `servtdCollateral.servtdCrl`. Retained so the runtime can cross-check a
     /// peer's signer chain against the local trusted CRL.
     pub servtd_crl: Option<String>,
-    /// The policy signing certificate chain (PEM) used to verify this policy.
-    pub policy_issuer_chain: String,
+    /// The RTMR1 signer anchor `A = SHA384(tag ‖ H(rootDER) ‖ H(leafSubjectDER))`
+    /// this policy was bound to (resolved from the CFV signer-anchor slot or a
+    /// PEM issuer chain). Used for the anchor-based peer cross-check.
+    pub signer_anchor: [u8; SHA384_DIGEST_SIZE],
     /// Optional CoRIM-encoded servtd collateral. When attached it is the sole
     /// authority for servtd lookups (fail-closed: a CoRIM miss is a miss,
     /// with no fallback to the legacy JSON collateral). Only available with
@@ -338,9 +341,10 @@ impl<'a> RawPolicyData<'a> {
     /// signature. It parses `policyData` directly and verifies the inner servtd
     /// collateral signatures against their embedded issuer chains.
     pub fn verify(&self, issuer_chain: &[u8]) -> Result<VerifiedPolicy<'a>, PolicyError> {
-        let policy_issuer_chain = core::str::from_utf8(issuer_chain)
-            .map_err(|_| PolicyError::InvalidPolicy)?
-            .to_string();
+        // `issuer_chain` is the RTMR1 signer-anchor source: either a
+        // precomputed 48-byte anchor (CoRIM-only enrollment) or a PEM issuer
+        // chain (legacy JSON enrollment). Both resolve to the same anchor.
+        let cfv_anchor = resolve_signer_anchor(issuer_chain)?;
 
         // The outer policy-blob signature is no longer part of the trust model
         // (integrity comes from RTMR2). Parse policyData directly.
@@ -381,7 +385,6 @@ impl<'a> RawPolicyData<'a> {
         // (`servtd_corim::verify_and_extract_payload`). Leaf/intermediate
         // rotation under the same root + EKU keeps the anchor stable, so it
         // still passes.
-        let cfv_anchor = compute_signer_anchor_from_chain_pem(issuer_chain)?;
         let mapping_anchor = compute_signer_anchor_from_chain_pem(
             servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes(),
         )?;
@@ -436,7 +439,7 @@ impl<'a> RawPolicyData<'a> {
             servtd_identity,
             servtd_identity_issuer_chain,
             servtd_crl,
-            policy_issuer_chain,
+            signer_anchor: cfv_anchor,
             #[cfg(feature = "servtd_corim")]
             servtd_corim: None,
         })

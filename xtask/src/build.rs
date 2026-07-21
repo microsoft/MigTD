@@ -79,9 +79,16 @@ pub(crate) struct BuildArgs {
     /// Use migration policy v2
     #[clap(long)]
     policy_v2: bool,
-    /// Issuer chain of migration policy v2, required if `policy_v2` is set
+    /// Issuer chain of migration policy v2. Provide this OR `--signer-anchor`
+    /// (at least one is required when `policy_v2` is set).
     #[clap(long)]
     policy_issuer_chain: Option<PathBuf>,
+    /// Path of the 48-byte RTMR1 signer anchor to enroll (CoRIM-only form),
+    /// as an alternative to `--policy-issuer-chain`. The full PEM chain is not
+    /// carried in the image; the anchor is measured into RTMR1 identically.
+    /// Requires `policy_v2`.
+    #[clap(long)]
+    signer_anchor: Option<PathBuf>,
     /// Path of the signed ServTD TCB-mapping CoRIM (`COSE_Sign1`, `.cose`).
     /// When provided, it is enrolled into the CFV and the `servtd_corim`
     /// feature is activated so the runtime resolves `hash -> SVN` through the
@@ -152,9 +159,9 @@ impl BuildArgs {
                     "policy_v2 is enabled but no policy file is provided"
                 ));
             }
-            if self.policy_issuer_chain.is_none() {
+            if self.policy_issuer_chain.is_none() && self.signer_anchor.is_none() {
                 return Err(anyhow::anyhow!(
-                    "policy_v2 is enabled but no policy_issuer_chain file is provided"
+                    "policy_v2 is enabled but neither --policy-issuer-chain nor --signer-anchor was provided"
                 ));
             }
         } else if self.servtd_corim.is_some() {
@@ -295,10 +302,21 @@ impl BuildArgs {
         ]);
 
         let cmd = if self.policy_v2 {
-            cmd.args(&[
-                "3F2FB27A-9596-431C-A68D-D3EAB39F8AEB",
-                self.policy_issuer_chain()?.to_str().unwrap(),
-            ])
+            // Enroll the RTMR1 signer anchor: prefer the 48-byte anchor slot
+            // (CoRIM-only form) when `--signer-anchor` is given, else the
+            // legacy policy issuer chain PEM.
+            if let Some(anchor) = &self.signer_anchor {
+                let anchor = fs::canonicalize(anchor)?;
+                cmd.args(&[
+                    "2B9D5A84-6F3C-4E71-8A2D-0C7E1F4B6A93",
+                    anchor.to_str().unwrap(),
+                ])
+            } else {
+                cmd.args(&[
+                    "3F2FB27A-9596-431C-A68D-D3EAB39F8AEB",
+                    self.policy_issuer_chain()?.to_str().unwrap(),
+                ])
+            }
         } else {
             cmd.args(&[
                 "CA437832-4C51-4322-B13D-A21BD0C8FFF6",
