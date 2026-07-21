@@ -182,6 +182,12 @@ jobs:
           export SPDM_CONFIG="$(pwd)/config/spdm_config.json"
           cargo build --features "AzCVMEmu,policy_v2,test_disable_ra_and_accept_all,spdm_attestation" --no-default-features
 
+      - name: Build MigTD for signer revocation test
+        if: matrix.test-type == 'policy-v2-revoked'
+        run: |
+          echo "Prebuilding MigTD so the negative-test timeout covers runtime, not compilation..."
+          cargo build --release --features "AzCVMEmu,policy_v2,test_mock_report" --no-default-features
+
       - name: Verify emulation script
         if: matrix.test-type == 'skip-ra' || matrix.test-type == 'rebind-skip-ra' || matrix.test-type == 'spdm-skip-ra' || matrix.test-type == 'spdm-rebind-skip-ra'
         run: |
@@ -228,10 +234,18 @@ jobs:
           # the revocation control fired — the MigTD crashes at boot, so it can
           # never complete a migration. Pass on that evidence.
           if [[ "${{ matrix.test-type }}" == "policy-v2-revoked" ]]; then
-            if grep -aq "SignerRevoked" migtd_migration_source.log migtd_migration_destination.log dest_*_out.log 2>/dev/null; then
+            if [[ $EXIT_CODE -eq 0 ]]; then
+              echo "❌ Revoked-signer policy unexpectedly completed successfully"
+              echo "test_status=failed" >> $GITHUB_OUTPUT
+              exit 1
+            elif grep -aq "SignerRevoked" migtd_migration_source.log migtd_migration_destination.log dest_*_out.log 2>/dev/null; then
               echo "✅ Revocation enforced: MigTD refused a revoked-signer policy (SignerRevoked), exit=$EXIT_CODE"
               echo "test_status=success" >> $GITHUB_OUTPUT
               exit 0
+            elif [[ $EXIT_CODE -eq 124 ]]; then
+              echo "❌ Revocation test timed out without reaching SignerRevoked"
+              echo "test_status=timeout" >> $GITHUB_OUTPUT
+              exit 1
             else
               echo "❌ Expected a SignerRevoked error in the guest logs, but none was found (exit=$EXIT_CODE)"
               echo "test_status=failed" >> $GITHUB_OUTPUT

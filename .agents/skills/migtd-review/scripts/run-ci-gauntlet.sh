@@ -102,6 +102,37 @@ step() {
     fi
 }
 
+# Run a negative test that must fail and emit a specific diagnostic.
+# usage: step_expect_failure_pattern "<label>" "<pattern>" <cmd...>
+step_expect_failure_pattern() {
+    local label="$1"; shift
+    local pattern="$1"; shift
+    local log="$LOG_DIR/${CURRENT_STAGE}__${label}.log"
+    printf '  [%s] %-50s ' "$CURRENT_STAGE" "$label" | tee -a "$SUMMARY"
+    local start=$(date +%s)
+    "$@" >"$log" 2>&1
+    local rc=$?
+    local dur=$(( $(date +%s) - start ))
+    if [ "$rc" -ne 0 ] && grep -aq "$pattern" "$log"; then
+        printf '✓ PASS (%ds expected rc=%d)\n' "$dur" "$rc" | tee -a "$SUMMARY"
+        return 0
+    fi
+
+    printf '✗ FAIL (%ds rc=%d)\n' "$dur" "$rc" | tee -a "$SUMMARY"
+    echo "" | tee -a "$SUMMARY"
+    echo "==== gauntlet FAILED ====" | tee -a "$SUMMARY"
+    echo "stage:   $CURRENT_STAGE"   | tee -a "$SUMMARY"
+    echo "label:   $label"           | tee -a "$SUMMARY"
+    echo "expected: non-zero exit and log pattern '$pattern'" | tee -a "$SUMMARY"
+    echo "command: $*"               | tee -a "$SUMMARY"
+    echo "log:     $log"             | tee -a "$SUMMARY"
+    echo "resume:  $(realpath "$0") --from $CURRENT_STAGE" | tee -a "$SUMMARY"
+    echo "" | tee -a "$SUMMARY"
+    echo "----- last 80 lines of $log -----" | tee -a "$SUMMARY"
+    tail -n 80 "$log" | tee -a "$SUMMARY"
+    exit 1
+}
+
 banner() {
     CURRENT_STAGE="$1"
     echo "" | tee -a "$SUMMARY"
@@ -188,15 +219,10 @@ fi
 if stage_should_run emu; then
     banner emu
 
-    # Ensure tracked policy artefacts exist (CI starts from a fresh checkout).
-    for f in config/AzCVMEmu/policy_v2_signed.json \
-             config/AzCVMEmu/policy_v2_raw.json \
-             config/AzCVMEmu/policy_issuer_chain.pem; do
-        if [ ! -f "$f" ]; then
-            echo "  [emu] restoring tracked $f via git checkout" | tee -a "$SUMMARY"
-            git checkout -- "$f"
-        fi
-    done
+    # CI generates all default, rotation, and revocation policy variants before
+    # each policy-v2 scenario. A single generation covers this local serial run.
+    step policy-generation ./sh_script/build_AzCVMEmu_policy_and_test.sh \
+        --mock-report --skip-test
 
     # 1. skip-ra
     step skip-ra__build cargo build \
@@ -292,6 +318,17 @@ if stage_should_run emu; then
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
         --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_pmi_b.json \
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
+        --mock-report --both --no-sudo --log-level info
+
+    # 15. policy-v2-revoked
+    step policy-v2-revoked__build cargo build --release \
+        --features AzCVMEmu,policy_v2,test_mock_report --no-default-features
+    step_expect_failure_pattern policy-v2-revoked SignerRevoked \
+        ./migtdemu.sh --policy-v2 \
+        --src-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json \
+        --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json \
+        --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
         --mock-report --both --no-sudo --log-level info
 fi
 
