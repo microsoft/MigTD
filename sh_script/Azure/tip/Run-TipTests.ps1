@@ -46,13 +46,13 @@ if ($InstallDependencies) {
 }
 
 $cases = @(
-    @{ Name = 'accept-all_mock_quote'; Reject = $false; NoSecrets = $true }
+    @{ Name = 'accept-all_mock_quote'; File = 'test-migtd-accept-all_mock_quote.igvm'; Reject = $false; NoSecrets = $true }
 )
 if ($IncludeAgentCases) {
     $cases += @(
-        @{ Name = 'accept-all'; Reject = $false; NoSecrets = $false },
-        @{ Name = 'real'; Reject = $false; NoSecrets = $false },
-        @{ Name = 'reject-all'; Reject = $true; NoSecrets = $false }
+        @{ Name = 'accept-all'; File = 'test-migtd-accept-all.igvm'; Reject = $false; NoSecrets = $false },
+        @{ Name = 'policy'; File = 'test-migtd.igvm'; Reject = $false; NoSecrets = $false },
+        @{ Name = 'reject-all'; File = 'test-migtd-reject-all.igvm'; Reject = $true; NoSecrets = $false }
     )
 }
 
@@ -62,7 +62,7 @@ if (-not (Test-Path $loopback)) {
 }
 $results = @()
 foreach ($c in $cases) {
-    $igvm = Join-Path $PackageDir "test-migtd-$($c.Name).igvm"
+    $igvm = Join-Path $PackageDir $c.File
     if (-not (Test-Path $igvm)) { Write-Warning "skip $($c.Name): $igvm not found"; continue }
     Write-Host "`n=== $($c.Name) ==="
     try {

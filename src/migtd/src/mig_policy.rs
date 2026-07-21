@@ -655,13 +655,28 @@ mod v2 {
         tdreport: &TdxReport,
         policy: &VerifiedPolicy,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
+        #[cfg(feature = "use-mock-quote")]
+        let mock_tdreport = attestation::tdreport::tdcall_report(
+            &[0u8; attestation::tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE],
+        )
+        .map_err(|_| PolicyError::GetTdxReport)?;
+        #[cfg(feature = "use-mock-quote")]
+        let mapping_tdreport = {
+            log::warn!(
+                "use-mock-quote: deriving rebinding MigTD TCB metadata from the mock quote report\n"
+            );
+            &mock_tdreport
+        };
+        #[cfg(not(feature = "use-mock-quote"))]
+        let mapping_tdreport = tdreport;
+
         let migtd_svn = policy.servtd_tcb_mapping.get_engine_svn_by_measurements(
             &Measurements::new_from_bytes(
-                &tdreport.td_info.mrtd,
-                &tdreport.td_info.rtmr0,
-                &tdreport.td_info.rtmr1,
-                Some(&tdreport.td_info.rtmr2),
-                Some(&tdreport.td_info.rtmr3),
+                &mapping_tdreport.td_info.mrtd,
+                &mapping_tdreport.td_info.rtmr0,
+                &mapping_tdreport.td_info.rtmr1,
+                Some(&mapping_tdreport.td_info.rtmr2),
+                Some(&mapping_tdreport.td_info.rtmr3),
             ),
         );
 

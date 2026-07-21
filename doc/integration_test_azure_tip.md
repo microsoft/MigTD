@@ -88,11 +88,14 @@ signed with a local test key by `build_azure_mock_test.sh`.
 |------|----------------|
 | `test-migtd-accept-all.igvm` + `.hash` | allow-all policy → migration **succeeds** |
 | `test-migtd-reject-all.igvm` + `.hash` | bad-FMSPC (`DEADBEEF0000`) → migration **rejected** |
-| `test-migtd-real.igvm` + `.hash` | real `config/Azure/policy_data_raw.json` (FMSPC `90C06F000000`) → succeeds iff node FMSPC/TCB match (MigTD-only extra) |
+| `test-migtd.igvm` + `.hash` | real `config/Azure/policy_data_raw.json` (FMSPC `90C06F000000`) → succeeds iff node FMSPC/TCB match (MigTD-only extra) |
+| `test-migtd_rebind.igvm` + `.hash` | same real policy/signing key with `policySvn` incremented by one |
 | `test-migtd-getquote-all.igvm` + `.hash` | GetQuote initialization image |
 | `test-migtd-accept-all_mock_quote.igvm` + `.hash` | allow-all policy with `use-mock-quote`; no host GetQuote agent required |
 | `test-migtd-reject-all_mock_quote.igvm` + `.hash` | reject policy with `use-mock-quote` |
-| `test-migtd-real_mock_quote.igvm` + `.hash` | policy generated from mock measurements with `use-mock-quote` |
+| `test-migtd_mock_quote.igvm` + `.hash` | policy generated from mock measurements with `use-mock-quote` |
+| `test-migtd_mock_quote_rebind.igvm` + `.hash` | same mock-quote real policy/signing key with `policySvn` incremented by one |
+| `test-migtd{,_rebind,_mock_quote,_mock_quote_rebind}.policy.json` | signed policy snapshots embedded in the paired real-policy images |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1`, `README.md` | migration test scripts |
 | `Test-TdxServTdExtPrebind.ps1` | validates both prebound ServTdExt hash slots and reserved zero ranges after target startup |
 | `Test-TdxLmRebind.ps1` | rebinds a running TD between two same- or different-image MigTD instances |
@@ -111,6 +114,7 @@ Build on the Linux host:
     --hcstest-dir /path/to/prebuilt/HCSTest \
     --secfw-file /path/to/secfw_test_GenuineIntel.dll
 # add --fetch-collaterals to refresh Azure THIM collateral for the real variant
+# add --skip-dependencies if PowerTest and HCSTest v2 are already installed
 ```
 
 Copy `out/tip-package/` to the TDX lab blade, then in an **elevated** PowerShell:
@@ -141,9 +145,20 @@ Copy `out/tip-package/` to the TDX lab blade, then in an **elevated** PowerShell
 
 # rebind between different or identical MigTD images
 .\Test-TdxLmRebind.ps1 `
-    -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-    -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+    -OldIgvmFilePath .\test-migtd_mock_quote.igvm `
+    -NewIgvmFilePath .\test-migtd_mock_quote_rebind.igvm
 ```
+
+For both real-quote and mock-quote real-policy images, the builder creates an
+original/rebind pair with a common policy signer. The rebind policy copies the
+fully merged original `policyData` and changes only `policySvn`, incrementing
+it by one. The real-quote pair maps the final image's measured
+MRTD/RTMR0/RTMR1. The mock-quote pair retains the static mock measurements;
+both migration and rebinding derive MigTD TCB metadata from the mock quote
+instead of matching the live TDREPORT. The signed `.policy.json` snapshots
+allow this relationship to be checked without extracting the IGVM firmware
+volume. Each final image hash is calculated independently; equal hashes are
+handled by the test's synthetic second mapping key.
 
 Each case performs: `New-TestHcsMigTd → Start-HcsSystem →
 Add-VmHostMigrationTdMapping -MigTdHash <hash> -VmId →

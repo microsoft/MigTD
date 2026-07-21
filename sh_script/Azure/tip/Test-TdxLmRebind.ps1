@@ -19,7 +19,7 @@
 .EXAMPLE
   .\Test-TdxLmRebind.ps1 `
       -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-      -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+      -NewIgvmFilePath .\test-migtd_mock_quote.igvm
 
 .EXAMPLE
   .\Test-TdxLmRebind.ps1 `
@@ -270,9 +270,14 @@ function Wait-ForFinalRebindLogs {
             } else {
                 ''
             }
-            if ($text -match 'Processing StartRebinding request') {
+            if ($text -match ('Processing StartRebinding request|' +
+                'Pre-Session-Message Version|' +
+                'finalize_spdm_session: body error|' +
+                'Failure during rebinding status code')) {
                 $started += $capture.InstanceId
-                if ($text -match 'ReportStatus for rebinding completed|Failed to report status for StartRebinding') {
+                if ($text -match ('ReportStatus for rebinding completed|' +
+                    'Failed to report status for StartRebinding|' +
+                    'Failure during rebinding status code')) {
                     $completed += $capture.InstanceId
                 }
             }
@@ -292,7 +297,7 @@ function Wait-ForFinalRebindLogs {
             $settledState = ''
         }
         if ($started.Count -eq 0 -and (Get-Date) -ge $start.AddSeconds($RequestGraceSeconds)) {
-            Write-Warning 'No MigTD logged Processing StartRebinding; the host failed before delivering operation 2.'
+            Write-Warning 'No MigTD logged any rebinding activity; the host failed before delivering operation 2.'
             return
         }
 

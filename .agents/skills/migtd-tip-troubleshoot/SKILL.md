@@ -146,8 +146,8 @@ If `OS_ROOT` is available, reference paths are:
 
    ```powershell
    .\Test-TdxLmRebind.ps1 `
-       -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
-       -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+       -OldIgvmFilePath .\test-migtd_mock_quote.igvm `
+       -NewIgvmFilePath .\test-migtd_mock_quote_rebind.igvm
    ```
 
    The inputs may be different files or the same file. For equal hashes, the
