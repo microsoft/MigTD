@@ -117,7 +117,23 @@ mod v2 {
         let raw = RawPolicyData::deserialize_from_json(policy_json)?;
 
         // Get the root CA from collaterals and set it for quote verification
-        let verified_policy = raw.verify(cert_chain)?;
+        #[cfg_attr(not(feature = "servtd_corim"), allow(unused_mut))]
+        let mut verified_policy = raw.verify(cert_chain)?;
+
+        // Attach the optional CoRIM hash endorsement enrolled in the CFV. Its
+        // COSE signer chain is bound to the SAME RTMR1 signer anchor as the CFV
+        // policy issuer chain, so a CoRIM signed under a different root/subject
+        // fails closed. The CoRIM is NOT measured (`config::get_servtd_corim`
+        // is never read by `do_measurements`), so enrolling it does not change
+        // the ServTD/`tdinfo_hash`. `now_epoch_secs = 0`: MigTD has no wall
+        // clock, so the producer must not set CWT `nbf`/`exp` on the CoRIM.
+        #[cfg(feature = "servtd_corim")]
+        if let Some(cose) = crate::config::get_servtd_corim() {
+            let anchor = compute_signer_anchor_from_chain_pem(cert_chain)?;
+            let corim = ServtdCorim::decode_signed(cose, 0, &anchor)?;
+            verified_policy.set_servtd_corim(corim);
+        }
+
         let root_ca_der = pem_cert_to_der(verified_policy.get_collaterals().root_ca.as_bytes())
             .map_err(|_| PolicyError::InvalidCollateral)?;
         attestation::root_ca::set_ca(root_ca_der.as_ref())

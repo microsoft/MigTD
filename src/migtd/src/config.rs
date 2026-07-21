@@ -36,6 +36,23 @@ pub const MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID: Guid = Guid::from_fields(
     &[0xD3, 0xEA, 0xB3, 0x9F, 0x8A, 0xEB],
 );
 
+// {7E5B9C11-2D4A-4F6E-9B3C-1A2B3C4D5E6F}
+//
+// FFS GUID of the signed ServTD TCB-mapping CoRIM (`COSE_Sign1`) enrolled in
+// the CFV. This file is intentionally NOT measured: `do_measurements()` never
+// reads this GUID, so enrolling it does not change MRTD/RTMR or the resulting
+// `tdinfo_hash`. Trust comes from the CoRIM's COSE signature bound to the RTMR1
+// policy signer anchor (see `ServtdCorim::decode_signed`).
+#[cfg(feature = "servtd_corim")]
+pub const MIGTD_SERVTD_CORIM_FFS_GUID: Guid = Guid::from_fields(
+    0x7E5B9C11,
+    0x2D4A,
+    0x4F6E,
+    0x9B,
+    0x3C,
+    &[0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F],
+);
+
 pub fn get_config_volume() -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(CONFIG_VOLUME_BASE as *const u8, CONFIG_VOLUME_SIZE) }
 }
@@ -57,4 +74,14 @@ pub fn get_policy_issuer_chain() -> Option<&'static [u8]> {
         pi::fv::FV_FILETYPE_RAW,
         MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID,
     )
+}
+
+/// Read the signed ServTD TCB-mapping CoRIM (`COSE_Sign1`) from the CFV, if
+/// enrolled. Returns `None` when no CoRIM was enrolled (the policy then falls
+/// back to the JSON `servtdCollateral` mapping). This file is deliberately not
+/// measured; see [`MIGTD_SERVTD_CORIM_FFS_GUID`].
+#[cfg(feature = "servtd_corim")]
+pub fn get_servtd_corim() -> Option<&'static [u8]> {
+    let cfv = get_config_volume();
+    fv::get_file_from_fv(cfv, pi::fv::FV_FILETYPE_RAW, MIGTD_SERVTD_CORIM_FFS_GUID)
 }
