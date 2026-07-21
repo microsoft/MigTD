@@ -66,7 +66,7 @@ anchor derived from the CFV `policy_issuer_chain`. This mirrors exactly what the
 path already does (`servtd_corim.rs:256`, `anchor != expected_signer_anchor`).
 Verifying against the embedded chain (not the CFV chain directly) is required so leaf
 rotation still works: the re-signed mapping's new leaf lives in the embedded chain
-while RTMR1's anchor (root + subject) stays stable.
+while RTMR1's anchor (root + signer EKU) stays stable.
 
 `servtdIdentityIssuerChain` is **not** redacted — it stays measured in RTMR2, so no
 anchor binding is needed for the identity signer.
@@ -121,7 +121,7 @@ mock-report e2e pattern in `integration-emu.yml`.
   `cert_chain/unrelated_issuer_chain.pem`). policy v2: 44 passed; migtd clean.
 - **IMPORTANT for P5/P6 (e2e):** the anchor binding requires the CFV
   `policy_issuer_chain` slot (RTMR1) and the embedded `servtdTcbMappingIssuerChain`
-  to share the same root + leaf subject. Today `build_AzCVMEmu_policy_and_test.sh`
+  to share the same root + leaf signer EKU. Today `build_AzCVMEmu_policy_and_test.sh`
   gives `policy_signing` (CFV) and `mapping_signing` (embedded) **different**
   CNs, which WOULD fail the binding. P5 must make the CFV
   `policy_issuer_chain*.pem` the **TCB-mapping** signer chain (per the design:
@@ -170,7 +170,7 @@ mock-report e2e pattern in `integration-emu.yml`.
 ### P5 — e2e generator tooling (`build_AzCVMEmu_policy_and_test.sh`)
 - **CFV = TCB-mapping signer chain (D3 e2e half):** `policy_issuer_chain*.pem`
   (the CFV `MIGTD_POLICY_ISSUER_CHAIN` slot, RTMR1) now copies the
-  `mapping_issuer_chain*.pem`, so it shares root + leaf subject with the
+  `mapping_issuer_chain*.pem`, so it shares root + leaf signer EKU with the
   embedded `servtdTcbMappingIssuerChain` and the anchor binding holds. The old
   `policy_signing` family only signed the (now-ignored) outer signature.
 - **Signer CRLs:** `generate_servtd_crls()` emits an empty CRL (#0x1000) and a

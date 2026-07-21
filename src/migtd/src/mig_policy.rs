@@ -486,8 +486,8 @@ mod v2 {
         // 2. Verify the peer policy using the peer's issuer chain
         let verified_policy = unverified_policy.verify(policy_issuer_chain)?;
 
-        // 3. Validate that peer's chains share the same root CA and leaf
-        //    subject name as our local chains.
+        // 3. Validate that peer chains share the same root CA and leaf signer
+        //    EKU as our local chains.
         let local_policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
         let local_chain = get_policy_issuer_chain().ok_or(PolicyError::InvalidParameter)?;
         crypto::validate_peer_cert_chain(

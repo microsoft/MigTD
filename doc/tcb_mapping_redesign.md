@@ -18,7 +18,7 @@ Change what is measured so the mapping key becomes a stable, pre-signing functio
 
 | Register | Today | Proposed |
 |----------|-------|----------|
-| **RTMR1** | Hash of the policy-issuer cert chain (PEM) | **Signer anchor** `A = SHA384(tag \|\| SHA384(DER(root)) \|\| SHA384(DER(leaf subject)))` |
+| **RTMR1** | Hash of the policy-issuer cert chain (PEM) | **Signer anchor** `A = SHA384(tag \|\| 0x00 \|\| SHA384(DER(root)) \|\| 0x00 \|\| DER(leaf signer EKU OID))` |
 | **RTMR2** | Whole signed policy blob (includes the TCB mapping) | **Single canonical-bytes extend** of `policyData` with `servtdCollateral.servtdTcbMapping` redacted |
 | **`svnMappings` key** | `[MRTD, RTMR0, RTMR1]` subset | Full `tdinfo_hash` (= `init_servtd_info_hash` = `SHA384(TDINFO)` for `attr=0`) |
 
@@ -30,7 +30,7 @@ Change what is measured so the mapping key becomes a stable, pre-signing functio
 - **Self-contained attestation lookup** — the service matches `init/cur_servtd_info_hash` directly against `svnMappings`, needing no out-of-band endorsements.
   - The same signed TCBMapping reusable by MigTD and Attestation services.
 - **Simpler rebind/migration** — MigTD maps `init_servtd_info_hash` to an SVN locally; the VMM no longer supplies init TDINFO per request.
-- **Low leaf-key-rotation churn** — the RTMR1 signer anchor depends only on the root CA and leaf subject, so a leaf-key reissue does not change RTMR1.
+- **Low leaf-key-rotation churn** — the RTMR1 signer anchor depends only on the root CA and leaf signer EKU, so a leaf-key reissue does not change RTMR1.
 
 # Extensions
 - **Support CoRIM in MigTD:** Sign TCBMapping once, reuse for both tenant attestation and MigTD runtime peer/init TCB evaluation
@@ -182,7 +182,7 @@ Break policy content into independent measured components so RTMR2 no longer dep
 
 | Register | Before | Redesign |
 |----------|--------|----------|
-| **RTMR1** | Policy issuer cert chain anchor | **Signer anchor** derived from root cert DER hash + leaf subject DER hash (see below) |
+| **RTMR1** | Policy issuer cert chain anchor | **Signer anchor** derived from the root cert DER hash + leaf signer EKU OID (see below) |
 | **RTMR2** | Signed policy blob (contains policy rules + collaterals + signed TCB mapping + signed identity) | **Single canonical-bytes extend** of `policyData` with `servtdCollateral.servtdTcbMapping` removed. By construction this binds every other top-level `policyData` field — `version`, `id`, `policySvn`, `policy`, `forwardPolicy`, `backwardPolicy`, `collaterals`, and the rest of `servtdCollateral` (including the issuer-signed `{tdIdentity, signature}` and both issuer chains). See "Servtd identity binding" below. |
 
 **IGVM CFV file layout** (configuration firmware volume slots loaded at boot):
@@ -194,7 +194,7 @@ Break policy content into independent measured components so RTMR2 no longer dep
 
 With this split:
 - RTMR2 = single extend of canonical `policyData` with `servtdCollateral.servtdTcbMapping` redacted — every other field is automatically bound by being inside the canonical object. The redaction is the only escape hatch and permits `servtdTcbMapping` to be re-signed after the IGVM is shipped, preserving circularity-freedom.
-- RTMR1 = hash(signer anchor) derived from root cert DER hash + leaf subject DER hash (defined below).
+- RTMR1 = hash(signer anchor) derived from root cert DER hash + leaf signer EKU OID (defined below).
 - TCB mapping can bind `tdinfo_hash` (= `init_servtd_info_hash` = `SHA384(TDINFO)` for attr=0) to SVN without circularity.
 
 **New design — full tdinfo hash in svnMappings but unmeasured, removing circular dependency:**
@@ -231,7 +231,7 @@ With this split:
                                           measurement
                                           (no circularity)
 
-   RTMR1 = H(signer_anchor(root_CA, leaf_Subject))
+   RTMR1 = H(signer_anchor(root_CA, leaf_signer_EKU))
           ▲
           │
    CFV: signing cert chain (not measured as raw bytes)
@@ -243,10 +243,10 @@ Define `H(x) = SHA384(x)`.
 
 1. Root certificate component:
     - `R = H(DER(root_certificate))`
-2. Leaf subject component:
-    - `S = H(DER(leaf_certificate.tbsCertificate.subject))`
+2. Leaf signer-purpose component:
+    - `EKU_OID = DER(the leaf certificate's single dedicated signer EKU OID)`
 3. Signer anchor payload (domain-separated):
-    - `A = H("MIGTD-RTMR1-ANCHOR-V1" || 0x00 || R || 0x00 || S)`
+    - `A = H("MIGTD-RTMR1-ANCHOR-V1" || 0x00 || R || 0x00 || EKU_OID)`
 4. RTMR extend chain:
     - `RTMR1_0 = 48-byte zero`
     - `RTMR1_1 = H(RTMR1_0 || H(separator_event_payload))`
@@ -256,11 +256,11 @@ Where `separator_event_payload` is the measured boot separator event for RTMR1, 
 
 #### Rationale
 
-- Aligns with peer-cert policy semantics: peer validation enforces same root certificate (DER byte equality) and same leaf Subject Name.
-- Makes leaf key rotation under the same root and same subject low churn for RTMR1: leaf key/cert reissue does not change `S`.
+- Aligns with peer-cert policy semantics: peer validation enforces the same root certificate and the same single dedicated leaf signer EKU.
+- Makes leaf key rotation under the same root and signer EKU low churn for RTMR1.
 - Keeps trust-anchor sensitivity explicit: changing the root certificate DER changes `R`, therefore changes RTMR1.
-- Uses DER-based subject encoding to avoid ambiguity from text rendering of Distinguished Names.
-- Makes the tradeoff explicit: this anchor binds root identity and subject identity, not the leaf public key itself.
+- Uses the DER-encoded EKU OID to avoid text-format ambiguity.
+- Makes the tradeoff explicit: this anchor binds root identity and signer purpose, not the leaf public key itself.
 
 #### Servtd identity binding (RTMR2 single extend)
 
@@ -339,10 +339,10 @@ Canonicalization is RFC-8785-style: object keys sorted lexicographically at ever
 
 #### Signing key rotation: impact and operational steps
 
-MigTD supports leaf signing key rotation during live migration (commit `5f9a91e`). When two MigTDs with different leaf signing keys (but the same root CA and leaf Subject Name) migrate a tenant TD, the runtime peer validation succeeds because:
+MigTD supports leaf signing key rotation during live migration (commit `5f9a91e`). When two MigTDs with different leaf signing keys (but the same root CA and leaf signer EKU) migrate a tenant TD, the runtime peer validation succeeds because:
 
 1. Each MigTD exchanges its signing cert chain alongside the policy during pre-session data exchange.
-2. The peer validates the received chain: root CA must match (DER byte comparison), leaf Subject Name must match, internal signature integrity is verified, and non-CA issuers are rejected.
+2. The peer validates the received chain: root CA and leaf signer EKU must match, internal signature integrity is verified, and non-CA issuers are rejected.
 3. The peer's policy, TCB mapping chain, and TD identity chain are each validated against the local chains using the same rules.
 
 This means **old and new MigTDs can coexist during a rolling deployment** — a MigTD built with the old leaf key can still migrate to/from one built with the new leaf key.
@@ -350,13 +350,13 @@ We will also add enforcement to allow MigTD with leaf cert expring earlier to mi
 
 ##### What changes when the leaf signing key rotates
 
-Assumption: **only the leaf signing key rotates** — the MigTD binary code, migration policy rules, root CA, and leaf Subject Name are unchanged.
+Assumption: **only the leaf signing key rotates** — the MigTD binary code, migration policy rules, root CA, and leaf signer EKU are unchanged.
 
 | Component | Changes? | Why |
 |-----------|----------|-----|
 | **MRTD** | No | Cert chain is in CFV (unmeasured content in IGVM) |
 | **RTMR0** | No | MigTD binary code is unchanged |
-| **RTMR1** | **No** | Signer anchor `A` depends only on root CA DER and leaf Subject DER, not the leaf public key |
+| **RTMR1** | **No** | Signer anchor `A` depends only on the root CA fingerprint and leaf signer EKU, not the leaf public key |
 | **RTMR2** | **Yes** | `policyData` must be re-signed with the new key → signature bytes change → different canonical bytes |
 | **TCB mapping** | Must add new entry | `svnMappings` keyed by `tdinfo_hash` which includes RTMR2 |
 | **Endorsed tdinfo_hash** | **Yes** | RTMR2 contributes to `tdinfo_hash` |

@@ -265,6 +265,7 @@ generate_certificates() {
     local cert_validity_days="${3:-365}"
     local root_ca_subject="${4:-/CN=MigTD Root CA/O=Intel Corporation}"
     local leaf_subject="${5:-/CN=MigTD Policy Issuer/O=Intel Corporation}"
+    local signer_eku_oid="${MIGTD_SIGNER_EKU_OID:-1.3.6.1.4.1.32473.1.1}"
 
     # Validate key type first
     if [ "$key_type" != "P384" ]; then
@@ -299,14 +300,17 @@ generate_certificates() {
     # Variant "a" uses the same logical leaf for all three; variant "b" rotates
     # one or more of them depending on the test mode.
     #
-    # The TCB-mapping and TD-Identity leaves share a SINGLE servTD-signer subject
-    # ("MigTD TCB Mapping Issuer"). `RawPolicyData::verify` binds BOTH the
+    # All signer leaves carry the same single dedicated EKU. The default uses
+    # the RFC 5612 documentation PEN; production issuers must override
+    # MIGTD_SIGNER_EKU_OID with their allocated signer-purpose OID.
+    #
+    # `RawPolicyData::verify` binds both the
     # embedded servtdTcbMappingIssuerChain and the (optional) servtdIdentityIssuerChain
-    # to the same RTMR1 signer anchor as the CFV chain (= mapping_issuer_chain);
-    # since the anchor is SHA384(root DER + leaf-subject DER), the identity and
-    # mapping signers MUST share root + leaf subject or verification fails closed
+    # to the same RTMR1 signer anchor as the CFV mapping-signer chain;
+    # since the anchor is SHA384(root fingerprint + leaf EKU), all signers MUST
+    # share root + leaf EKU or verification fails closed
     # with PolicyError::SignerAnchorMismatch. Rotating the identity key (variant
-    # "b") keeps the same subject, so the anchor stays stable.
+    # "b") keeps the same EKU, so the anchor stays stable.
     for family_subject in \
         "policy_signing:/CN=MigTD Policy Issuer/O=Intel Corporation" \
         "mapping_signing:/CN=MigTD TCB Mapping Issuer/O=Intel Corporation" \
@@ -348,7 +352,7 @@ generate_certificates() {
                 -days $cert_validity_days \
                 -$hash_algo \
                 -extensions v3_ca \
-                -extfile <(echo -e "[v3_ca]\nkeyUsage = digitalSignature")
+                -extfile <(printf '[v3_ca]\nkeyUsage = digitalSignature\nextendedKeyUsage = %s\n' "$signer_eku_oid")
 
             cat "$output_dir/${family}_${suffix}.pem" "$output_dir/root_ca.pem" \
                 > "$output_dir/${family_chain_prefix}_${suffix}.pem"
@@ -888,7 +892,7 @@ echo -e "${BLUE}=== Step 11: Copying Certificate Chains ===${NC}"
 # chain (per doc/tcb_mapping_design_proposal.md: "RTMR1 = TCBMapping issuer cert
 # chain"). RTMR1 measures its signer anchor and RawPolicyData::verify() binds
 # the embedded servtdTcbMappingIssuerChain to that same anchor, so the CFV chain
-# and the embedded mapping chain MUST share root + leaf subject. The old
+# and the embedded mapping chain MUST share root + leaf signer EKU. The old
 # policy_signing family only signed the (now-removed) outer policy signature and
 # is no longer the RTMR1 anchor.
 cp "$CERT_DIR/mapping_issuer_chain_a.pem" "$OUTPUT_CERT_CHAIN_A"
@@ -1041,4 +1045,3 @@ fi
 
 echo
 echo -e "${GREEN}=== All Done! ===${NC}"
-

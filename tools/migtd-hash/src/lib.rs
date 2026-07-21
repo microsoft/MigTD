@@ -195,7 +195,7 @@ fn rtmr1(
 
         // v2: extend with SHA384(signer_anchor) where
         //   signer_anchor = SHA384("MIGTD-RTMR1-ANCHOR-V1" || 0x00 ||
-        //                          SHA384(root_der) || 0x00 || SHA384(leaf_subject_der))
+        //                          SHA384(root_der) || 0x00 || leaf_eku_oid_der)
         let anchor = policy::compute_signer_anchor_from_chain_pem(policy_issuer_chain)
             .map_err(|e| anyhow!("Failed to compute signer anchor: {:?}", e))?;
         rtmr1.extend_with_raw_data(&anchor)?;

@@ -17,7 +17,7 @@ use crate::migration::transport::*;
 #[cfg(feature = "spdm_attestation")]
 use crate::spdm;
 
-use crate::{config, migration::pre_session_data::pre_session_data_exchange};
+use crate::migration::pre_session_data::pre_session_data_exchange;
 
 use crate::{
     driver::ticks::with_timeout,
@@ -75,21 +75,6 @@ pub async fn start_rebinding(
     info: &MigtdMigrationInformation,
     data: &mut Vec<u8>,
 ) -> Result<(), MigrationResult> {
-    // Per GHCI 1.5: if VMM provided initMigtdData, verify policy binding.
-    // TEST MODE: failures are logged but do not abort rebinding, so MigTD can run
-    // against peers/hosts that have not yet been updated to provision
-    // MROWNER/MROWNERCONFIG. This matches exchange_msk.
-    #[cfg(all(feature = "vmcall-raw", feature = "policy_v2"))]
-    if let Some(init_td_info) = info.init_td_info_if_present() {
-        if let Err(e) = crate::mig_policy::verify_init_migtd_data_policy_binding(init_td_info) {
-            log::error!(
-                migration_request_id = info.mig_request_id;
-                "start_rebinding: initMigtdData policy binding verification failed: {:?} \
-                 (ignored: TEST MODE, continuing rebinding)\n", e
-            );
-        }
-    }
-
     let mut transport = setup_transport(info.mig_request_id).await?;
 
     // Exchange peer-data (policy + issuer chain) firstly because of the message size limitation of TLS protocol

@@ -353,7 +353,7 @@ fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
 
     // Per doc/tcb_mapping_redesign.md: RTMR1 is extended with the SHA384 of
     // the *signer anchor* A, NOT the entire PEM blob. A is derived from the
-    // root CA DER and the leaf certificate's tbsCertificate.subject DER, with
+    // root CA fingerprint and the leaf certificate's dedicated signer EKU, with
     // a domain-separation tag, so the value is stable across rotations of
     // PEM whitespace/ordering and across reissuance of intermediates.
     let signer_anchor =
