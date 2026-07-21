@@ -36,6 +36,19 @@ relevant to every session:
 * [Anti-patterns — Things To NOT Do](knowledge/anti-patterns.md)
 * [Engineering Decisions Log](knowledge/decisions-log.md)
 
+## Mandatory post-push CI monitoring
+
+**Hard rule:** After every push to `haitaohuang/MigTD`, immediately launch a
+background CI-watcher subagent for the pushed commit. It must monitor every
+GitHub Actions workflow until all required jobs reach a terminal state.
+
+Do not declare the task complete while any workflow is queued or running. If
+a job fails, inspect its logs, distinguish a code failure from an
+infrastructure failure, fix and push code failures, and monitor the replacement
+commit. Continue until every required workflow passes or an explicit external
+blocker is reported. After a force-push, monitor only the replacement commit
+and treat runs for the superseded SHA as obsolete.
+
 ## Reflect and update these notes
 
 **Every agent must reread this knowledge base at session start, and reflect
