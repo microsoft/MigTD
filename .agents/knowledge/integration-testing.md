@@ -62,7 +62,11 @@ to be provisioned).
   Do not use `--calc-servtd-hash`; that outer TDREPORT hash fails prebind.
 - Test cases: accept-all, reject-all, real-policy (FMSPC/TCB match),
   getquote-all, mock-quote/no-agent smoke test, ServTdExt prebind layout,
-  rebind (re-register with a different hash), cycle (repeat N×).
+  rebind (same or different image through `Test-TdxLmRebind.ps1`), cycle
+  (repeat N×).
+- All TiP VM tests keep host migration policy `DisabledByDefault` and explicitly
+  opt each test TD in with `EnabledIfHostPermits` before assigning its MigTD
+  migration-policy hash.
 - For lab-blade setup failures, generic `Move-VM` errors, MigTD serial capture,
   ServTD hash verification, and VMMS/Worker ETW diagnosis, use the
   [`migtd-tip-troubleshoot`](../skills/migtd-tip-troubleshoot/SKILL.md) skill.

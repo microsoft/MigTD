@@ -85,6 +85,8 @@ foreach ($command in @(
     'Start-HcsSystem',
     'Add-VmHostMigrationTdMapping',
     'Set-VMHostMigrationPolicy',
+    'Set-VmMigratablePolicy',
+    'Get-VmMigratablePolicy',
     'Enable-LoopbackMigration'
 )) {
     if (Get-Command $command -ErrorAction SilentlyContinue) {

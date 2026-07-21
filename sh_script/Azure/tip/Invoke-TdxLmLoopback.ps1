@@ -269,7 +269,7 @@ try {
 
     $migTd | Start-HcsSystem
     Add-VmHostMigrationTdMapping -MigTdHash $MigTdHash -VmId $migTd.Id
-    Set-VMHostMigrationPolicy EnabledByDefault $MigTdHash
+    Set-VMHostMigrationPolicy DisabledByDefault $MigTdHash
 
     $td = New-VM -Name $VmName -GuestStateIsolation TDX -Generation 2 -NoVHD
     if ($NoPersistentSecrets) {
@@ -291,6 +291,13 @@ try {
         $td | Set-GuestStateIsolationMode -IsolationMode NoPersistentSecrets
         Write-Host 'Configured NoPersistentSecrets; target-VM OpenHCL attestation is suppressed. MigTD GetQuote still uses IGVMAgent.'
     }
+    $td | Set-VmMigratablePolicy -MigratablePolicy EnabledIfHostPermits | Out-Null
+    $migratablePolicy = [string]($td | Get-VmMigratablePolicy)
+    if ($migratablePolicy -ne 'EnabledIfHostPermits') {
+        throw "Failed to opt the TD into host-permitted migration. Actual policy=$migratablePolicy"
+    }
+    Write-Host 'Configured VM migratable policy: EnabledIfHostPermits.'
+    $td | Update-VmMigrationPolicy
     $td | Start-VM
 
     # The partner test migrates immediately. Keep timing configurable for
@@ -330,7 +337,9 @@ try {
 }
 finally {
     if ($td)    { $td | Stop-VM -Force -ErrorAction SilentlyContinue; $td | Remove-VM -Force -ErrorAction SilentlyContinue }
-    Set-VMHostMigrationPolicy AlwaysDisabled -ErrorAction SilentlyContinue
+    if ($MigTdHash) {
+        Set-VMHostMigrationPolicy DisabledByDefault $MigTdHash -ErrorAction SilentlyContinue
+    }
     if ($MigTdHash) { Remove-VmHostMigrationTdMapping -MigTdHash $MigTdHash -ErrorAction SilentlyContinue }
     if ($serialJob) {
         Wait-ForFinalQuoteRetry `

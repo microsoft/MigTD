@@ -57,6 +57,7 @@ Produces in `out/tip-package/`:
 | `test-migtd-real_mock_quote.igvm` + `.hash` | policy generated from mock measurements with built-in mock quote |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1` | migration test scripts |
 | `Test-TdxServTdExtPrebind.ps1` | start a prebound TD and validate both ServTdExt hash slots and zero padding |
+| `Test-TdxLmRebind.ps1` | rebind a running TD between two same- or different-image MigTD instances |
 | `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, and optional test SecFw |
 | `dependencies/PowerTest`, `dependencies/HCSTest` | build-matched host test modules |
 | `dependencies/SecFw` | optional build-matched test Secure Firmware |
@@ -95,10 +96,13 @@ then:
 .\Run-TipTests.ps1 -IncludeAgentCases
 ```
 
-Each case: start MigTD → register hash → create TDX VM → `Move-VM -DestinationHost
-localhost` → assert → cleanup (`AlwaysDisabled`, remove mapping/VM). Requires
-PowerTest `TdxLiveMigrationUtilities` for `New-TestHcsMigTd`. Rebind: re-run with a
-second image (different hash) while a TD is bound.
+Each case: start MigTD → register hash with host policy `DisabledByDefault` →
+create a TDX VM → set its migratable policy to `EnabledIfHostPermits` → assign
+its MigTD hash → `Move-VM -DestinationHost localhost` → assert → cleanup while
+leaving the host `DisabledByDefault`. This applies to migration, expected
+rejection, ServTdExt prebind, and rebind tests. Requires PowerTest
+`TdxLiveMigrationUtilities` for `New-TestHcsMigTd`. Rebinding uses
+`Test-TdxLmRebind.ps1` with two same- or different-image inputs.
 
 Some PowerTest builds' `New-TestHcsMigTd` call `New-VmStateFile`, which isn't
 defined anywhere in that module set (`New-VmStateFile no cmdlet`). `Invoke-
@@ -181,6 +185,70 @@ The test reads `Get-VmServTdExt -VmName tiptd` after VM startup and validates
 the 272-byte layout: the prebound hash at byte offsets 0 and 112, zero
 SERVTD_ATTR/reserved ranges, and the variable CPU SVN/TEE TCB/model metadata
 between the two hashes.
+
+To rebind a running TD between two MigTD instances, provide any two packaged
+IGVMs. They may be different files or the same file:
+
+```powershell
+.\Test-TdxLmRebind.ps1 `
+    -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
+    -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+```
+
+Runtime `TD Info Hash` values parsed from the two serial logs are authoritative,
+so sibling `.hash` files may be stale or absent. Existing `.hash` files are
+used only as cross-checks and as fallbacks when serial capture is disabled.
+When the two runtime hashes are equal, the second host mapping uses a synthetic
+key exactly as the host OS rebind test does; `Get-VmMigrationPolicy` must still
+report the real IGVM hash. The target VM defaults to `NoPersistentSecrets`; pass
+`-UsePersistentSecrets` only when target-VM attestation is intentionally part
+of the test. Both MigTD serial logs are captured by default as
+`tipmigtd-rebind-{old,new}.serial.log`; disable this with
+`-CaptureSerial:$false`. The script warns when a sibling hash disagrees with
+the runtime value and waits up to 30 seconds for
+`ReportStatus for rebinding completed` before stopping either MigTD. If neither
+side receives operation 2 within five seconds, it reports a pre-delivery host
+failure instead. Override the timeout with `-SerialDrainTimeoutSeconds`.
+Before `UpgradeMigrationPolicy`, the script queries both HCS systems and
+requires each to be in `Running` state with a nonempty `RuntimeId`; the host
+rebind implementation needs both MigTD worker processes and GHCI devices alive
+at the same time. Host policy remains `DisabledByDefault`: the target TD is
+explicitly marked `EnabledIfHostPermits` with `Set-VmMigratablePolicy`, and the
+script verifies that setting before startup. Cleanup leaves the host
+`DisabledByDefault` with the real final MigTD hash rather than enabling
+migration for VMs that did not opt in.
+
+During rebind, `0x800721CE` is the GHCI translation of
+`MIGPOLICY_UNSATISFIED_ERROR`, despite Windows formatting it as “The account is
+controlled by external policy.” It means the old and new MigTD policies or
+enrolled identities do not mutually authorize the pair; inspect both serial
+logs for the specific failed policy check.
+
+Capture VMMS, Worker, VID, GHCI VDev, analytic-channel, and serial evidence
+around one rebind attempt with:
+
+```powershell
+.\troubleshooting\Invoke-TdxLmDiagnosticCapture.ps1 `
+    -OutputDir .\diag-rebind `
+    -EnableAnalytic `
+    -CaptureEtw `
+    -SerialLogPath @(
+        '.\tipmigtd-rebind-old.serial.log',
+        '.\tipmigtd-rebind-new.serial.log'
+    ) `
+    -ReproCommand {
+        .\Test-TdxLmRebind.ps1 `
+            -OldIgvmFilePath .\old.igvm `
+            -NewIgvmFilePath .\new.igvm
+    }
+```
+
+In `tdxlm.etl`, inspect GHCI events
+`CreateTdxPrepareRebindingRequest`, `SubmitRequest_Sent`, and
+`RebindRequest_Failed`. The latter records `IsSource`, `PrimaryStatus`,
+`DetailedError`, and `ResultHR`, distinguishing an old/source rejection from a
+new/destination rejection. VMMS/Worker events show whether failure occurred
+before request submission, in the data pump, or during `VidTdxRebind`.
 
 An unresponsive agent can consume two 30-second target-VM attestation RPC
 timeouts and exhaust the worker's 60-second `StartVtl0` budget. During regular

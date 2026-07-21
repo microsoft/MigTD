@@ -95,6 +95,7 @@ signed with a local test key by `build_azure_mock_test.sh`.
 | `test-migtd-real_mock_quote.igvm` + `.hash` | policy generated from mock measurements with `use-mock-quote` |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1`, `README.md` | migration test scripts |
 | `Test-TdxServTdExtPrebind.ps1` | validates both prebound ServTdExt hash slots and reserved zero ranges after target startup |
+| `Test-TdxLmRebind.ps1` | rebinds a running TD between two same- or different-image MigTD instances |
 | `Install-TipDependencies.ps1` | installs bundled modules and optional test SecFw on the blade |
 | `dependencies/PowerTest`, `dependencies/HCSTest` | build-matched host test modules |
 | `dependencies/SecFw` | optional build-matched `secfw_test_GenuineIntel.dll` |
@@ -137,15 +138,24 @@ Copy `out/tip-package/` to the TDX lab blade, then in an **elevated** PowerShell
 .\Test-TdxServTdExtPrebind.ps1 `
     -IgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
     -NoPersistentSecrets
+
+# rebind between different or identical MigTD images
+.\Test-TdxLmRebind.ps1 `
+    -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
+    -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
 ```
 
 Each case performs: `New-TestHcsMigTd → Start-HcsSystem →
 Add-VmHostMigrationTdMapping -MigTdHash <hash> -VmId →
-Set-VMHostMigrationPolicy EnabledByDefault <hash> →
-New-VM -GuestStateIsolation TDX → Start-VM →
+Set-VMHostMigrationPolicy DisabledByDefault <hash> →
+New-VM -GuestStateIsolation TDX →
+Set-VmMigratablePolicy EnabledIfHostPermits →
+Update-VmMigrationPolicy → Start-VM →
 Move-VM -DestinationHost localhost`, asserts the result, then cleans up
-(`Set-VMHostMigrationPolicy AlwaysDisabled`, remove mapping, remove VM). Key VM
-settings: HCS schema 2.1, VM version 12.5, 1 vCPU, 512 MB.
+while leaving the host policy `DisabledByDefault` before removing the mapping
+and VM. This policy sequence is shared by migration, expected-rejection,
+ServTdExt prebind, and rebind tests. Key VM settings: HCS schema 2.1, VM version
+12.5, 1 vCPU, 512 MB.
 
 ## 6. Test cases
 
@@ -159,8 +169,10 @@ settings: HCS schema 2.1, VM version 12.5, 1 vCPU, 512 MB.
 6. **ServTdExt prebind** → after target startup, verify the 272-byte runtime
    extension contains the expected hash at offsets 0 and 112 with zero
    attributes/reserved ranges.
-7. **rebind** → register a second image (different hash) while a TD is bound, then
-   re-migrate (`Set-TestMigTdMeasurements` / new `.hash`).
+7. **rebind** → bind a running TD to the first MigTD, register a second MigTD,
+   and invoke `UpgradeMigrationPolicy`. The two inputs may have different
+   hashes or the same hash; same-hash tests use a synthetic second mapping key
+   while verifying that the partition retains the real IGVM measurement.
 8. **cycle** → repeat a case N times.
 
 `TdxLiveMigrationUtilities.psm1` provides the host interfaces; reuse is optional —

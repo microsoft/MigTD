@@ -142,7 +142,29 @@ If `OS_ROOT` is available, reference paths are:
    ranges must be zero; CPU SVN, TEE TCB SVN, and TEE model metadata between
    the hashes are platform-specific.
 
-5. **Capture Hyper-V diagnostics around one clean repro**
+6. **Test MigTD rebinding**
+
+   ```powershell
+   .\Test-TdxLmRebind.ps1 `
+       -OldIgvmFilePath .\test-migtd-accept-all_mock_quote.igvm `
+       -NewIgvmFilePath .\test-migtd-real_mock_quote.igvm
+   ```
+
+   The inputs may be different files or the same file. For equal hashes, the
+   script follows the host OS rebind test by assigning the second MigTD a
+   synthetic mapping key while verifying the partition reports the real hash.
+   It captures both MigTD serial logs by default. Rebind error `0x800721CE`
+   maps to GHCI `MIGPOLICY_UNSATISFIED_ERROR`; inspect the old/new logs to
+   identify which policy or identity check rejected the peer. For host-side
+   boundaries, wrap the command with `Invoke-TdxLmDiagnosticCapture.ps1`,
+   passing both serial paths and `-EnableAnalytic -CaptureEtw`; the WPR profile
+   includes VMMS, Worker, VID, and GHCI VDev rebind events. The script verifies
+   both HCS systems are `Running` with valid runtime IDs immediately before
+   rebind and waits up to 30 seconds for terminal rebind logs before cleanup.
+   Host policy is `DisabledByDefault`; the test VM is explicitly set to
+   `EnabledIfHostPermits` before its migration-policy hash is assigned.
+
+7. **Capture Hyper-V diagnostics around one clean repro**
 
    ```powershell
    <REPO_ROOT>\.agents\skills\migtd-tip-troubleshoot\scripts\Invoke-TdxLmDiagnosticCapture.ps1 `
@@ -158,7 +180,7 @@ If `OS_ROOT` is available, reference paths are:
        }
    ```
 
-6. **Classify the failure boundary**
+8. **Classify the failure boundary**
 
    | Evidence | Boundary |
    |---|---|

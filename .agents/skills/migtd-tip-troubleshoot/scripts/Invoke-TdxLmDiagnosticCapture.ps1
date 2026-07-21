@@ -11,7 +11,7 @@
 param(
     [Parameter(Mandatory)] [scriptblock]$ReproCommand,
     [Parameter(Mandatory)] [string]$OutputDir,
-    [string]$SerialLogPath,
+    [string[]]$SerialLogPath,
     [switch]$EnableAnalytic,
     [switch]$CaptureEtw,
     [string]$WprProfilePath = (Join-Path $PSScriptRoot 'TdxLmTraceProfile.wprp')
@@ -113,8 +113,10 @@ try {
             Out-File (Join-Path $OutputDir "$safeName.txt")
     }
 
-    if ($SerialLogPath -and (Test-Path $SerialLogPath)) {
-        Copy-Item $SerialLogPath (Join-Path $OutputDir (Split-Path $SerialLogPath -Leaf)) -Force
+    foreach ($logPath in $SerialLogPath) {
+        if ($logPath -and (Test-Path $logPath)) {
+            Copy-Item $logPath (Join-Path $OutputDir (Split-Path $logPath -Leaf)) -Force
+        }
     }
 
     Get-Process -Name igvmagent -ErrorAction SilentlyContinue |
