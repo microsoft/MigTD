@@ -511,12 +511,21 @@ mod v2 {
             return Err(PolicyError::PeerCertChainValidation);
         }
 
-        crypto::validate_peer_cert_chain(
-            local_policy.servtd_tcb_mapping_issuer_chain.as_bytes(),
-            verified_policy.servtd_tcb_mapping_issuer_chain.as_bytes(),
-        )
-        .log_err("Peer tcb mapping cert chain validation")
-        .map_err(|_| PolicyError::PeerCertChainValidation)?;
+        // Cross-check the JSON mapping issuer chains when both sides ship one
+        // (defense-in-depth; the signer_anchor equality above already binds the
+        // signer). Absent on both sides (CoRIM-only) is fine; one-sided fails.
+        match (
+            local_policy.servtd_tcb_mapping_issuer_chain.as_deref(),
+            verified_policy.servtd_tcb_mapping_issuer_chain.as_deref(),
+        ) {
+            (Some(local_mc), Some(peer_mc)) => {
+                crypto::validate_peer_cert_chain(local_mc.as_bytes(), peer_mc.as_bytes())
+                    .log_err("Peer tcb mapping cert chain validation")
+                    .map_err(|_| PolicyError::PeerCertChainValidation)?;
+            }
+            (None, None) => {}
+            _ => return Err(PolicyError::PeerCertChainValidation),
+        }
 
         // Validate the peer's optional TD Identity issuer chain against ours
         // when both sides ship one. If exactly one side has it, the chains do
@@ -542,12 +551,14 @@ mod v2 {
         //     own, so the authoritative revocation list is the local one.
         //     Fail-closed.
         if let Some(servtd_crl) = local_policy.servtd_crl.as_deref() {
-            crypto::verify_signer_chain_not_revoked(
-                verified_policy.servtd_tcb_mapping_issuer_chain.as_bytes(),
-                servtd_crl.as_bytes(),
-            )
-            .log_err("Peer tcb mapping signer revocation check")
-            .map_err(|_| PolicyError::SignerRevoked)?;
+            if let Some(peer_mc) = verified_policy.servtd_tcb_mapping_issuer_chain.as_deref() {
+                crypto::verify_signer_chain_not_revoked(
+                    peer_mc.as_bytes(),
+                    servtd_crl.as_bytes(),
+                )
+                .log_err("Peer tcb mapping signer revocation check")
+                .map_err(|_| PolicyError::SignerRevoked)?;
+            }
             if let Some(peer_identity_chain) =
                 verified_policy.servtd_identity_issuer_chain.as_deref()
             {
