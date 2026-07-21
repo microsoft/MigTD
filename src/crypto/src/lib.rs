@@ -142,9 +142,11 @@ const ANY_EXTENDED_KEY_USAGE_OID: x509::ObjectIdentifier =
 
 /// Extract the DER-encoded, dedicated signer-purpose EKU OID from a leaf cert.
 ///
-/// MigTD signer leaves must contain exactly one EKU extension with exactly one
-/// purpose OID. Requiring a single purpose avoids ambiguity over which OID is
-/// measured into RTMR1 and compared during peer validation.
+/// The leaf must contain exactly one EKU extension asserting exactly one
+/// purpose OID that is not `anyExtendedKeyUsage`. This is used on the legacy
+/// single-EKU enrollment/exchange paths where a specific OID has to be selected
+/// deterministically (there is no target anchor to match against). Multi-EKU
+/// signer leaves are handled anchor-first via [`extract_leaf_eku_oids_der`].
 fn extract_single_leaf_eku_oid_der(cert: &x509::Certificate<'_>) -> Result<Vec<u8>> {
     let extensions = cert
         .tbs_certificate
@@ -171,6 +173,48 @@ fn extract_single_leaf_eku_oid_der(cert: &x509::Certificate<'_>) -> Result<Vec<u
     }
 
     signer_eku.ok_or(Error::ParseCertificate)
+}
+
+/// Extract **all** DER-encoded EKU purpose OIDs asserted by a leaf cert.
+///
+/// The leaf must carry exactly one ExtendedKeyUsage extension; every purpose it
+/// asserts is returned (leaf-order), each as its own DER-encoded OID. This is
+/// the anchor-first path: the caller does not need to know which purpose is the
+/// MigTD signer OID — it recomputes the signer anchor for each returned OID and
+/// keeps the one that reproduces the enrolled/measured anchor. A signer cert may
+/// therefore carry the MigTD purpose alongside unrelated purposes (e.g. a
+/// code-signing EKU) without the firmware hard-coding any specific OID.
+pub fn extract_leaf_eku_oids_der(cert: &x509::Certificate<'_>) -> Result<Vec<Vec<u8>>> {
+    let extensions = cert
+        .tbs_certificate
+        .extensions
+        .as_ref()
+        .ok_or(Error::ParseCertificate)?;
+    let mut oids: Option<Vec<Vec<u8>>> = None;
+
+    for ext in extensions.get() {
+        if ext.extn_id != EXTENDED_KEY_USAGE_OID {
+            continue;
+        }
+        if oids.is_some() {
+            // More than one EKU extension is malformed (RFC 5280 §4.2.1.12).
+            return Err(Error::ParseCertificate);
+        }
+
+        let value = ext.extn_value.as_ref().ok_or(Error::ParseCertificate)?;
+        let purposes = Vec::<x509::ObjectIdentifier>::from_der(value.as_bytes())
+            .map_err(|_| Error::ParseCertificate)?;
+        if purposes.is_empty() {
+            return Err(Error::ParseCertificate);
+        }
+        let mut ders = Vec::with_capacity(purposes.len());
+        for oid in purposes {
+            ders.push(oid.to_der().map_err(|_| Error::ParseCertificate)?);
+        }
+        oids = Some(ders);
+    }
+
+    oids.ok_or(Error::ParseCertificate)
 }
 
 /// Return the DER-encoded signer-purpose EKU OID from a PEM chain's leaf.
@@ -277,7 +321,7 @@ pub fn verify_cose_sign1_es384_x5chain(
     x5chain_der: &[&[u8]],
     tbs: &[u8],
     signature: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>)> {
+) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
     if x5chain_der.is_empty() {
         return Err(Error::CertChainVerification("empty x5chain".into()));
     }
@@ -300,11 +344,14 @@ pub fn verify_cose_sign1_es384_x5chain(
     )
     .map_err(|_| Error::SignatureVerification)?;
 
-    // 3. Anchor material for the caller: trust-anchor cert DER + leaf signer EKU.
+    // 3. Anchor material for the caller: the trust-anchor cert DER plus every
+    //    EKU purpose OID the leaf asserts. The caller recomputes the signer
+    //    anchor for each OID and keeps whichever reproduces the enrolled
+    //    anchor, so a multi-purpose signer leaf needs no hard-coded OID here.
     let root_der = x5chain_der[x5chain_der.len() - 1].to_vec();
-    let leaf_eku_oid_der = extract_single_leaf_eku_oid_der(&leaf)?;
+    let leaf_eku_oids_der = extract_leaf_eku_oids_der(&leaf)?;
 
-    Ok((root_der, leaf_eku_oid_der))
+    Ok((root_der, leaf_eku_oids_der))
 }
 
 fn extract_cert_chain_from_pem(cert_chain_pem: &[u8]) -> Result<Vec<CertificateDer>> {
@@ -823,6 +870,41 @@ m07Y31+o+LpsZuEnlIETx/zemHA=
             }
             _ => panic!("Expected PeerCertChainValidation error"),
         }
+    }
+
+    #[test]
+    fn test_validate_peer_cert_chain_selects_designated_eku_among_many() {
+        // A leaf that co-asserts the dedicated MigTD signer OID alongside a
+        // code-signing EKU is multi-purpose; the single-OID extractor used by
+        // the legacy peer path rejects it (anchor-first matching via
+        // `extract_leaf_eku_oids_der` handles multi-purpose leaves instead).
+        let local = include_bytes!("../test/eku/signer_designated_multi.pem");
+        let peer = include_bytes!("../test/eku/signer_designated_only.pem");
+        assert!(validate_peer_cert_chain(local, peer).is_err());
+    }
+
+    #[test]
+    fn test_extract_leaf_eku_oids_lists_all_purposes() {
+        // The list extractor returns every purpose the leaf asserts, in order,
+        // each DER-encoded — so an anchor-first caller can match without knowing
+        // which OID is the MigTD signer purpose.
+        let chain =
+            extract_cert_chain_from_pem(include_bytes!("../test/eku/signer_designated_multi.pem"))
+                .unwrap();
+        let leaf = x509::Certificate::from_der(chain[0].as_ref()).unwrap();
+        let oids = extract_leaf_eku_oids_der(&leaf).unwrap();
+        // signer_designated_multi asserts { id-kp-codeSigning, 1.3.6.1.4.1.311.76.59.1.43 }.
+        assert_eq!(oids.len(), 2);
+        let migtd_signer_oid_der = x509::ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.76.59.1.43")
+            .to_der()
+            .unwrap();
+        assert!(oids.iter().any(|d| *d == migtd_signer_oid_der));
+
+        // A leaf with no EKU extension is rejected.
+        let no_eku =
+            extract_cert_chain_from_pem(include_bytes!("../test/eku/signer_no_eku.pem")).unwrap();
+        let no_eku_leaf = x509::Certificate::from_der(no_eku[0].as_ref()).unwrap();
+        assert!(extract_leaf_eku_oids_der(&no_eku_leaf).is_err());
     }
 
     #[test]
