@@ -121,11 +121,12 @@ mod v2 {
 
         // Attach the optional CoRIM hash endorsement enrolled in the CFV. Its
         // COSE signer chain is bound to the SAME RTMR1 signer anchor as the CFV
-        // policy issuer chain, so a CoRIM signed under a different root/subject
-        // fails closed. The CoRIM is NOT measured (`config::get_servtd_corim`
-        // is never read by `do_measurements`), so enrolling it does not change
-        // the ServTD/`tdinfo_hash`. `now_epoch_secs = 0`: MigTD has no wall
-        // clock, so the producer must not set CWT `nbf`/`exp` on the CoRIM.
+        // policy issuer chain, so a CoRIM signed under a different root cert or
+        // leaf signer EKU fails closed. The CoRIM is NOT measured
+        // (`config::get_servtd_corim` is never read by `do_measurements`), so
+        // enrolling it does not change the ServTD/`tdinfo_hash`.
+        // `now_epoch_secs = 0`: MigTD has no wall clock, so the producer must
+        // not set CWT `nbf`/`exp` on the CoRIM.
         #[cfg(feature = "servtd_corim")]
         if let Some(cose) = crate::config::get_servtd_corim() {
             let anchor = resolve_signer_anchor(cert_chain)?;

@@ -218,9 +218,10 @@ pub struct VerifiedPolicy<'a> {
     /// `servtdCollateral.servtdCrl`. Retained so the runtime can cross-check a
     /// peer's signer chain against the local trusted CRL.
     pub servtd_crl: Option<String>,
-    /// The RTMR1 signer anchor `A = SHA384(tag ‖ H(rootDER) ‖ H(leafSubjectDER))`
-    /// this policy was bound to (resolved from the CFV signer-anchor slot or a
-    /// PEM issuer chain). Used for the anchor-based peer cross-check.
+    /// The RTMR1 signer anchor `A = SHA384(tag ‖ H(rootDER) ‖ leafEkuOidDER)`
+    /// (hash of the root cert plus the leaf's dedicated signer-purpose EKU OID
+    /// DER) this policy was bound to (resolved from the CFV signer-anchor slot
+    /// or a PEM issuer chain). Used for the anchor-based peer cross-check.
     pub signer_anchor: [u8; SHA384_DIGEST_SIZE],
     /// Optional CoRIM-encoded servtd collateral. When attached it is the sole
     /// authority for servtd lookups (fail-closed: a CoRIM miss is a miss,

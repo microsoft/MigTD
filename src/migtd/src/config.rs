@@ -39,7 +39,8 @@ pub const MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID: Guid = Guid::from_fields(
 // {2B9D5A84-6F3C-4E71-8A2D-0C7E1F4B6A93}
 //
 // FFS GUID of the 48-byte RTMR1 signer anchor
-// `A = SHA384(tag ‖ H(rootDER) ‖ H(leafSubjectDER))`. This is the CoRIM-only
+// `A = SHA384(tag ‖ H(rootDER) ‖ leafEkuOidDER)` (hash of the root cert plus the
+// leaf's dedicated signer-purpose EKU OID DER). This is the CoRIM-only
 // enrollment form: instead of enrolling the full policy issuer chain PEM (whose
 // only runtime role was to derive this anchor), the pipeline enrolls the
 // precomputed anchor directly. Measured into RTMR1 exactly like the PEM-derived
