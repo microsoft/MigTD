@@ -165,9 +165,7 @@ impl BuildArgs {
                 ));
             }
         } else if self.servtd_corim.is_some() {
-            return Err(anyhow::anyhow!(
-                "--servtd-corim requires --policy-v2"
-            ));
+            return Err(anyhow::anyhow!("--servtd-corim requires --policy-v2"));
         }
         Ok(())
     }
