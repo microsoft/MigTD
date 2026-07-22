@@ -109,6 +109,29 @@ If `OS_ROOT` is available, reference paths are:
        -CaptureSerial
    ```
 
+   Validate startup request handling and a post-start external GetTDReport
+   independently of migration/rebind:
+
+   ```powershell
+   .\Test-TdxMigTdStartupRequests.ps1 `
+       -IgvmFilePath .\test-migtd-accept-all_mock_quote.igvm
+   ```
+
+   The Host OS `New-TestHcsMigTd` helper configures GHCI log level `Trace`, so
+   startup issues `EnableLogArea` first and an internal `GetTDReport` second to
+   cache TDINFO. The test treats that internal request as setup, then submits a
+   separate HCS `MigTdReport` query with a random REPORTDATA nonce, matching the
+   request path used by IGVMAgent health checks. It validates the nonce,
+   TDREPORT hashes, image TD Info Hash, and external GHCI VDev events. With a
+   working IGVMAgent, use
+   `test-migtd-getquote-all.igvm -ExpectedGetQuoteResult Success` to match the
+   Host OS GetQuote test (Worker Analytic event 18670).
+
+   MigTD also accepts operation 5 (`GetMigtdData`), but the current Host OS
+   `GhciRequestOperation` exposes only operations 1–4 and has no HCS/PowerShell
+   trigger for operation 5. `Run-TipTests.ps1` reports it as `UNAVAILABLE`
+   rather than claiming real-host coverage.
+
 4. **Verify the host prebind hash**
 
    ```powershell

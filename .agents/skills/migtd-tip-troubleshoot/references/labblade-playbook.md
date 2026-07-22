@@ -24,6 +24,23 @@ PowerTest and HCSTest dependencies. `HCSTEST_SOURCE` must be the prebuilt
 package containing `netfx\Microsoft.HostCompute.Test.PowerShell.v2.dll`, not
 the C# source directory.
 
+Before migration, validate MigTD's startup request handling:
+
+```powershell
+.\Test-TdxMigTdStartupRequests.ps1 `
+    -IgvmFilePath .\test-migtd-accept-all_mock_quote.igvm
+```
+
+The test captures `Microsoft.Windows.HyperV.GhciVDev` and requires
+`EnableLogAreaRequest_Success` plus `InternalGetReport_TdInfoCached` during
+startup. It then issues a separate post-start HCS `MigTdReport` query matching
+the IGVMAgent health-check request and requires
+`CreateMigTdGetReportRequest` plus `GetTdReportRequest_Success`. The returned
+nonce, TDREPORT hashes, and image TD Info Hash are validated. The current Host
+OS GHCI VDev can issue WaitForRequest operations 1–4 only; MigTD operation 5
+(`GetMigtdData`) has no real-host trigger and is reported as unavailable by the
+package suite.
+
 From a fresh elevated Windows PowerShell, install dependencies and configure
 the host:
 

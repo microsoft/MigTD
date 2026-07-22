@@ -3,8 +3,9 @@
   Run the TiP loopback test suite over a built package directory.
 
 .DESCRIPTION
-  Runs agent-independent mock-quote migration, ServTdExt prebind, and
-  bidirectional policy leaf-key rotation rebind checks.
+  Runs MigTD startup and post-start WaitForRequest coverage,
+  agent-independent mock-quote migration, ServTdExt prebind, and bidirectional
+  policy leaf-key rotation rebind checks.
   Optionally installs bundled dependencies, configures the host, and runs the
   regular IGVMAgent-dependent policy cases.
 
@@ -46,6 +47,102 @@ if ($InstallDependencies) {
     & $validator -PowerTestPath $PowerTestPath -Configure
 }
 
+$results = @()
+$requestCoverage = @()
+$startupRequestScript = Join-Path $PackageDir 'Test-TdxMigTdStartupRequests.ps1'
+if (-not (Test-Path $startupRequestScript)) {
+    throw "Startup request test script not found: $startupRequestScript"
+}
+
+$startupRequestIgvm = Join-Path $PackageDir 'test-migtd-accept-all_mock_quote.igvm'
+if (Test-Path $startupRequestIgvm) {
+    Write-Host "`n=== wait_for_requests startup and post-start operations ==="
+    try {
+        & $startupRequestScript `
+            -IgvmFilePath $startupRequestIgvm `
+            -PowerTestPath $PowerTestPath `
+            -OutputDir (Join-Path $PackageDir 'request-coverage\startup')
+        $results += [pscustomobject]@{
+            Case = 'wait_for_requests startup and GetTDReport'
+            Result = 'PASS'
+        }
+        $requestCoverage += @(
+            [pscustomobject]@{
+                Operation = '4 EnableLogArea'
+                Trigger = 'MigTD startup'
+                Result = 'PASS'
+                Notes = 'GHCI EnableLogAreaRequest_Success'
+            },
+            [pscustomobject]@{
+                Operation = '3 GetTDReport'
+                Trigger = 'Post-start HCS query'
+                Result = 'PASS'
+                Notes = 'External request; nonce, report hashes, and image hash validated'
+            }
+        )
+    } catch {
+        $results += [pscustomobject]@{
+            Case = 'wait_for_requests startup and GetTDReport'
+            Result = "FAIL: $_"
+        }
+        $requestCoverage += @(
+            [pscustomobject]@{
+                Operation = '4 EnableLogArea'
+                Trigger = 'MigTD startup'
+                Result = 'FAIL'
+                Notes = [string]$_
+            },
+            [pscustomobject]@{
+                Operation = '3 GetTDReport'
+                Trigger = 'Post-start HCS query'
+                Result = 'FAIL'
+                Notes = [string]$_
+            }
+        )
+    }
+} else {
+    Write-Warning "skip wait_for_requests startup: $startupRequestIgvm not found"
+    $requestCoverage += @(
+        [pscustomobject]@{
+            Operation = '4 EnableLogArea'
+            Trigger = 'MigTD startup'
+            Result = 'SKIP'
+            Notes = 'mock-quote image missing'
+        },
+        [pscustomobject]@{
+            Operation = '3 GetTDReport'
+            Trigger = 'Post-start HCS query'
+            Result = 'SKIP'
+            Notes = 'mock-quote image missing'
+        }
+    )
+}
+
+if ($IncludeAgentCases) {
+    $getQuoteIgvm = Join-Path $PackageDir 'test-migtd-getquote-all.igvm'
+    if (Test-Path $getQuoteIgvm) {
+        Write-Host "`n=== GetQuote initialization ==="
+        try {
+            & $startupRequestScript `
+                -IgvmFilePath $getQuoteIgvm `
+                -PowerTestPath $PowerTestPath `
+                -ExpectedGetQuoteResult Success `
+                -OutputDir (Join-Path $PackageDir 'request-coverage\getquote')
+            $results += [pscustomobject]@{
+                Case = 'GetQuote initialization'
+                Result = 'PASS'
+            }
+        } catch {
+            $results += [pscustomobject]@{
+                Case = 'GetQuote initialization'
+                Result = "FAIL: $_"
+            }
+        }
+    } else {
+        Write-Warning "skip GetQuote initialization: $getQuoteIgvm not found"
+    }
+}
+
 $cases = @(
     @{ Name = 'accept-all_mock_quote'; File = 'test-migtd-accept-all_mock_quote.igvm'; Reject = $false; NoSecrets = $true }
 )
@@ -61,7 +158,6 @@ $loopback = Join-Path $PSScriptRoot 'Invoke-TdxLmLoopback.ps1'
 if (-not (Test-Path $loopback)) {
     throw "Loopback driver not found: $loopback"
 }
-$results = @()
 foreach ($c in $cases) {
     $igvm = Join-Path $PackageDir $c.File
     if (-not (Test-Path $igvm)) { Write-Warning "skip $($c.Name): $igvm not found"; continue }
@@ -74,6 +170,23 @@ foreach ($c in $cases) {
     } catch {
         $results += [pscustomobject]@{ Case = $c.Name; Result = "FAIL: $_" }
     }
+}
+
+$migrationResults = @(
+    $results | Where-Object { $_.Case -in $cases.Name }
+)
+$migrationCoverage = if ($migrationResults.Result -match '^FAIL') {
+    'FAIL'
+} elseif ($migrationResults.Result -contains 'PASS') {
+    'PASS'
+} else {
+    'SKIP'
+}
+$requestCoverage += [pscustomobject]@{
+    Operation = '1 StartMigration'
+    Trigger = 'Move-VM loopback'
+    Result = $migrationCoverage
+    Notes = 'Invoke-TdxLmLoopback.ps1'
 }
 
 $prebindIgvm = Join-Path $PackageDir 'test-migtd-accept-all_mock_quote.igvm'
@@ -141,5 +254,32 @@ foreach ($c in $rotationCases) {
     }
 }
 
+$rebindResults = @(
+    $results | Where-Object { $_.Case -in $rotationCases.Name }
+)
+$rebindCoverage = if ($rebindResults.Result -match '^FAIL') {
+    'FAIL'
+} elseif ($rebindResults.Result -contains 'PASS') {
+    'PASS'
+} else {
+    'SKIP'
+}
+$requestCoverage += [pscustomobject]@{
+    Operation = '2 StartRebinding'
+    Trigger = 'Update-VmMigrationPolicy'
+    Result = $rebindCoverage
+    Notes = 'Test-TdxLmRebind.ps1'
+}
+$requestCoverage += [pscustomobject]@{
+    Operation = '5 GetMigtdData'
+    Trigger = 'None on current Host OS'
+    Result = 'UNAVAILABLE'
+    Notes = 'Host GHCI VDev GhciRequestOperation exposes operations 1-4 only'
+}
+
 $results | Format-Table -AutoSize
+Write-Host "`n=== wait_for_requests coverage ==="
+$requestCoverage |
+    Sort-Object { [int]($_.Operation.Split(' ')[0]) } |
+    Format-Table -AutoSize -Wrap
 if ($results.Result -match 'FAIL') { exit 1 }

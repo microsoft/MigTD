@@ -64,6 +64,7 @@ Produces in `out/tip-package/`:
 | `test-migtd_mock_quote_key_rotation.igvm` + `.hash` | mock-quote counterpart signed by the rotated policy leaf key |
 | `test-migtd{,_rebind,_key_rotation,_mock_quote,_mock_quote_rebind,_mock_quote_key_rotation}.policy.json` | signed policy snapshot embedded in the corresponding image |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1` | migration test scripts |
+| `Test-TdxMigTdStartupRequests.ps1` | validate startup `EnableLogArea` plus an external post-start `GetTDReport` health-check query; optionally validate GetQuote |
 | `Test-TdxServTdExtPrebind.ps1` | start a prebound TD and validate both ServTdExt hash slots and zero padding |
 | `Test-TdxLmRebind.ps1` | rebind a running TD between two same- or different-image MigTD instances |
 | `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, and optional test SecFw |
@@ -164,12 +165,32 @@ then:
 # without -InstallDependencies.
 .\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
 
-# Default suite: agent-independent mock-quote migration + ServTdExt validation.
+# Default suite: startup request coverage, mock-quote migration, ServTdExt,
+# and mock-quote rebind/key-rotation validation.
 .\Run-TipTests.ps1
 
-# Also run regular IGVMAgent-dependent policy cases.
+# Also run GetQuote initialization and regular IGVMAgent-dependent policy cases.
 .\Run-TipTests.ps1 -IncludeAgentCases
 ```
+
+The suite prints a `wait_for_requests coverage` matrix for all operations MigTD
+accepts:
+
+| Operation | Real-host trigger / coverage |
+|------|------|
+| `1 StartMigration` | `Move-VM` loopback |
+| `2 StartRebinding` | `Update-VmMigrationPolicy` rebind |
+| `3 GetTDReport` | explicit post-start HCS query matching IGVMAgent health checks; validates the nonce, TDREPORT hashes, image TD Info Hash, and external GHCI events |
+| `4 EnableLogArea` | automatic first startup request; validated through GHCI VDev ETW |
+| `5 GetMigtdData` | unavailable on the current Host OS GHCI VDev, whose `GhciRequestOperation` exposes only operations 1–4 |
+
+The request test follows the Host OS GHCI test pattern and requires PowerShell
+7 plus elevated WPR access. Startup's internal `GetTDReport` is verified only
+as TDINFO-cache setup. Operation 3 coverage comes from a separate post-start
+`Get-HcsSystemProperties` `MigTdReport` query using a random REPORTDATA nonce,
+the same HCS path used by IGVMAgent health checks. With `-IncludeAgentCases`,
+the test also starts `test-migtd-getquote-all.igvm` and requires Worker
+Analytic event 18670, matching `Tdx.Ghci.GetQuote.TestMD.Tests.ps1`.
 
 Each case: start MigTD → register hash with host policy `DisabledByDefault` →
 create a TDX VM → set its migratable policy to `EnabledIfHostPermits` → assign

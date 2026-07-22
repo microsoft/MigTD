@@ -99,6 +99,7 @@ signed with a local test key by `build_azure_mock_test.sh`.
 | `test-migtd_mock_quote_key_rotation.igvm` + `.hash` | mock-quote counterpart with the rotated policy leaf key |
 | `test-migtd{,_rebind,_key_rotation,_mock_quote,_mock_quote_rebind,_mock_quote_key_rotation}.policy.json` | signed policy snapshots embedded in the real-policy images |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1`, `README.md` | migration test scripts |
+| `Test-TdxMigTdStartupRequests.ps1` | validate startup `EnableLogArea` and an explicit post-start `GetTDReport` health-check query through HCS and GHCI VDev ETW; optionally validate GetQuote |
 | `Test-TdxServTdExtPrebind.ps1` | validates both prebound ServTdExt hash slots and reserved zero ranges after target startup |
 | `Test-TdxLmRebind.ps1` | rebinds a running TD between two same- or different-image MigTD instances |
 | `Install-TipDependencies.ps1` | installs bundled modules and optional test SecFw on the blade |
@@ -210,21 +211,32 @@ ServTdExt prebind, and rebind tests. Key VM settings: HCS schema 2.1, VM version
 
 ## 6. Test cases
 
-1. **accept-all** → migration succeeds.
-2. **reject-all** → migration rejected.
-3. **real policy** → succeeds when the node's FMSPC/TCB match `policy_data_raw.json`;
+1. **startup and health-check WaitForRequest** → starting MigTD must produce
+   `EnableLogAreaRequest_Success` and `InternalGetReport_TdInfoCached`. The test
+   then submits an explicit HCS `MigTdReport` query with a random REPORTDATA
+   nonce and requires `CreateMigTdGetReportRequest` plus
+   `GetTdReportRequest_Success`. It validates the nonce echo, TDREPORT internal
+   hashes, and the image's expected TD Info Hash.
+2. **accept-all** → migration succeeds.
+3. **reject-all** → migration rejected.
+4. **real policy** → succeeds when the node's FMSPC/TCB match `policy_data_raw.json`;
    `policy_reject_data_raw.json` is the negative twin.
-4. **getquote-all** → exercises the initialization GetQuote path.
-5. **mock-quote variants** → exercise migration without host GHCI GetQuote;
+5. **getquote-all** → exercises initialization GetQuote and requires Worker
+   Analytic event 18670 when `-IncludeAgentCases` is set.
+6. **mock-quote variants** → exercise migration without host GHCI GetQuote;
    combine with `-NoPersistentSecrets` to avoid all IGVMAgent calls.
-6. **ServTdExt prebind** → after target startup, verify the 272-byte runtime
+7. **ServTdExt prebind** → after target startup, verify the 272-byte runtime
    extension contains the expected hash at offsets 0 and 112 with zero
    attributes/reserved ranges.
-7. **rebind** → bind a running TD to the first MigTD, register a second MigTD,
+8. **rebind** → bind a running TD to the first MigTD, register a second MigTD,
    and invoke `UpgradeMigrationPolicy`. The two inputs may have different
    hashes or the same hash; same-hash tests use a synthetic second mapping key
    while verifying that the partition retains the real IGVM measurement.
-8. **cycle** → repeat a case N times.
+9. **WaitForRequest coverage matrix** → operations 1–4 are exercised on the
+   real host. Operation 5 (`GetMigtdData`) remains reported as unavailable:
+   current Host OS `GhciRequestOperation` exposes only operations 1–4 and has
+   no PowerShell/HCS trigger for operation 5.
+10. **cycle** → repeat a case N times.
 
 `TdxLiveMigrationUtilities.psm1` provides the host interfaces; reuse is optional —
 any driver hitting the same HCS/VMM cmdlets works.
