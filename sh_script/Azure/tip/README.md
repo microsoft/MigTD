@@ -325,6 +325,28 @@ In `tdxlm.etl`, inspect GHCI events
 new/destination rejection. VMMS/Worker events show whether failure occurred
 before request submission, in the data pump, or during `VidTdxRebind`.
 
+For a smaller trace containing only provider
+`Microsoft.Windows.HyperV.GhciVDev`
+(`AEFC8638-19A2-553A-06CB-C3984FFC7EE8`), run:
+
+```powershell
+.\troubleshooting\Invoke-GhciVDevDiagnosticCapture.ps1 `
+    -OutputDir .\diag-ghci `
+    -ReproCommand {
+        .\Test-TdxLmRebind.ps1 `
+            -OldIgvmFilePath .\old.igvm `
+            -NewIgvmFilePath .\new.igvm
+    }
+```
+
+This writes `ghcivdev.etl`, raw `tracerpt` CSV/XML, provider metadata, and
+provider-filtered text/CLIXML when `Get-WinEvent` can decode the ETL. To export
+an existing trace separately:
+
+```powershell
+.\troubleshooting\Export-GhciVDevEvents.ps1 -EtlPath .\tdxlm.etl
+```
+
 An unresponsive agent can consume two 30-second target-VM attestation RPC
 timeouts and exhaust the worker's 60-second `StartVtl0` budget. During regular
 image migration, `0x80072F78` from GetQuote instead means the agent response

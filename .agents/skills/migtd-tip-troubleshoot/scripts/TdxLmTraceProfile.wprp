@@ -67,5 +67,15 @@
         </EventCollectorId>
       </Collectors>
     </Profile>
+
+    <Profile Id="GhciVDev.Verbose.File" Name="GhciVDev" Description="Microsoft.Windows.HyperV.GhciVDev trace" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <EventCollectorId Value="TdxLmCollector">
+          <EventProviders>
+            <EventProviderId Value="GhciVDev" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
   </Profiles>
 </WindowsPerformanceRecorder>

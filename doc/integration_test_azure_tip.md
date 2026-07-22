@@ -102,6 +102,8 @@ signed with a local test key by `build_azure_mock_test.sh`.
 | `Test-TdxServTdExtPrebind.ps1` | validates both prebound ServTdExt hash slots and reserved zero ranges after target startup |
 | `Test-TdxLmRebind.ps1` | rebinds a running TD between two same- or different-image MigTD instances |
 | `Install-TipDependencies.ps1` | installs bundled modules and optional test SecFw on the blade |
+| `troubleshooting/Invoke-GhciVDevDiagnosticCapture.ps1` | captures a focused `Microsoft.Windows.HyperV.GhciVDev` ETL around one repro |
+| `troubleshooting/Export-GhciVDevEvents.ps1` | exports raw and provider-filtered GHCI VDev events from an ETL |
 | `dependencies/PowerTest`, `dependencies/HCSTest` | build-matched host test modules |
 | `dependencies/SecFw` | optional build-matched `secfw_test_GenuineIntel.dll` |
 

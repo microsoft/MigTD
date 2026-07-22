@@ -194,6 +194,19 @@ If `OS_ROOT` is available, reference paths are:
        }
    ```
 
+   To isolate `Microsoft.Windows.HyperV.GhciVDev` events in a smaller ETL:
+
+   ```powershell
+   <REPO_ROOT>\.agents\skills\migtd-tip-troubleshoot\scripts\Invoke-GhciVDevDiagnosticCapture.ps1 `
+       -OutputDir <OUTPUT_DIR> `
+       -ReproCommand { <REPRO_COMMAND> }
+   ```
+
+   This uses provider GUID `AEFC8638-19A2-553A-06CB-C3984FFC7EE8` and exports
+   raw `tracerpt` CSV/XML plus provider-filtered text/CLIXML when
+   `Get-WinEvent` can decode the ETL. Use `Export-GhciVDevEvents.ps1` to process
+   an existing trace.
+
 8. **Classify the failure boundary**
 
    | Evidence | Boundary |

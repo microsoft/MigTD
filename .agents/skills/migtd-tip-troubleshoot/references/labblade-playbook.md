@@ -208,6 +208,20 @@ channel state and writes a timestamp-bounded bundle. Add `-CaptureEtw` to
 capture focused VMMS, Worker, VID, WinHv, and hypervisor providers into
 `tdxlm.etl`.
 
+For a focused trace of only `Microsoft.Windows.HyperV.GhciVDev`, use:
+
+```powershell
+scripts\Invoke-GhciVDevDiagnosticCapture.ps1 `
+    -OutputDir <OUTPUT_DIR> `
+    -ReproCommand { <REPRO_COMMAND> }
+```
+
+The provider GUID is `AEFC8638-19A2-553A-06CB-C3984FFC7EE8`. The capture
+includes `ghcivdev.etl` plus raw `tracerpt` CSV/XML and provider-filtered
+text/CLIXML when the host can decode the ETL. Use
+`scripts\Export-GhciVDevEvents.ps1 -EtlPath <ETL_PATH>` to export an existing
+trace.
+
 ## 6. Current failure boundary
 
 Worker Operational event 1840 reported:
