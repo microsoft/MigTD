@@ -140,11 +140,27 @@ const EXTENDED_KEY_USAGE_OID: x509::ObjectIdentifier =
 const ANY_EXTENDED_KEY_USAGE_OID: x509::ObjectIdentifier =
     x509::ObjectIdentifier::new_unwrap("2.5.29.37.0");
 
+/// Dedicated MigTD policy-signer EKU purpose OID. A signer leaf identifies
+/// itself as authorized to sign MigTD policy / CoRIM endorsements by asserting
+/// this purpose in its ExtendedKeyUsage. When present it is always the OID
+/// folded into the RTMR1 signer anchor, even if the leaf also asserts other
+/// (unrelated) purposes such as a code-signing EKU.
+const MIGTD_SIGNER_PURPOSE_EKU_OID: x509::ObjectIdentifier =
+    x509::ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.76.59.1.43");
+
 /// Extract the DER-encoded, dedicated signer-purpose EKU OID from a leaf cert.
 ///
-/// MigTD signer leaves must contain exactly one EKU extension with exactly one
-/// purpose OID. Requiring a single purpose avoids ambiguity over which OID is
-/// measured into RTMR1 and compared during peer validation.
+/// Selection rule (unambiguous in all cases):
+/// * If the leaf asserts the dedicated [`MIGTD_SIGNER_PURPOSE_EKU_OID`], that
+///   OID is selected — even when the leaf co-asserts additional purposes. This
+///   supports real signing certs that carry the MigTD purpose alongside, e.g.,
+///   a Microsoft code-signing EKU.
+/// * Otherwise, the leaf must assert exactly one purpose OID that is not
+///   `anyExtendedKeyUsage`, and that single OID is selected.
+///
+/// Any other shape (no EKU, `anyExtendedKeyUsage`, or multiple purposes none of
+/// which is the MigTD purpose) is rejected, keeping the value measured into
+/// RTMR1 and compared during peer validation unambiguous.
 fn extract_single_leaf_eku_oid_der(cert: &x509::Certificate<'_>) -> Result<Vec<u8>> {
     let extensions = cert
         .tbs_certificate
@@ -164,10 +180,18 @@ fn extract_single_leaf_eku_oid_der(cert: &x509::Certificate<'_>) -> Result<Vec<u
         let value = ext.extn_value.as_ref().ok_or(Error::ParseCertificate)?;
         let purposes = Vec::<x509::ObjectIdentifier>::from_der(value.as_bytes())
             .map_err(|_| Error::ParseCertificate)?;
-        if purposes.len() != 1 || purposes[0] == ANY_EXTENDED_KEY_USAGE_OID {
+
+        let selected = if purposes
+            .iter()
+            .any(|oid| *oid == MIGTD_SIGNER_PURPOSE_EKU_OID)
+        {
+            MIGTD_SIGNER_PURPOSE_EKU_OID
+        } else if purposes.len() == 1 && purposes[0] != ANY_EXTENDED_KEY_USAGE_OID {
+            purposes[0]
+        } else {
             return Err(Error::ParseCertificate);
-        }
-        signer_eku = Some(purposes[0].to_der().map_err(|_| Error::ParseCertificate)?);
+        };
+        signer_eku = Some(selected.to_der().map_err(|_| Error::ParseCertificate)?);
     }
 
     signer_eku.ok_or(Error::ParseCertificate)
@@ -823,6 +847,30 @@ m07Y31+o+LpsZuEnlIETx/zemHA=
             }
             _ => panic!("Expected PeerCertChainValidation error"),
         }
+    }
+
+    #[test]
+    fn test_validate_peer_cert_chain_selects_designated_eku_among_many() {
+        // Local leaf co-asserts the dedicated MigTD signer OID alongside a
+        // code-signing EKU; the peer leaf asserts only the designated OID.
+        // Both resolve to the same signer purpose, so validation succeeds
+        // across the subject change (same root).
+        let local = include_bytes!("../test/eku/signer_designated_multi.pem");
+        let peer = include_bytes!("../test/eku/signer_designated_only.pem");
+        assert!(validate_peer_cert_chain(local, peer).is_ok());
+        assert!(validate_peer_cert_chain(peer, local).is_ok());
+    }
+
+    #[test]
+    fn test_extract_designated_eku_from_multi_purpose_leaf() {
+        // The selected DER OID must be the dedicated MigTD signer purpose, not
+        // the co-asserted code-signing purpose.
+        let chain =
+            extract_cert_chain_from_pem(include_bytes!("../test/eku/signer_designated_multi.pem"))
+                .unwrap();
+        let leaf = x509::Certificate::from_der(chain[0].as_ref()).unwrap();
+        let der = extract_single_leaf_eku_oid_der(&leaf).unwrap();
+        assert_eq!(der, MIGTD_SIGNER_PURPOSE_EKU_OID.to_der().unwrap());
     }
 
     #[test]
