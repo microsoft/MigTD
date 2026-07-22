@@ -223,4 +223,12 @@ function Main {
     }
 }
 
-exit (Main)
+try {
+    $exitCode = Main
+}
+catch {
+    Write-Error $_ -ErrorAction Continue
+    $exitCode = 1
+}
+
+exit $exitCode
