@@ -4,11 +4,12 @@
 
 .DESCRIPTION
     Run this from an FCShell session (started via DCM Explorer) on a SAW machine.
-    It zips the local `out/tip-package` directory (the output of
-    `sh_script/Azure/tip/build_tip_package.sh`), publishes it to the fabric image
-    store as a NodeExecutePackage, and distributes it to every node in the given
-    TiP session. The fabric extracts the archive to `C:\NodeExecute\<PackageName>\`
-    on each node, so after this script the IGVMs and test scripts are available at:
+    Copy this script to the SAW user's home directory, then pass the local path
+    of the built `out/tip-package` directory with `-PackagePath`. The script
+    publishes that directory to the fabric image store as a NodeExecutePackage
+    and distributes it to every node in the given TiP session. The fabric
+    extracts the archive to `C:\NodeExecute\<PackageName>\` on each node, so
+    after this script the IGVMs and test scripts are available at:
 
         C:\NodeExecute\<PackageName>\test-migtd-*.igvm
         C:\NodeExecute\<PackageName>\Run-TipTests.ps1
@@ -28,9 +29,7 @@
     `New-TipNodeSession`) first.
 
 .PARAMETER PackagePath
-    Local path to the built TiP package directory. Defaults to `out/tip-package`
-    resolved relative to this script's location in the MigTD repo, or the script's
-    own directory when it has itself been copied into a package.
+    Local path on the SAW machine to the built TiP package directory.
 
 .PARAMETER PackageName
     Logical name for the uploaded package. Determines the on-node directory
@@ -41,12 +40,13 @@
     image is removed once every node has received it (the files stay on the nodes).
 
 .EXAMPLE
-    .\Upload-TipPackage.ps1 -ClusterName CVL05PrdApp02 `
-        -SessionId 11111111-2222-3333-4444-555555555555
+    & "$HOME\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
+        -SessionId 11111111-2222-3333-4444-555555555555 `
+        -PackagePath C:\builds\tip-package
 
 .EXAMPLE
     # Upload a package staged at a specific path under a custom name.
-    .\Upload-TipPackage.ps1 -ClusterName CVL05PrdApp02 `
+    & "$HOME\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
         -SessionId 11111111-2222-3333-4444-555555555555 `
         -PackagePath C:\builds\tip-package -PackageName migtd-pr1234
 #>
@@ -54,37 +54,12 @@
 param (
     [Parameter(Mandatory)][string]$ClusterName,
     [Parameter(Mandatory)][string]$SessionId,
-    [string]$PackagePath,
+    [Parameter(Mandatory)][string]$PackagePath,
     [string]$PackageName = "migtd-tip-package",
     [switch]$KeepImage
 )
 
 $ErrorActionPreference = 'Stop'
-
-function Resolve-PackagePath {
-    param([string]$Explicit, [string]$ScriptDir)
-
-    if ($Explicit) {
-        if (-not (Test-Path -LiteralPath $Explicit -PathType Container)) {
-            throw "PackagePath not found or not a directory: $Explicit"
-        }
-        return (Resolve-Path -LiteralPath $Explicit).Path
-    }
-
-    # 1) Built output under the MigTD repo: <repo>/out/tip-package
-    #    This script lives at <repo>/sh_script/Azure/tip/Upload-TipPackage.ps1
-    $repoOut = Join-Path $ScriptDir "..\..\..\out\tip-package"
-    if (Test-Path -LiteralPath $repoOut -PathType Container) {
-        return (Resolve-Path -LiteralPath $repoOut).Path
-    }
-
-    # 2) The script has been copied into the package itself.
-    if (Test-Path -LiteralPath (Join-Path $ScriptDir "Run-TipTests.ps1")) {
-        return $ScriptDir
-    }
-
-    throw "Could not locate a TiP package. Pass -PackagePath explicitly."
-}
 
 # Trimmed copy of the Get-TipCommandOutput helper from tdx_lm_node_setup.ps1:
 # fetches the NodeExecute result archive and returns its stdout/stderr.
@@ -114,8 +89,6 @@ function Get-TipCommandOutput {
 }
 
 function Main {
-    $scriptDir = $PSScriptRoot
-
     $requiredModules = @('acc_tip', 'TipNodeServiceAME')
     foreach ($module in $requiredModules) {
         if (-not (Get-Module -ListAvailable -Name $module) -and -not (Get-Module -Name $module)) {
@@ -124,7 +97,11 @@ function Main {
         }
     }
 
-    $resolvedPackage = Resolve-PackagePath -Explicit $PackagePath -ScriptDir $scriptDir
+    if (-not (Test-Path -LiteralPath $PackagePath -PathType Container)) {
+        Write-Error "PackagePath not found or not a directory: $PackagePath"
+        return 1
+    }
+    $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
     Write-Host "Package directory: $resolvedPackage"
 
     $igvms = @(Get-ChildItem -LiteralPath $resolvedPackage -Filter 'test-migtd*.igvm' -File -ErrorAction SilentlyContinue)

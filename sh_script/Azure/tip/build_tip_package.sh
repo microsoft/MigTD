@@ -360,7 +360,15 @@ for v in "${LIST[@]}"; do
   esac
 done
 
-cp sh_script/Azure/tip/*.ps1 sh_script/Azure/tip/README.md "$OUT_DIR/" 2>/dev/null || true
+# Upload-TipPackage.ps1 runs from the SAW user's home before the package reaches
+# a TiP node, so do not bundle it with the node-side test payload.
+rm -f "$OUT_DIR/Upload-TipPackage.ps1"
+for script in sh_script/Azure/tip/*.ps1; do
+  if [[ "$(basename "$script")" != "Upload-TipPackage.ps1" ]]; then
+    cp "$script" "$OUT_DIR/"
+  fi
+done
+cp sh_script/Azure/tip/README.md "$OUT_DIR/"
 mkdir -p "$OUT_DIR/troubleshooting"
 cp "$TROUBLESHOOT_DIR"/*.ps1 "$OUT_DIR/troubleshooting/"
 cp "$TROUBLESHOOT_DIR"/*.wprp "$OUT_DIR/troubleshooting/"
