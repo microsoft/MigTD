@@ -181,10 +181,7 @@ fn extract_single_leaf_eku_oid_der(cert: &x509::Certificate<'_>) -> Result<Vec<u
         let purposes = Vec::<x509::ObjectIdentifier>::from_der(value.as_bytes())
             .map_err(|_| Error::ParseCertificate)?;
 
-        let selected = if purposes
-            .iter()
-            .any(|oid| *oid == MIGTD_SIGNER_PURPOSE_EKU_OID)
-        {
+        let selected = if purposes.contains(&MIGTD_SIGNER_PURPOSE_EKU_OID) {
             MIGTD_SIGNER_PURPOSE_EKU_OID
         } else if purposes.len() == 1 && purposes[0] != ANY_EXTENDED_KEY_USAGE_OID {
             purposes[0]
