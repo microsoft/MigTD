@@ -4,12 +4,13 @@
 
 .DESCRIPTION
     Run this from an FCShell session (started via DCM Explorer) on a SAW machine.
-    Copy this script to the SAW user's home directory, then pass the local path
-    of the built `out/tip-package` directory with `-PackagePath`. The script
-    publishes that directory to the fabric image store as a NodeExecutePackage
-    and distributes it to every node in the given TiP session. The fabric
-    extracts the archive to `C:\NodeExecute\<PackageName>\` on each node, so
-    after this script the IGVMs and test scripts are available at:
+    The standard `saw_side.zip` bundle places this script beside a
+    `tip-package` directory, which is used by default. Pass `-PackagePath` only
+    when the node package is staged elsewhere. The script publishes the package
+    directory to the fabric image store as a NodeExecutePackage and distributes
+    it to every node in the given TiP session. The fabric extracts the archive
+    to `C:\NodeExecute\<PackageName>\` on each node, so after this script the
+    IGVMs and test scripts are available at:
 
         C:\NodeExecute\<PackageName>\test-migtd-*.igvm
         C:\NodeExecute\<PackageName>\Run-TipTests.ps1
@@ -29,7 +30,8 @@
     `New-TipNodeSession`) first.
 
 .PARAMETER PackagePath
-    Local path on the SAW machine to the built TiP package directory.
+    Local path on the SAW machine to the built TiP package directory. Defaults
+    to the `tip-package` directory beside this script in `saw_side.zip`.
 
 .PARAMETER PackageName
     Logical name for the uploaded package. Determines the on-node directory
@@ -40,13 +42,12 @@
     image is removed once every node has received it (the files stay on the nodes).
 
 .EXAMPLE
-    & "$HOME\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
-        -SessionId 11111111-2222-3333-4444-555555555555 `
-        -PackagePath C:\builds\tip-package
+    & "$HOME\saw_side\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
+        -SessionId 11111111-2222-3333-4444-555555555555
 
 .EXAMPLE
     # Upload a package staged at a specific path under a custom name.
-    & "$HOME\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
+    & "$HOME\saw_side\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
         -SessionId 11111111-2222-3333-4444-555555555555 `
         -PackagePath C:\builds\tip-package -PackageName migtd-pr1234
 #>
@@ -54,7 +55,7 @@
 param (
     [Parameter(Mandatory)][string]$ClusterName,
     [Parameter(Mandatory)][string]$SessionId,
-    [Parameter(Mandatory)][string]$PackagePath,
+    [string]$PackagePath = (Join-Path $PSScriptRoot 'tip-package'),
     [string]$PackageName = "migtd-tip-package",
     [switch]$KeepImage
 )
