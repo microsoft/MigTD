@@ -12,8 +12,9 @@ use serde_json::{self, value::RawValue};
 
 use crate::{
     v2::{
-        bytes_to_hex_string, compute_signer_anchor_from_chain_pem, resolve_signer_anchor,
-        measurement::extract_canonical_policy_data_bytes, policy, verify_event_hash,
+        bytes_to_hex_string, compute_signer_anchor_from_chain_pem,
+        measurement::extract_canonical_policy_data_bytes, policy, resolve_signer_anchor,
+        verify_event_hash,
     },
     CcEvent, Collaterals, EventName, PolicyError, Report, ServtdCollateral, TdIdentity,
     TdTcbMapping,
@@ -372,9 +373,9 @@ impl<'a> RawPolicyData<'a> {
         ) = match &policy_data.servtd_collateral {
             Some(servtd_collateral) => {
                 // Verify servtd collateral signature using its embedded chain
-                let servtd_tcb_mapping = servtd_collateral
-                    .servtd_tcb_mapping
-                    .verify_signature(servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes())?;
+                let servtd_tcb_mapping = servtd_collateral.servtd_tcb_mapping.verify_signature(
+                    servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes(),
+                )?;
 
                 // Verify the optional TD Identity signature against its embedded
                 // chain. `servtdIdentity` and `servtdIdentityIssuerChain` must

@@ -553,12 +553,9 @@ mod v2 {
         //     Fail-closed.
         if let Some(servtd_crl) = local_policy.servtd_crl.as_deref() {
             if let Some(peer_mc) = verified_policy.servtd_tcb_mapping_issuer_chain.as_deref() {
-                crypto::verify_signer_chain_not_revoked(
-                    peer_mc.as_bytes(),
-                    servtd_crl.as_bytes(),
-                )
-                .log_err("Peer tcb mapping signer revocation check")
-                .map_err(|_| PolicyError::SignerRevoked)?;
+                crypto::verify_signer_chain_not_revoked(peer_mc.as_bytes(), servtd_crl.as_bytes())
+                    .log_err("Peer tcb mapping signer revocation check")
+                    .map_err(|_| PolicyError::SignerRevoked)?;
             }
             if let Some(peer_identity_chain) =
                 verified_policy.servtd_identity_issuer_chain.as_deref()
