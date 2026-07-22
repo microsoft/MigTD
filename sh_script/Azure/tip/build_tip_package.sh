@@ -379,21 +379,21 @@ else
 fi
 
 # Build a SAW-side archive that can be expanded directly under $HOME. The
-# uploader defaults to the sibling tip-package directory, while the node
+# uploader defaults to the sibling tip_package directory, while the node
 # payload itself remains free of SAW-only tooling.
-SAW_SIDE_DIR="$(dirname "$OUT_DIR")/saw_side"
-SAW_SIDE_ZIP="$SAW_SIDE_DIR.zip"
-rm -rf "$SAW_SIDE_DIR"
-rm -f "$SAW_SIDE_ZIP"
-mkdir -p "$SAW_SIDE_DIR/tip-package"
-cp sh_script/Azure/tip/Upload-TipPackage.ps1 "$SAW_SIDE_DIR/"
-cp -a "$OUT_DIR/." "$SAW_SIDE_DIR/tip-package/"
+MIGTD_PACKAGE_DIR="$(dirname "$OUT_DIR")/migtd_package"
+MIGTD_PACKAGE_ZIP="$MIGTD_PACKAGE_DIR.zip"
+rm -rf "$MIGTD_PACKAGE_DIR"
+rm -f "$MIGTD_PACKAGE_ZIP"
+mkdir -p "$MIGTD_PACKAGE_DIR/tip_package"
+cp sh_script/Azure/tip/Upload-TipPackage.ps1 "$MIGTD_PACKAGE_DIR/"
+cp -a "$OUT_DIR/." "$MIGTD_PACKAGE_DIR/tip_package/"
 (
-  cd "$(dirname "$SAW_SIDE_DIR")"
-  python3 -m zipfile -c "$(basename "$SAW_SIDE_ZIP")" \
-    "$(basename "$SAW_SIDE_DIR")"
+  cd "$(dirname "$MIGTD_PACKAGE_DIR")"
+  python3 -m zipfile -c "$(basename "$MIGTD_PACKAGE_ZIP")" \
+    "$(basename "$MIGTD_PACKAGE_DIR")"
 )
 
 echo "=== done ==="
 ls -lh "$OUT_DIR"
-ls -lh "$SAW_SIDE_ZIP"
+ls -lh "$MIGTD_PACKAGE_ZIP"

@@ -110,26 +110,26 @@ restore those checks as hard failures.
 
 ## 2. Deploy to a TiP node (FCShell)
 
-The builder emits `out/saw_side.zip` beside `out/tip-package`. Copy
-`saw_side.zip` to the SAW, then expand it directly under the SAW user's home
-directory:
+The builder emits `out/migtd_package.zip` beside `out/tip-package`. Copy
+`migtd_package.zip` to the SAW, then expand it directly under the SAW user's
+home directory:
 
 ```powershell
-Expand-Archive C:\staging\saw_side.zip -DestinationPath $HOME -Force
+Expand-Archive C:\staging\migtd_package.zip -DestinationPath $HOME -Force
 ```
 
 This creates:
 
 ```text
-$HOME\saw_side\Upload-TipPackage.ps1
-$HOME\saw_side\tip-package\...
+$HOME\migtd_package\Upload-TipPackage.ps1
+$HOME\migtd_package\tip_package\...
 ```
 
 From an FCShell session started via DCM Explorer, run the uploader. It
-automatically uploads the sibling `tip-package` directory:
+automatically uploads the sibling `tip_package` directory:
 
 ```powershell
-& "$HOME\saw_side\Upload-TipPackage.ps1" `
+& "$HOME\migtd_package\Upload-TipPackage.ps1" `
     -ClusterName CVL05PrdApp02 `
     -SessionId 11111111-2222-3333-4444-555555555555
 ```
@@ -137,7 +137,7 @@ automatically uploads the sibling `tip-package` directory:
 The uploader requires the `acc_tip` and `TipNodeServiceAME` modules and an
 already-created TiP session (allocate one with `tdx_lm_node_setup.ps1` or
 `New-TipNodeSession`). Pass `-PackagePath` only when the package is staged
-outside the standard `saw_side` layout. The uploader zips the package,
+outside the standard `migtd_package` layout. The uploader zips the package,
 publishes it to
 the fabric image store as a `NodeExecutePackage`, and distributes it to every
 node in the session. The

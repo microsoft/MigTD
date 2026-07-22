@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Run this from an FCShell session (started via DCM Explorer) on a SAW machine.
-    The standard `saw_side.zip` bundle places this script beside a
-    `tip-package` directory, which is used by default. Pass `-PackagePath` only
+    The standard `migtd_package.zip` bundle places this script beside a
+    `tip_package` directory, which is used by default. Pass `-PackagePath` only
     when the node package is staged elsewhere. The script publishes the package
     directory to the fabric image store as a NodeExecutePackage and distributes
     it to every node in the given TiP session. The fabric extracts the archive
@@ -31,7 +31,7 @@
 
 .PARAMETER PackagePath
     Local path on the SAW machine to the built TiP package directory. Defaults
-    to the `tip-package` directory beside this script in `saw_side.zip`.
+    to the `tip_package` directory beside this script in `migtd_package.zip`.
 
 .PARAMETER PackageName
     Logical name for the uploaded package. Determines the on-node directory
@@ -42,12 +42,12 @@
     image is removed once every node has received it (the files stay on the nodes).
 
 .EXAMPLE
-    & "$HOME\saw_side\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
+    & "$HOME\migtd_package\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
         -SessionId 11111111-2222-3333-4444-555555555555
 
 .EXAMPLE
     # Upload a package staged at a specific path under a custom name.
-    & "$HOME\saw_side\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
+    & "$HOME\migtd_package\Upload-TipPackage.ps1" -ClusterName CVL05PrdApp02 `
         -SessionId 11111111-2222-3333-4444-555555555555 `
         -PackagePath C:\builds\tip-package -PackageName migtd-pr1234
 #>
@@ -55,7 +55,7 @@
 param (
     [Parameter(Mandatory)][string]$ClusterName,
     [Parameter(Mandatory)][string]$SessionId,
-    [string]$PackagePath = (Join-Path $PSScriptRoot 'tip-package'),
+    [string]$PackagePath = (Join-Path $PSScriptRoot 'tip_package'),
     [string]$PackageName = "migtd-tip-package",
     [switch]$KeepImage
 )
