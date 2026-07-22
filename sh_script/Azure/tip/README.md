@@ -64,6 +64,7 @@ Produces in `out/tip-package/`:
 | `test-migtd_mock_quote_key_rotation.igvm` + `.hash` | mock-quote counterpart signed by the rotated policy leaf key |
 | `test-migtd{,_rebind,_key_rotation,_mock_quote,_mock_quote_rebind,_mock_quote_key_rotation}.policy.json` | signed policy snapshot embedded in the corresponding image |
 | `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1` | migration test scripts |
+| `Upload-TipPackage.ps1` | FCShell helper to upload this package to the nodes of a TiP session |
 | `Test-TdxServTdExtPrebind.ps1` | start a prebound TD and validate both ServTdExt hash slots and zero padding |
 | `Test-TdxLmRebind.ps1` | rebind a running TD between two same- or different-image MigTD instances |
 | `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, and optional test SecFw |
@@ -108,7 +109,29 @@ back and forth during a key-rotation rollout. The current `REVERT_ME` test mode
 logs some MROWNER/MROWNERCONFIG failures instead of aborting; production must
 restore those checks as hard failures.
 
-## 2. Run (TDX labblade, elevated PowerShell)
+## 2. Deploy to a TiP node (FCShell)
+
+To push a built package onto the nodes of an existing TiP session from an
+FCShell session (started via DCM Explorer on a SAW machine), use
+`Upload-TipPackage.ps1`. It requires the `acc_tip` and `TipNodeServiceAME`
+modules and an already-created TiP session (allocate one with
+`tdx_lm_node_setup.ps1` or `New-TipNodeSession`).
+
+```powershell
+.\Upload-TipPackage.ps1 `
+    -ClusterName CVL05PrdApp02 `
+    -SessionId 11111111-2222-3333-4444-555555555555
+```
+
+It zips `out/tip-package`, publishes it to the fabric image store as a
+`NodeExecutePackage`, and distributes it to every node in the session. The
+fabric extracts it to `C:\NodeExecute\<PackageName>\` (default `migtd-tip-package`)
+on each node, so the IGVMs and test scripts land at
+`C:\NodeExecute\migtd-tip-package\`. Pass `-PackagePath` to upload a package
+staged elsewhere and `-PackageName` to control the on-node directory. Then run
+the tests on the node as in section 3.
+
+## 3. Run (TDX labblade, elevated PowerShell)
 
 The builder takes PowerTest from the OS source enlistment when `--os-root` is
 specified. The HCSTest location is never inferred or hardcoded: pass its
