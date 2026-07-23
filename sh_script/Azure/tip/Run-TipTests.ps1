@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 <#
 .SYNOPSIS
   Run the TiP loopback test suite over a built package directory.
@@ -15,7 +17,7 @@
 [CmdletBinding()]
 param(
     [string]$PackageDir = $PSScriptRoot,
-    [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
+    [string]$PowerTestPath = "$env:ProgramFiles\PowerShell\Modules\PowerTest",
     [switch]$InstallDependencies,
     [switch]$ConfigureHost,
     [switch]$IncludeAgentCases,

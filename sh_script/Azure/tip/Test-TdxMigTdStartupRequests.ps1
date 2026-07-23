@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 <#
 .SYNOPSIS
   Validate MigTD startup and post-start WaitForRequest operations.
@@ -32,7 +34,7 @@ param(
     [Parameter(Mandatory)] [string]$IgvmFilePath,
     [string]$HashFilePath,
     [string]$MigTdId = 'tipmigtd-startup',
-    [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
+    [string]$PowerTestPath = "$env:ProgramFiles\PowerShell\Modules\PowerTest",
     [string]$OutputDir = (Join-Path (Get-Location) 'tipmigtd-startup-requests'),
     [ValidateSet('None', 'Success', 'Failure')]
     [string]$ExpectedGetQuoteResult = 'None',

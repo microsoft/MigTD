@@ -29,16 +29,17 @@ Then build:
 ```bash
 export CC=clang AR=llvm-ar
 ./sh_script/Azure/tip/build_tip_package.sh \
-    --os-root <OS_ROOT> --hcstest-dir <HCSTEST_DIR> --fetch-collaterals
+    --os-root <OS_ROOT> --fetch-collaterals
 ```
 
 On GCC >= 14 the vendored linux-sgx DCAP C code would fail to compile;
 `src/attestation/build.rs` auto-demotes those errors to warnings, so no manual
 `CFLAGS` override is needed.
 
-`--os-root` supplies PowerTest from the OS enlistment; `--hcstest-dir` must be a
-prebuilt HCSTest v2 package (with `netfx/Microsoft.HostCompute.Test.PowerShell.v2.dll`).
-See `sh_script/Azure/tip/README.md` for full build/run details.
+`--os-root` bundles PowerTest, HCSTest PowerShell v2 source, and TDX
+live-migration source scripts. The Linux build no longer requires winbuild
+access. Use `Publish-TipPackage.ps1` on Windows to add HCSTest's `coreclr` v2
+binary, VmgsTool, and Secure Firmware from the matching winbuild.
 
 ## Parameters
 
@@ -47,8 +48,10 @@ Never hardcode a developer's mount points or OS enlistment:
 | Parameter | Meaning | Example |
 |---|---|---|
 | `REPO_ROOT` | MigTD repository root | `C:\src\MigTD` or `/home/user/MigTD` |
-| `PACKAGE_DIR` | Built/copied TiP package | `D:\migtd_igvm\tip-package` |
-| `POWERTEST_PATH` | Installed PowerTest module directory | `C:\Program Files\WindowsPowerShell\Modules\PowerTest` |
+| `PACKAGE_DIR` | Published TiP package | `D:\migtd_igvm\tip-package` |
+| `SOURCE_PACKAGE_DIR` | Linux-built source package copied to Windows | `C:\staging\tip-package` |
+| `WINBUILD_ROOT` | Matching winbuild build directory | `\\winbuilds\release\<branch>\<build>` |
+| `POWERTEST_PATH` | Installed PowerTest module directory | `C:\Program Files\PowerShell\Modules\PowerTest` |
 | `OS_ROOT` | Optional Windows OS source enlistment | `Q:\src\os\os.2020` |
 | `HCSTEST_SOURCE` | Optional prebuilt HCSTest folder from winbuilds | `\\winbuilds\...\test_automation_bins\vm\test\compute\HCSTest` |
 | `SECFW_FILE` | Optional matching test Secure Firmware DLL | `\\winbuilds\...\secfw_test_GenuineIntel.dll` |
@@ -66,18 +69,35 @@ If `OS_ROOT` is available, reference paths are:
 
 ## Workflow
 
-1. **Install bundled dependencies and configure the host**
+1. **Enrich and publish from a matching winbuild**
+
+   ```powershell
+   <SOURCE_PACKAGE_DIR>\Publish-TipPackage.ps1 `
+       -PackageDir <SOURCE_PACKAGE_DIR> `
+       -WinBuildRoot <WINBUILD_ROOT> `
+       -ArchFlavor amd64fre `
+       -SecFwFile <SECFW_FILE> `
+       -Destination <PACKAGE_DIR> `
+       -Force
+   ```
+
+   The publisher must add prebuilt HCSTest v2
+   (`coreclr\Microsoft.HostCompute.Test.PowerShell.v2.dll`) and VmgsTool.
+   Pass `-SkipSecFw` only when the blade already has the matching Secure
+   Firmware configured.
+
+2. **Install bundled dependencies and configure the host**
 
    ```powershell
    cd <PACKAGE_DIR>
    .\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
    ```
 
-   Run setup from a fresh elevated Windows PowerShell. Reboot if it reports a
+   Run setup from a fresh elevated PowerShell 7 process. Reboot if it reports a
    Secure Firmware change, then run `.\Run-TipTests.ps1` for the default
    mock-quote/no-secrets migration and ServTdExt checks.
 
-2. **Validate the host and modules**
+3. **Validate the host and modules**
 
    ```powershell
    <REPO_ROOT>\.agents\skills\migtd-tip-troubleshoot\scripts\Test-TdxLmLabBlade.ps1 `
@@ -88,7 +108,7 @@ If `OS_ROOT` is available, reference paths are:
    `-HcsTestSource <HCSTEST_SOURCE>` if HCSTest v2 is not installed.
    In a built TiP package, the same helpers are under `troubleshooting\`.
 
-3. **Run the package with serial capture**
+4. **Run the package with serial capture**
 
    ```powershell
    cd <PACKAGE_DIR>
@@ -132,7 +152,7 @@ If `OS_ROOT` is available, reference paths are:
    trigger for operation 5. `Run-TipTests.ps1` reports it as `UNAVAILABLE`
    rather than claiming real-host coverage.
 
-4. **Verify the host prebind hash**
+5. **Verify the host prebind hash**
 
    ```powershell
    <REPO_ROOT>\.agents\skills\migtd-tip-troubleshoot\scripts\Test-MigTdHashBinding.ps1 `
@@ -151,7 +171,7 @@ If `OS_ROOT` is available, reference paths are:
    computes the outer TDREPORT `SERVTD_HASH`; using it for prebind causes
    `TDX_SERVTD_INFO_HASH_MISMATCH`.
 
-5. **Validate the target ServTdExt after prebind**
+6. **Validate the target ServTdExt after prebind**
 
    ```powershell
    .\Test-TdxServTdExtPrebind.ps1 `
@@ -165,7 +185,7 @@ If `OS_ROOT` is available, reference paths are:
    ranges must be zero; CPU SVN, TEE TCB SVN, and TEE model metadata between
    the hashes are platform-specific.
 
-6. **Test MigTD rebinding**
+7. **Test MigTD rebinding**
 
    ```powershell
    .\Test-TdxLmRebind.ps1 `
@@ -201,7 +221,7 @@ If `OS_ROOT` is available, reference paths are:
        -NewIgvmFilePath .\test-migtd_mock_quote.igvm
    ```
 
-7. **Capture Hyper-V diagnostics around one clean repro**
+8. **Capture Hyper-V diagnostics around one clean repro**
 
    ```powershell
    <REPO_ROOT>\.agents\skills\migtd-tip-troubleshoot\scripts\Invoke-TdxLmDiagnosticCapture.ps1 `
@@ -230,7 +250,7 @@ If `OS_ROOT` is available, reference paths are:
    `Get-WinEvent` can decode the ETL. Use `Export-GhciVDevEvents.ps1` to process
    an existing trace.
 
-8. **Classify the failure boundary**
+9. **Classify the failure boundary**
 
    | Evidence | Boundary |
    |---|---|

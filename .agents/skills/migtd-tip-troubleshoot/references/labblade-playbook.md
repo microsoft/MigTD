@@ -13,16 +13,35 @@ Build all variants on Linux:
 ./sh_script/Azure/tip/build_tip_package.sh \
     --out out/tip-package \
     --fetch-collaterals \
-    --os-root <OS_ROOT> \
-    --hcstest-dir <HCSTEST_SOURCE> \
-    --secfw-file <SECFW_FILE>
+    --os-root <OS_ROOT>
 ```
 
-Copy `out/tip-package` to the TDX host. The package contains accept-all,
-reject-all, real-policy, and getquote-all IGVM/hash pairs plus build-matched
-PowerTest and HCSTest dependencies. `HCSTEST_SOURCE` must be the prebuilt
-package containing `netfx\Microsoft.HostCompute.Test.PowerShell.v2.dll`, not
-the C# source directory.
+On a Windows machine with access to winbuilds and the TDX host, enrich and copy
+the package:
+
+```powershell
+.\Publish-TipPackage.ps1 `
+    -PackageDir <SOURCE_PACKAGE_DIR> `
+    -WinBuildRoot <WINBUILD_ROOT> `
+    -ArchFlavor amd64fre `
+    -SecFwFile <SECFW_FILE> `
+    -Destination <PACKAGE_DIR> `
+    -Force
+```
+
+The publisher adds prebuilt HCSTest containing
+`coreclr\Microsoft.HostCompute.Test.PowerShell.v2.dll`, VmgsTool, and matching
+Secure Firmware. The Linux-built source package remains unchanged.
+
+From a fresh elevated PowerShell 7 process, install dependencies and configure
+the host:
+
+```powershell
+.\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
+```
+
+Reboot if setup reports a Secure Firmware change, then run
+`.\Run-TipTests.ps1`.
 
 Before migration, validate MigTD's startup request handling:
 
@@ -40,16 +59,6 @@ nonce, TDREPORT hashes, and image TD Info Hash are validated. The current Host
 OS GHCI VDev can issue WaitForRequest operations 1–4 only; MigTD operation 5
 (`GetMigtdData`) has no real-host trigger and is reported as unavailable by the
 package suite.
-
-From a fresh elevated Windows PowerShell, install dependencies and configure
-the host:
-
-```powershell
-.\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
-```
-
-Reboot if setup reports a Secure Firmware change, then run
-`.\Run-TipTests.ps1`.
 
 ## 2. PowerTest and HCSTest dependency chain
 
@@ -90,10 +99,10 @@ Unable to find an entry point named 'CreateEmptyGuestStateFile' in DLL 'vmcomput
 
 ### Installing HCSTest without BNS at runtime
 
-Copy a matching prebuilt HCSTest directory from winbuilds to:
+The package installer copies matching prebuilt HCSTest to:
 
 ```text
-%SystemRoot%\System32\WindowsPowerShell\v1.0\Modules\HCSTest
+%ProgramFiles%\PowerShell\Modules\HCSTest
 ```
 
 The source convention is:

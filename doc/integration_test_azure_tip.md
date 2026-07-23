@@ -42,7 +42,7 @@ and its hash, not a signed release.
   `Enable-LoopbackMigration` (one-time `Initialize-TdxLmMachine`).
 - PowerShell modules available: **PowerTest** (`TdxLiveMigrationUtilities.psm1`),
   **Hyper-V**, **HCSTest** (v2).
-- **Elevated** PowerShell; free disk for the TD's VMGS/VHD.
+- **Elevated PowerShell 7**; free disk for the TD's VMGS/VHD.
 
 ## 3. Build & policy (MigTD-native)
 
@@ -68,13 +68,12 @@ and its hash, not a signed release.
    `<image>.hash`; Hyper-V passes it directly to `TDH.SERVTD.PREBIND`.
    `--calc-servtd-hash` must not be used here because it produces the distinct
    outer TDREPORT `SERVTD_HASH`.
-5. Bundle PowerTest from the matching OS enlistment, a prebuilt HCSTest v2
-   package from that build's `test_automation_bins`, and the matching test
-   Secure Firmware when available. The HCSTest source directory is not enough:
-   the package must contain
-   `netfx\Microsoft.HostCompute.Test.PowerShell.v2.dll`. Supply the prebuilt
-   module explicitly with `--hcstest-dir`; the builder does not hardcode or
-   infer a `\\winbuilds` location.
+5. Bundle PowerTest, HCSTest PowerShell v2 source, and TDX live-migration test
+   source from `--os-root`. This source package does not require Linux access
+   to `\\winbuilds`. On Windows, `Publish-TipPackage.ps1` resolves the selected
+   build's `<archflavor>\test_automation_bins`, adds HCSTest's
+   `coreclr\Microsoft.HostCompute.Test.PowerShell.v2.dll`, VmgsTool, and test
+   Secure Firmware, validates the result, and copies it to the lab destination.
 
 No dummy/base rebuild and no production signing are needed: the policy is built
 from the `config/Azure/` templates (measurements via `azcvm-extract-report`) and
@@ -102,10 +101,13 @@ signed with a local test key by `build_azure_mock_test.sh`.
 | `Test-TdxMigTdStartupRequests.ps1` | validate startup `EnableLogArea` and an explicit post-start `GetTDReport` health-check query through HCS and GHCI VDev ETW; optionally validate GetQuote |
 | `Test-TdxServTdExtPrebind.ps1` | validates both prebound ServTdExt hash slots and reserved zero ranges after target startup |
 | `Test-TdxLmRebind.ps1` | rebinds a running TD between two same- or different-image MigTD instances |
-| `Install-TipDependencies.ps1` | installs bundled modules and optional test SecFw on the blade |
+| `Publish-TipPackage.ps1` | enriches a source package using a selected winbuild |
+| `Install-TipDependencies.ps1` | installs bundled modules, VmgsTool, and optional test SecFw on the blade |
 | `troubleshooting/Invoke-GhciVDevDiagnosticCapture.ps1` | captures a focused `Microsoft.Windows.HyperV.GhciVDev` ETL around one repro |
 | `troubleshooting/Export-GhciVDevEvents.ps1` | exports raw and provider-filtered GHCI VDev events from an ETL |
-| `dependencies/PowerTest`, `dependencies/HCSTest` | build-matched host test modules |
+| `dependencies/Source` | OS-source PowerTest, HCSTest v2, and TDX live-migration scripts |
+| `dependencies/PowerTest`, `dependencies/HCSTest` | installable host modules |
+| `dependencies/Tools/VmgsTool.exe` | build-matched VMGS tool |
 | `dependencies/SecFw` | optional build-matched `secfw_test_GenuineIntel.dll` |
 
 ## 5. Manual lab-blade test
@@ -115,14 +117,24 @@ Build on the Linux host:
 ```bash
 ./sh_script/Azure/tip/build_tip_package.sh \
     --out out/tip-package \
-    --os-root /path/to/os.2020 \
-    --hcstest-dir /path/to/prebuilt/HCSTest \
-    --secfw-file /path/to/secfw_test_GenuineIntel.dll
+    --os-root /path/to/os.2020
 # add --fetch-collaterals to refresh Azure THIM collateral for the real variant
-# add --skip-dependencies if PowerTest and HCSTest v2 are already installed
+# optional one-stage inputs: --hcstest-dir, --vmgstool-file, --secfw-file
 ```
 
-Copy `out/tip-package/` to the TDX lab blade, then in an **elevated** PowerShell:
+On a Windows machine with winbuild and lab access:
+
+```powershell
+.\Publish-TipPackage.ps1 `
+    -PackageDir C:\staging\tip-package `
+    -WinBuildRoot \\winbuilds\release\<branch>\<build> `
+    -ArchFlavor amd64fre `
+    -SecFwFile \\winbuilds\...\secfw_test_GenuineIntel.dll `
+    -Destination \\labblade\share\tip-package `
+    -Force
+```
+
+Then use an **elevated PowerShell 7** process on the TDX lab blade:
 
 ```powershell
 # one-time dependency install and host prep; reboot if requested

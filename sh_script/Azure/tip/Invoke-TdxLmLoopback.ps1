@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 <#
 .SYNOPSIS
   Run one TDX MigTD loopback live-migration on a labblade.
@@ -20,7 +22,7 @@ param(
     [string]$MigTdId = 'tipmigtd',
     [string]$VmName = 'tiptd',
     [switch]$ExpectReject,
-    [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
+    [string]$PowerTestPath = "$env:ProgramFiles\PowerShell\Modules\PowerTest",
     [ValidateRange(0, 300)]
     [int]$StartupDelaySeconds = 0,
     # Validate the target VM's 272-byte ServTdExt after prebind/start, then
@@ -180,9 +182,9 @@ if ($PowerTestPath) {
         throw "HCSTest v1 is already loaded. Close this PowerShell process and retry; Remove-Module cannot unload its binary assembly."
     }
     if (-not $hcsTestModule) {
-        # Import directly first: if HCSTest is already installed under
-        # System32\WindowsPowerShell\v1.0\Modules (manually copied from winbuilds),
-        # this succeeds with no network/BNS dependency. Only fall back to
+        # Import directly first: if the package installer put HCSTest under
+        # Program Files\PowerShell\Modules, this succeeds with no network/BNS
+        # dependency. Only fall back to
         # PowerTest's Import-HcsTestModule if that direct import can't find it -
         # its $HcsTestModulePath parameter default unconditionally calls
         # Get-TestItem -Chunk TEST_AUTOMATION_BINS (BNS/winbuilds lookup) even when

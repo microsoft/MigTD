@@ -1,18 +1,20 @@
+#Requires -Version 7.0
+
 <#
 .SYNOPSIS
   Validate or configure a TDX live-migration lab blade.
 
 .EXAMPLE
-  .\Test-TdxLmLabBlade.ps1 -PowerTestPath 'C:\Program Files\WindowsPowerShell\Modules\PowerTest'
+  .\Test-TdxLmLabBlade.ps1 -PowerTestPath 'C:\Program Files\PowerShell\Modules\PowerTest'
 
 .EXAMPLE
   .\Test-TdxLmLabBlade.ps1 -PowerTestPath C:\PowerTest -HcsTestSource \\share\HCSTest -Configure
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
+    [string]$PowerTestPath = "$env:ProgramFiles\PowerShell\Modules\PowerTest",
     [string]$HcsTestSource,
-    [string]$HcsTestInstallRoot = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules",
+    [string]$HcsTestInstallRoot = "$env:ProgramFiles\PowerShell\Modules",
     [string]$TestSecFwName = 'secfw_test_GenuineIntel.dll',
     [uint32]$FeatureId = 53058573,
     [string]$StagingToolPath,

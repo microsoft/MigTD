@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 #Requires -RunAsAdministrator
 
 <#
@@ -40,7 +41,7 @@ param(
     [string]$OldMigTdId = 'tipmigtd-rebind-old',
     [string]$NewMigTdId = 'tipmigtd-rebind-new',
     [string]$VmName = 'tiptd-rebind',
-    [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
+    [string]$PowerTestPath = "$env:ProgramFiles\PowerShell\Modules\PowerTest",
     [switch]$UsePersistentSecrets,
     [switch]$CaptureSerial = $true,
     [ValidateRange(1, 120)] [int]$PolicyTimeoutSeconds = 15,

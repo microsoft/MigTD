@@ -39,10 +39,14 @@ to warnings automatically, so no manual `CFLAGS` override is needed.
 ./sh_script/Azure/tip/build_tip_package.sh \
     --out out/tip-package \
     --fetch-collaterals \
-    --os-root /path/to/os.2020 \
-    --hcstest-dir /path/to/prebuilt/HCSTest \
-    --secfw-file /path/to/secfw_test_GenuineIntel.dll
+    --os-root /path/to/os.2020
 ```
+
+This creates a source-complete package without requiring Linux access to
+`\\winbuilds`. `--os-root` bundles PowerTest, HCSTest PowerShell v2 source, and
+the OS TDX live-migration test sources. If matching prebuilts are mounted on
+Linux, `--hcstest-dir`, `--vmgstool-file`, and `--secfw-file` can still create a
+fully enriched package in one step.
 
 Use `--skip-dependencies` for an image-and-test-script-only package when
 PowerTest and HCSTest v2 are already installed on the TiP host.
@@ -67,8 +71,11 @@ Produces in `out/tip-package/`:
 | `Test-TdxMigTdStartupRequests.ps1` | validate startup `EnableLogArea` plus an external post-start `GetTDReport` health-check query; optionally validate GetQuote |
 | `Test-TdxServTdExtPrebind.ps1` | start a prebound TD and validate both ServTdExt hash slots and zero padding |
 | `Test-TdxLmRebind.ps1` | rebind a running TD between two same- or different-image MigTD instances |
-| `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, and optional test SecFw |
-| `dependencies/PowerTest`, `dependencies/HCSTest` | build-matched host test modules |
+| `Publish-TipPackage.ps1` | enrich the source package with matching winbuild prebuilts and copy it to a destination |
+| `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, VmgsTool, and optional test SecFw |
+| `dependencies/Source` | OS-source snapshots of PowerTest, HCSTest v2, and TDX live-migration tests |
+| `dependencies/PowerTest`, `dependencies/HCSTest` | installable host modules; HCSTest becomes complete after publishing |
+| `dependencies/Tools/VmgsTool.exe` | build-matched VMGS creation tool added by the publisher |
 | `dependencies/SecFw` | optional build-matched test Secure Firmware |
 
 `.hash` is the direct `SERVTD_INFO_HASH` the host passes to
@@ -109,13 +116,17 @@ back and forth during a key-rotation rollout. The current `REVERT_ME` test mode
 logs some MROWNER/MROWNERCONFIG failures instead of aborting; production must
 restore those checks as hard failures.
 
-## 2. Deploy to a TiP node (FCShell)
+## 2. Enrich and deploy to a TiP node (PowerShell 7 + FCShell)
 
 The builder emits `out/migtd_package.zip` beside `out/tip-package`. Copy
 `migtd_package.zip` to the SAW, then expand it directly under the SAW user's
 home directory:
 
 ```powershell
+$packageRoot = Join-Path $HOME 'migtd_package'
+if (Test-Path -LiteralPath $packageRoot) {
+    Remove-Item -LiteralPath $packageRoot -Recurse -Force
+}
 Expand-Archive C:\staging\migtd_package.zip -DestinationPath $HOME -Force
 ```
 
@@ -126,39 +137,47 @@ $HOME\migtd_package\Upload-TipPackage.ps1
 $HOME\migtd_package\tip_package\...
 ```
 
-From an FCShell session started via DCM Explorer, run the uploader. It
-automatically uploads the sibling `tip_package` directory:
+First use PowerShell 7 on the SAW to add matching winbuild prebuilts:
+
+```powershell
+& "$HOME\migtd_package\tip_package\Publish-TipPackage.ps1" `
+    -PackageDir "$HOME\migtd_package\tip_package" `
+    -WinBuildRoot \\winbuilds\release\<branch>\<build> `
+    -ArchFlavor amd64fre `
+    -SecFwFile \\winbuilds\...\secfw_test_GenuineIntel.dll `
+    -Destination "$HOME\migtd_package\tip_package_ready" `
+    -Force
+```
+
+The publisher resolves
+`<WinBuildRoot>\<ArchFlavor>\test_automation_bins`, replaces the source-only
+HCSTest runtime directory with the matching prebuilt module, adds
+`VmgsTool.exe` and Secure Firmware, validates the completed package, and leaves
+the source package unchanged. Use `-SkipSecFw` only when the target host
+already has the matching test Secure Firmware configured.
+
+Then, from an FCShell session started via DCM Explorer, upload the enriched
+package:
 
 ```powershell
 & "$HOME\migtd_package\Upload-TipPackage.ps1" `
     -ClusterName CVL05PrdApp02 `
-    -SessionId 11111111-2222-3333-4444-555555555555
+    -SessionId 11111111-2222-3333-4444-555555555555 `
+    -PackagePath "$HOME\migtd_package\tip_package_ready"
 ```
 
 The uploader requires the `acc_tip` and `TipNodeServiceAME` modules and an
 already-created TiP session (allocate one with `tdx_lm_node_setup.ps1` or
-`New-TipNodeSession`). Pass `-PackagePath` only when the package is staged
-outside the standard `migtd_package` layout. The uploader zips the package,
-publishes it to
-the fabric image store as a `NodeExecutePackage`, and distributes it to every
-node in the session. The
-fabric extracts it to `C:\NodeExecute\<PackageName>\` (default `migtd-tip-package`)
-on each node, so the IGVMs and test scripts land at
+`New-TipNodeSession`). It zips the package, publishes it to the fabric image
+store as a `NodeExecutePackage`, and distributes it to every node in the
+session. The fabric extracts it to `C:\NodeExecute\<PackageName>\` (default
+`migtd-tip-package`) on each node, so the IGVMs and test scripts land at
 `C:\NodeExecute\migtd-tip-package\`. Pass `-PackageName` to control the on-node
 directory. Then run the tests on the node as in section 3.
 
-## 3. Run (TDX labblade, elevated PowerShell)
+## 3. Run (TDX labblade, elevated PowerShell 7)
 
-The builder takes PowerTest from the OS source enlistment when `--os-root` is
-specified. The HCSTest location is never inferred or hardcoded: pass its
-locally accessible directory with `--hcstest-dir` (for example, a mounted copy
-from `\\winbuilds`). HCSTest must be a prebuilt package containing
-`netfx\Microsoft.HostCompute.Test.PowerShell.v2.dll`; source alone is not
-installable. `--secfw-file` is optional when the matching test Secure Firmware
-is already installed separately on the blade.
-
-Copy `out/tip-package` to the host, open a fresh elevated Windows PowerShell,
-then:
+Open a fresh elevated PowerShell 7 process in the published package, then:
 
 ```powershell
 # One-time dependency install and host prep. Reboot if requested, then rerun
@@ -200,12 +219,10 @@ rejection, ServTdExt prebind, and rebind tests. Requires PowerTest
 `TdxLiveMigrationUtilities` for `New-TestHcsMigTd`. Rebinding uses
 `Test-TdxLmRebind.ps1` with two same- or different-image inputs.
 
-Some PowerTest builds' `New-TestHcsMigTd` call `New-VmStateFile`, which isn't
-defined anywhere in that module set (`New-VmStateFile no cmdlet`). `Invoke-
-TdxLmLoopback.ps1` shims this itself when `-PowerTestPath` is passed — it uses
-the OS-shipped `vmgstool.exe` if present, else falls back to PowerTest's
-`New-GuestStateFile` (`VmgsUtilities.psm1`, which needs `Copy-TestItem`/internal
-test-content access). No changes to the vendored PowerTest module are needed.
+Some PowerTest builds' `New-TestHcsMigTd` call `New-VmStateFile`, which is not
+defined in that module set. The publisher bundles the matching `VmgsTool.exe`,
+and the installer places it in System32, so the compatibility shim does not
+need PowerTest's internal `Copy-TestItem`/test-content path.
 
 Similarly, `New-HcsSystemDocument`/`New-HcsSystem`/`Start-HcsSystem` come from
 the real `HCSTest` binary module, which `HCSUtilities.psm1` only loads via its
@@ -213,21 +230,23 @@ own `Import-HcsTestModule` helper — nothing calls that automatically. `Invoke-
 TdxLmLoopback.ps1` imports `HCSUtilities.psm1` and calls `Import-Module HCSTest
 -ArgumentList @{ UseVersion2 = $true }` itself when `-PowerTestPath` is passed
 (only falling back to PowerTest's `Import-HcsTestModule` if `HCSTest` isn't
-already installed under `System32\WindowsPowerShell\v1.0\Modules`). `UseVersion2`
+already installed under `Program Files\PowerShell\Modules`). `UseVersion2`
 matters: the V1 binary's `New-VmStateFile` P/Invokes
 `vmcompute.dll!CreateEmptyGuestStateFile`, removed on newer OS builds in favor
 of `computestorage.dll` (used by V2). This matches
 `onecore/vm/test/migration/tdx/Loopback/Tdx.LiveMigration.Loopback.Tests.ps1`.
 
-If `HCSTest` isn't installed on your labblade yet, copy it from the matching
-winbuilds share build (see `bin\<archflavor>\test_automation_bins\buildname.txt`
-in your OS enlistment for the exact build) to
-`$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules\`:
+`Publish-TipPackage.ps1` takes HCSTest from the matching winbuilds share build
+(see `bin\<archflavor>\test_automation_bins\buildname.txt` in the OS enlistment
+for the exact build):
 ```
 \\winbuilds\release\<branch>\<build>.<qfe>.<date-time>\<archflavor>\test_automation_bins\vm\test\compute\HCSTest
 ```
-Do this from a fresh PowerShell window (a previously-loaded `HCSTest` assembly
-keeps its DLLs locked and blocks re-copying).
+The package installer copies it to
+`$env:ProgramFiles\PowerShell\Modules\HCSTest` and validates
+`coreclr\Microsoft.HostCompute.Test.PowerShell.v2.dll`,
+`New-VMStateFile`, and `New-HcsSystemDocument`. Run installation from a fresh
+PowerShell 7 process because loaded HCSTest assemblies remain locked.
 
 If migration fails with only a generic VMMS error (e.g. "migration operation
 failed at migration source" with no further detail), pass `-CaptureSerial` to

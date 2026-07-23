@@ -31,6 +31,7 @@
 #                                              [--os-root DIR]
 #                                              [--powertest-dir DIR]
 #                                              [--hcstest-dir DIR]
+#                                              [--vmgstool-file FILE]
 #                                              [--secfw-file FILE]
 #                                              [--skip-dependencies]
 # ==============================================================================
@@ -49,7 +50,10 @@ FEATURES_MOCK_QUOTE="$FEATURES_BASE,use-mock-quote"
 LOG_LEVEL="info"
 OS_ROOT=""
 POWERTEST_DIR=""
+HCSTEST_SOURCE_DIR=""
 HCSTEST_DIR=""
+TDX_TEST_SOURCE_DIR=""
+VMGSTOOL_FILE=""
 SECFW_FILE=""
 INCLUDE_DEPENDENCIES=true
 
@@ -62,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --os-root) OS_ROOT="$2"; shift 2;;
     --powertest-dir) POWERTEST_DIR="$2"; shift 2;;
     --hcstest-dir) HCSTEST_DIR="$2"; shift 2;;
+    --vmgstool-file) VMGSTOOL_FILE="$2"; shift 2;;
     --secfw-file) SECFW_FILE="$2"; shift 2;;
     --skip-dependencies) INCLUDE_DEPENDENCIES=false; shift;;
     -h|--help) sed -n '2,35p' "$0"; exit 0;;
@@ -71,6 +76,8 @@ done
 
 if [[ -n "$OS_ROOT" ]]; then
   POWERTEST_DIR="${POWERTEST_DIR:-$OS_ROOT/src/onecore/vm/test/common/powershell/PowerTest}"
+  HCSTEST_SOURCE_DIR="$OS_ROOT/src/onecore/vm/compute/test/hcstest/powershellV2"
+  TDX_TEST_SOURCE_DIR="$OS_ROOT/src/onecore/vm/test/migration/tdx"
 fi
 
 MOCK="sh_script/Azure/build_azure_mock_test.sh"
@@ -80,7 +87,29 @@ CHAIN="config/Azure/policy_issuer_chain.pem"
 IMG="target/debug/migtd.igvm"
 TOOLS_DIR="target/release"
 BUILD_TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$BUILD_TMP_DIR"' EXIT
+FINAL_OUT_DIR="$(realpath -m "$OUT_DIR")"
+MIGTD_PACKAGE_DIR="$(dirname "$FINAL_OUT_DIR")/migtd_package"
+MIGTD_PACKAGE_ZIP="$MIGTD_PACKAGE_DIR.zip"
+if [[ -z "$FINAL_OUT_DIR" || "$FINAL_OUT_DIR" == "/" || \
+      "$(dirname "$FINAL_OUT_DIR")" == "/" || \
+      "$PROJECT_ROOT" == "$FINAL_OUT_DIR" || \
+      "$PROJECT_ROOT" == "$FINAL_OUT_DIR/"* || \
+      "$HOME" == "$FINAL_OUT_DIR" || \
+      "$HOME" == "$FINAL_OUT_DIR/"* || \
+      "$FINAL_OUT_DIR" == "$MIGTD_PACKAGE_DIR" || \
+      "$FINAL_OUT_DIR" == "$MIGTD_PACKAGE_ZIP" ]]; then
+  echo "Refusing unsafe TiP package output directory: $FINAL_OUT_DIR" >&2
+  exit 1
+fi
+OUT_DIR="$BUILD_TMP_DIR/tip-package"
+OUTPUT_PUBLISH_TMP=""
+cleanup() {
+  rm -rf "$BUILD_TMP_DIR"
+  if [[ -n "$OUTPUT_PUBLISH_TMP" && -e "$OUTPUT_PUBLISH_TMP" ]]; then
+    rm -rf "$OUTPUT_PUBLISH_TMP"
+  fi
+}
+trap cleanup EXIT
 # Reuse one temporary signing key for every real-policy pair. This keeps the
 # signer identity stable between the original and bumped-SVN images without
 # placing a private key in the generated package.
@@ -90,6 +119,7 @@ POLICY_FFS_GUID="0BE92DC3-6221-4C98-87C1-8EEFFD70DE5A"
 POLICY_ISSUER_CHAIN_FFS_GUID="3F2FB27A-9596-431C-A68D-D3EAB39F8AEB"
 TROUBLESHOOT_DIR=".agents/skills/migtd-tip-troubleshoot/scripts"
 RESOLVED_POWERTEST_DIR=""
+RESOLVED_HCSTEST_SOURCE_DIR=""
 
 gen_policy()  { chmod +x "$MOCK"; "./$MOCK" --skip-test "${FETCH_ARGS[@]}" "$@"; }
 build_image() { cargo image --policy-v2 --debug --image-format igvm --no-default-features \
@@ -226,27 +256,78 @@ resolve_powertest_dir() {
   fi
 }
 
+resolve_hcstest_source_dir() {
+  local source="$1"
+  if [[ -f "$source/HCSTest.psd1" && -f "$source/HCSTest.psm1" ]]; then
+    printf '%s\n' "$source"
+  else
+    echo "HCSTest PowerShell v2 source not found under: $source" >&2
+    return 1
+  fi
+}
+
+validate_hcstest_prebuilt() {
+  local source="$1"
+  if [[ ! -f "$source/HCSTest.psd1" ]]; then
+    echo "HCSTest.psd1 not found under: $source" >&2
+    return 1
+  fi
+  if [[ ! -f "$source/coreclr/Microsoft.HostCompute.Test.PowerShell.v2.dll" ]]; then
+    echo "HCSTest v2 coreclr binary not found under: $source" >&2
+    echo "Use the matching test_automation_bins/vm/test/compute/HCSTest directory." >&2
+    return 1
+  fi
+}
+
 validate_dependencies() {
   if [[ -z "$POWERTEST_DIR" ]]; then
     echo "PowerTest source is required; pass --os-root or --powertest-dir." >&2
     return 1
   fi
   RESOLVED_POWERTEST_DIR="$(resolve_powertest_dir "$POWERTEST_DIR")"
+  for module_file in \
+    PowerTest.psd1 \
+    TdxLiveMigrationUtilities.psm1 \
+    HCSUtilities.psm1 \
+    LiveMigrationUtilities.psm1 \
+    LiveMigrationTestUtilities.psm1 \
+    VmgsUtilities.psm1 \
+    WmiUtilities.psm1 \
+    IVMUtilities.psm1; do
+    if [[ ! -f "$RESOLVED_POWERTEST_DIR/$module_file" ]]; then
+      echo "Required PowerTest module file not found: $RESOLVED_POWERTEST_DIR/$module_file" >&2
+      return 1
+    fi
+  done
 
-  if [[ -z "$HCSTEST_DIR" ]]; then
-    echo "HCSTest v2 package is required; pass --hcstest-dir with a locally accessible prebuilt module directory." >&2
-    return 1
-  fi
-  if [[ ! -f "$HCSTEST_DIR/HCSTest.psd1" ]]; then
-    echo "HCSTest.psd1 not found under: $HCSTEST_DIR" >&2
-    return 1
-  fi
-  if [[ ! -f "$HCSTEST_DIR/netfx/Microsoft.HostCompute.Test.PowerShell.v2.dll" ]]; then
-    echo "HCSTest v2 netfx binary not found under: $HCSTEST_DIR" >&2
-    echo "The OS source directory alone is insufficient; use the matching prebuilt HCSTest package from test_automation_bins." >&2
+  if [[ -n "$HCSTEST_SOURCE_DIR" ]]; then
+    RESOLVED_HCSTEST_SOURCE_DIR="$(resolve_hcstest_source_dir "$HCSTEST_SOURCE_DIR")"
+  elif [[ -z "$HCSTEST_DIR" ]]; then
+    echo "HCSTest source or prebuilt content is required; pass --os-root or --hcstest-dir." >&2
     return 1
   fi
 
+  if [[ -n "$HCSTEST_DIR" ]]; then
+    validate_hcstest_prebuilt "$HCSTEST_DIR"
+  else
+    echo "HCSTest source will be bundled without binaries; Publish-TipPackage.ps1 must add the matching winbuild prebuilt module."
+  fi
+
+  if [[ -n "$TDX_TEST_SOURCE_DIR" ]]; then
+    for source_file in \
+      "$TDX_TEST_SOURCE_DIR/Loopback/Tdx.LiveMigration.Loopback.Tests.ps1" \
+      "$TDX_TEST_SOURCE_DIR/Loopback/Tdx.LiveMigration.Partner.Tests.ps1"; do
+      if [[ ! -f "$source_file" ]]; then
+        echo "TDX live-migration source not found: $source_file" >&2
+        return 1
+      fi
+    done
+  fi
+
+  if [[ -n "$VMGSTOOL_FILE" && ! -f "$VMGSTOOL_FILE" ]]; then
+    echo "VmgsTool file not found: $VMGSTOOL_FILE" >&2
+    return 1
+  fi
   if [[ -n "$SECFW_FILE" && ! -f "$SECFW_FILE" ]]; then
     echo "SecFw file not found: $SECFW_FILE" >&2
     return 1
@@ -257,9 +338,33 @@ copy_dependencies() {
   local dependencies_dir="$OUT_DIR/dependencies"
 
   rm -rf "$dependencies_dir"
-  mkdir -p "$dependencies_dir/PowerTest" "$dependencies_dir/HCSTest"
+  mkdir -p \
+    "$dependencies_dir/PowerTest" \
+    "$dependencies_dir/HCSTest" \
+    "$dependencies_dir/Source/PowerTest"
   cp -a "$RESOLVED_POWERTEST_DIR/." "$dependencies_dir/PowerTest/"
-  cp -a "$HCSTEST_DIR/." "$dependencies_dir/HCSTest/"
+  cp -a "$RESOLVED_POWERTEST_DIR/." "$dependencies_dir/Source/PowerTest/"
+
+  if [[ -n "$RESOLVED_HCSTEST_SOURCE_DIR" ]]; then
+    mkdir -p "$dependencies_dir/Source/HCSTest"
+    cp -a "$RESOLVED_HCSTEST_SOURCE_DIR/." "$dependencies_dir/Source/HCSTest/"
+    cp -a "$RESOLVED_HCSTEST_SOURCE_DIR/." "$dependencies_dir/HCSTest/"
+  fi
+  if [[ -n "$HCSTEST_DIR" ]]; then
+    rm -rf "$dependencies_dir/HCSTest"
+    mkdir -p "$dependencies_dir/HCSTest"
+    cp -a "$HCSTEST_DIR/." "$dependencies_dir/HCSTest/"
+  fi
+
+  if [[ -n "$TDX_TEST_SOURCE_DIR" ]]; then
+    mkdir -p "$dependencies_dir/Source/TdxLiveMigration"
+    cp -a "$TDX_TEST_SOURCE_DIR/." "$dependencies_dir/Source/TdxLiveMigration/"
+  fi
+
+  if [[ -n "$VMGSTOOL_FILE" ]]; then
+    mkdir -p "$dependencies_dir/Tools"
+    cp "$VMGSTOOL_FILE" "$dependencies_dir/Tools/VmgsTool.exe"
+  fi
 
   if [[ -n "$SECFW_FILE" ]]; then
     mkdir -p "$dependencies_dir/SecFw"
@@ -267,8 +372,37 @@ copy_dependencies() {
   fi
 }
 
+publish_output_dir() {
+  local output_parent backup
+  output_parent="$(dirname "$FINAL_OUT_DIR")"
+  backup="$FINAL_OUT_DIR.backup.$$"
+  OUTPUT_PUBLISH_TMP="$FINAL_OUT_DIR.new.$$"
+
+  mkdir -p "$output_parent"
+  if [[ -e "$OUTPUT_PUBLISH_TMP" || -e "$backup" ]]; then
+    echo "Temporary package output already exists; refusing to overwrite it." >&2
+    return 1
+  fi
+  cp -a "$OUT_DIR" "$OUTPUT_PUBLISH_TMP"
+
+  if [[ -e "$FINAL_OUT_DIR" ]]; then
+    mv "$FINAL_OUT_DIR" "$backup"
+  fi
+  if ! mv "$OUTPUT_PUBLISH_TMP" "$FINAL_OUT_DIR"; then
+    if [[ -e "$backup" && ! -e "$FINAL_OUT_DIR" ]]; then
+      mv "$backup" "$FINAL_OUT_DIR"
+    fi
+    return 1
+  fi
+  OUTPUT_PUBLISH_TMP=""
+  if [[ -e "$backup" ]]; then
+    rm -rf "$backup"
+  fi
+  OUT_DIR="$FINAL_OUT_DIR"
+}
+
 echo "=== TiP package build ==="
-echo "Output: $OUT_DIR"
+echo "Output: $FINAL_OUT_DIR"
 if [[ ! -d "$TROUBLESHOOT_DIR" ]]; then
   echo "Missing troubleshooting helpers: $TROUBLESHOOT_DIR" >&2
   exit 1
@@ -279,11 +413,6 @@ else
   echo "Host dependency bundling disabled (--skip-dependencies)."
 fi
 mkdir -p "$OUT_DIR"
-find "$OUT_DIR" -maxdepth 1 -type f \
-  \( -name 'test-migtd*.igvm' -o \
-     -name 'test-migtd*.igvm.hash' -o \
-     -name 'test-migtd*.policy.json' \) \
-  -delete
 ./sh_script/preparation.sh
 cargo build -p migtd-hash --release
 HASH_BIN="target/release/migtd-hash"
@@ -378,11 +507,11 @@ else
   rm -rf "$OUT_DIR/dependencies"
 fi
 
+publish_output_dir
+
 # Build a SAW-side archive that can be expanded directly under $HOME. The
 # uploader defaults to the sibling tip_package directory, while the node
 # payload itself remains free of SAW-only tooling.
-MIGTD_PACKAGE_DIR="$(dirname "$OUT_DIR")/migtd_package"
-MIGTD_PACKAGE_ZIP="$MIGTD_PACKAGE_DIR.zip"
 rm -rf "$MIGTD_PACKAGE_DIR"
 rm -f "$MIGTD_PACKAGE_ZIP"
 mkdir -p "$MIGTD_PACKAGE_DIR/tip_package"
