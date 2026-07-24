@@ -73,6 +73,10 @@ Produces in `out/tip-package/`:
 | `Test-TdxLmRebind.ps1` | rebind a running TD between two same- or different-image MigTD instances |
 | `Publish-TipPackage.ps1` | enrich the source package with matching winbuild prebuilts and copy it to a destination |
 | `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, VmgsTool, and optional test SecFw |
+| `troubleshooting/Export-MigTdMigrationTimeline.ps1` | normalize VMMS/Worker/VID/GHCI events from one ETL |
+| `troubleshooting/Compare-MigTdNodeTraces.ps1` | align source and destination timelines around one migration request |
+| `troubleshooting/Get-MigTdDeploymentProvenance.ps1` | capture host build, repository, image, hash, mapping, and HCS provenance |
+| `troubleshooting/Test-CrossNodeMigTdBinding.ps1` | validate destination hash mapping and running MigTD before cross-node migration |
 | `dependencies/Source` | OS-source snapshots of PowerTest, HCSTest v2, and TDX live-migration tests |
 | `dependencies/PowerTest`, `dependencies/HCSTest` | installable host modules; HCSTest becomes complete after publishing |
 | `dependencies/Tools/VmgsTool.exe` | build-matched VMGS creation tool added by the publisher |
@@ -402,6 +406,45 @@ an existing trace separately:
 .\troubleshooting\Export-GhciVDevEvents.ps1 -EtlPath .\tdxlm.etl
 ```
 
+For a cross-node SPDM transport failure, capture deployment provenance and
+validate destination mapping before the repro:
+
+```powershell
+.\troubleshooting\Get-MigTdDeploymentProvenance.ps1 `
+    -IgvmFilePath .\test-migtd-accept-all.igvm `
+    -HashFilePath .\test-migtd-accept-all.igvm.hash `
+    -SerialLogPath .\tipmigtd.serial.log `
+    -MigTdHcsId <MIGTD_HCS_ID> `
+    -PowerTestPath <POWERTEST_PATH> `
+    -OutputDir .\provenance
+
+.\troubleshooting\Test-CrossNodeMigTdBinding.ps1 `
+    -SourceHashFilePath .\source-migtd.igvm.hash `
+    -DestinationSerialLogPath .\destination-migtd.serial.log `
+    -DestinationMigTdHcsId <DESTINATION_MIGTD_HCS_ID> `
+    -PowerTestPath <POWERTEST_PATH> `
+    -RequireRuntimeHash
+```
+
+Normalize the ETLs on a Windows machine, then align request events:
+
+```powershell
+.\troubleshooting\Export-MigTdMigrationTimeline.ps1 `
+    -EtlPath .\td_source.etl -Node Source -OutputDir .\source-timeline
+.\troubleshooting\Export-MigTdMigrationTimeline.ps1 `
+    -EtlPath .\td_dest.etl -Node Destination -OutputDir .\destination-timeline
+
+.\troubleshooting\Compare-MigTdNodeTraces.ps1 `
+    -SourceTimelinePath .\source-timeline\migtd-migration-timeline.csv `
+    -DestinationTimelinePath .\destination-timeline\migtd-migration-timeline.csv `
+    -RequestId <REQUEST_ID> `
+    -OutputDir .\cross-node-comparison
+```
+
+The comparison marks the first destination failure candidate and calculates
+its delay to source cancellation. Confirm any file/line event against the
+Windows OS source branch matching the tested host build.
+
 An unresponsive agent can consume two 30-second target-VM attestation RPC
 timeouts and exhaust the worker's 60-second `StartVtl0` budget. During regular
 image migration, `0x80072F78` from GetQuote instead means the agent response
@@ -422,4 +465,5 @@ troubleshooting/
 ```
 
 Their source and full agent playbook live in
-`.agents/skills/migtd-tip-troubleshoot/`.
+`.agents/skills/migtd-tip-troubleshoot/` and
+`.agents/skills/migtd-spdm-transport-debug/`.

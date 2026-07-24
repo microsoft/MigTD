@@ -105,6 +105,10 @@ signed with a local test key by `build_azure_mock_test.sh`.
 | `Install-TipDependencies.ps1` | installs bundled modules, VmgsTool, and optional test SecFw on the blade |
 | `troubleshooting/Invoke-GhciVDevDiagnosticCapture.ps1` | captures a focused `Microsoft.Windows.HyperV.GhciVDev` ETL around one repro |
 | `troubleshooting/Export-GhciVDevEvents.ps1` | exports raw and provider-filtered GHCI VDev events from an ETL |
+| `troubleshooting/Export-MigTdMigrationTimeline.ps1` | emits normalized VMMS/Worker/VID/GHCI CSV, CLIXML, and text timelines |
+| `troubleshooting/Compare-MigTdNodeTraces.ps1` | correlates source and destination timelines around a migration request |
+| `troubleshooting/Get-MigTdDeploymentProvenance.ps1` | records host build, source revisions, artifacts, mappings, and HCS state |
+| `troubleshooting/Test-CrossNodeMigTdBinding.ps1` | preflights the destination MigTD hash mapping and running HCS instance |
 | `dependencies/Source` | OS-source PowerTest, HCSTest v2, and TDX live-migration scripts |
 | `dependencies/PowerTest`, `dependencies/HCSTest` | installable host modules |
 | `dependencies/Tools/VmgsTool.exe` | build-matched VMGS tool |

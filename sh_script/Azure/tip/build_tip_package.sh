@@ -118,6 +118,7 @@ ROTATED_CERT_DIR="$BUILD_TMP_DIR/policy-certs-rotated"
 POLICY_FFS_GUID="0BE92DC3-6221-4C98-87C1-8EEFFD70DE5A"
 POLICY_ISSUER_CHAIN_FFS_GUID="3F2FB27A-9596-431C-A68D-D3EAB39F8AEB"
 TROUBLESHOOT_DIR=".agents/skills/migtd-tip-troubleshoot/scripts"
+SPDM_DEBUG_DIR=".agents/skills/migtd-spdm-transport-debug/scripts"
 RESOLVED_POWERTEST_DIR=""
 RESOLVED_HCSTEST_SOURCE_DIR=""
 
@@ -407,6 +408,10 @@ if [[ ! -d "$TROUBLESHOOT_DIR" ]]; then
   echo "Missing troubleshooting helpers: $TROUBLESHOOT_DIR" >&2
   exit 1
 fi
+if [[ ! -d "$SPDM_DEBUG_DIR" ]]; then
+  echo "Missing SPDM debugging helpers: $SPDM_DEBUG_DIR" >&2
+  exit 1
+fi
 if [[ "$INCLUDE_DEPENDENCIES" == true ]]; then
   validate_dependencies
 else
@@ -501,6 +506,7 @@ cp sh_script/Azure/tip/README.md "$OUT_DIR/"
 mkdir -p "$OUT_DIR/troubleshooting"
 cp "$TROUBLESHOOT_DIR"/*.ps1 "$OUT_DIR/troubleshooting/"
 cp "$TROUBLESHOOT_DIR"/*.wprp "$OUT_DIR/troubleshooting/"
+cp "$SPDM_DEBUG_DIR"/*.ps1 "$OUT_DIR/troubleshooting/"
 if [[ "$INCLUDE_DEPENDENCIES" == true ]]; then
   copy_dependencies
 else
