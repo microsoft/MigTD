@@ -289,7 +289,7 @@ pub fn check_policy_integrity(
 ) -> Result<(), PolicyError> {
     // RTMR2 is extended once with the canonical bytes of `policyData` with
     // `servtdCollateral.servtdTcbMapping` removed. See
-    // `docs/tcb_mapping_redesign.md` for the rationale. The verifier
+    // `doc/tcb_mapping_redesign.md` for the rationale. The verifier
     // recomputes those exact bytes via the same helper used by the runtime
     // extender (`get_policy_and_measure`) and `migtd-hash` (offline RTMR2
     // simulator), then asserts the event-log entry's recorded digest matches.
@@ -373,13 +373,13 @@ impl<'a> RawPolicyData<'a> {
         // (it is measured into RTMR1 instead), so `check_policy_integrity` does
         // NOT cover it. To keep the redacted chain measured, require the chain
         // that just verified `servtdTcbMapping` to hash to the same signer
-        // anchor (root CA DER + leaf-subject DER) that RTMR1 commits to —
+        // anchor (root CA fingerprint + leaf signer EKU) that RTMR1 commits to —
         // recomputed here from the CFV-loaded `issuer_chain`. A swapped chain
         // (different root/subject, e.g. a forged self-signed chain or one
         // rooted at an unrelated stolen CA) fails closed. This mirrors the
         // CoRIM path's `anchor != expected_signer_anchor` check
         // (`servtd_corim::verify_and_extract_payload`). Leaf/intermediate
-        // rotation under the same root + subject keeps the anchor stable, so it
+        // rotation under the same root + EKU keeps the anchor stable, so it
         // still passes.
         let cfv_anchor = compute_signer_anchor_from_chain_pem(issuer_chain)?;
         let mapping_anchor = compute_signer_anchor_from_chain_pem(
@@ -401,8 +401,8 @@ impl<'a> RawPolicyData<'a> {
 
         // Signer-key revocation (fail-closed): the RTMR1 anchor measures the
         // signer identity but cannot tell a still-valid cert from a revoked one
-        // under the same root + subject. Freshness is enforced separately by
-        // `CrlPolicy` (`servtd_crl_num`). See doc/servtd_signer_revocation_proposal.md.
+        // under the same root + EKU. Freshness is enforced separately by
+        // `CrlPolicy` (`servtd_crl_num`). See doc/rtmr1_signer_anchor_proposal.md.
         if let Some(servtd_crl) = servtd_collateral.servtd_crl.as_deref() {
             crypto::verify_signer_chain_not_revoked(
                 servtd_collateral.servtd_tcb_mapping_issuer_chain.as_bytes(),
@@ -1208,7 +1208,7 @@ mod test {
     /// `servtdTcbMappingIssuerChain` is redacted from the RTMR2 measurement, it
     /// is kept measured only by requiring it to hash to the RTMR1 signer anchor
     /// derived from the CFV issuer chain. Verifying against an unrelated CFV
-    /// chain (different root + leaf subject) must fail closed with
+    /// chain (different root + leaf signer EKU fingerprint) must fail closed with
     /// `SignerAnchorMismatch` — even though the embedded chains still validate
     /// the inner signatures.
     #[test]
