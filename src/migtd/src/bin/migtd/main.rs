@@ -10,9 +10,9 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
-#[cfg(feature = "policy_v2")]
-use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(feature = "policy_v2")]
+use alloc::{format, string::String};
 use log::info;
 #[cfg(feature = "vmcall-raw")]
 use log::{debug, Level};
@@ -350,7 +350,7 @@ fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
 
     // Per docs/tcb_mapping_redesign.md: RTMR1 is extended with the SHA384 of
     // the *signer anchor* A, NOT the entire PEM blob. A is derived from the
-    // root CA DER and the leaf certificate's tbsCertificate.subject DER, with
+    // root CA fingerprint and the leaf certificate's dedicated signer EKU, with
     // a domain-separation tag, so the value is stable across rotations of
     // PEM whitespace/ordering and across reissuance of intermediates.
     let signer_anchor =
@@ -450,15 +450,17 @@ fn initialize_policy() -> String {
         }
     };
     // Initialize and verify the migration policy
-    let version = mig_policy::init_policy(policy, policy_issuer_chain).map_err(|e| {
-        log::error!("Failed to initialize migration policy: {:?}\n", e);
-        panic_with_guest_crash_reg_report(
-            MigrationResult::InvalidPolicyError as u64,
-            b"Failed to initialize migration policy",
-        );
-    });
-
-    version.expect("Failed to initialize migration policy")
+    match mig_policy::init_policy(policy, policy_issuer_chain) {
+        Ok(version) => version,
+        Err(e) => {
+            let message = format!("Failed to initialize migration policy: {:?}", e);
+            log::error!("{}\n", message);
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                message.as_bytes(),
+            );
+        }
+    }
 }
 
 fn handle_pre_mig() {

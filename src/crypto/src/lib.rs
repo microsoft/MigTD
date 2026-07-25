@@ -131,19 +131,54 @@ pub fn split_chain_pem_to_leaf_and_root_der(cert_chain_pem: &[u8]) -> Result<(Ve
     Ok((leaf, root))
 }
 
-/// Re-encode the leaf certificate's `tbsCertificate.subject` field as DER bytes.
+/// X.509 Extended Key Usage extension OID (RFC 5280 §4.2.1.12).
+const EXTENDED_KEY_USAGE_OID: x509::ObjectIdentifier =
+    x509::ObjectIdentifier::new_unwrap("2.5.29.37");
+
+/// `anyExtendedKeyUsage` is not a dedicated signer-purpose identifier and
+/// therefore cannot be used in the RTMR1 signer fingerprint.
+const ANY_EXTENDED_KEY_USAGE_OID: x509::ObjectIdentifier =
+    x509::ObjectIdentifier::new_unwrap("2.5.29.37.0");
+
+/// Extract the DER-encoded, dedicated signer-purpose EKU OID from a leaf cert.
 ///
-/// Since the input certificate is canonical DER, re-encoding the parsed
-/// `subject` field via `der::Encode` produces the same bytes that were
-/// present in the original certificate.
-pub fn extract_leaf_subject_der_from_chain_pem(cert_chain_pem: &[u8]) -> Result<Vec<u8>> {
+/// MigTD signer leaves must contain exactly one EKU extension with exactly one
+/// purpose OID. Requiring a single purpose avoids ambiguity over which OID is
+/// measured into RTMR1 and compared during peer validation.
+fn extract_single_leaf_eku_oid_der(cert: &x509::Certificate<'_>) -> Result<Vec<u8>> {
+    let extensions = cert
+        .tbs_certificate
+        .extensions
+        .as_ref()
+        .ok_or(Error::ParseCertificate)?;
+    let mut signer_eku = None;
+
+    for ext in extensions.get() {
+        if ext.extn_id != EXTENDED_KEY_USAGE_OID {
+            continue;
+        }
+        if signer_eku.is_some() {
+            return Err(Error::ParseCertificate);
+        }
+
+        let value = ext.extn_value.as_ref().ok_or(Error::ParseCertificate)?;
+        let purposes = Vec::<x509::ObjectIdentifier>::from_der(value.as_bytes())
+            .map_err(|_| Error::ParseCertificate)?;
+        if purposes.len() != 1 || purposes[0] == ANY_EXTENDED_KEY_USAGE_OID {
+            return Err(Error::ParseCertificate);
+        }
+        signer_eku = Some(purposes[0].to_der().map_err(|_| Error::ParseCertificate)?);
+    }
+
+    signer_eku.ok_or(Error::ParseCertificate)
+}
+
+/// Return the DER-encoded signer-purpose EKU OID from a PEM chain's leaf.
+pub fn extract_leaf_eku_oid_der_from_chain_pem(cert_chain_pem: &[u8]) -> Result<Vec<u8>> {
     let chain = extract_cert_chain_from_pem(cert_chain_pem)?;
     let leaf_der = chain[0].as_ref();
     let cert = x509::Certificate::from_der(leaf_der).map_err(|_| Error::ParseCertificate)?;
-    cert.tbs_certificate
-        .subject
-        .to_der()
-        .map_err(|_| Error::ParseCertificate)
+    extract_single_leaf_eku_oid_der(&cert)
 }
 
 /// Verifies a certificate chain and then verifies a message signature
@@ -177,7 +212,7 @@ pub fn verify_cert_chain_and_signature(
 /// This is the in-guest revocation control for the servtd signer chain, called
 /// in addition to the RTMR1 signer-anchor binding (which measures the chain but
 /// cannot, by design, distinguish a still-valid certificate from a revoked one
-/// under the same root + subject). Freshness/anti-rollback (monotonic CRL
+/// under the same root + signer EKU). Freshness/anti-rollback (monotonic CRL
 /// number) is enforced by the policy layer, not here.
 pub fn verify_signer_chain_not_revoked(chain_pem: &[u8], crl_pem: &[u8]) -> Result<()> {
     let chain_der = extract_cert_chain_from_pem(chain_pem)?;
@@ -235,7 +270,7 @@ pub fn verify_signer_chain_not_revoked(chain_pem: &[u8], crl_pem: &[u8]) -> Resu
 ///
 /// Trust is **not** established here: this only proves the chain is internally
 /// consistent and the signature is valid. The caller must bind the returned
-/// `(root_der, leaf_subject_der)` to a measured trust anchor (see
+/// `(root_der, leaf_eku_oid_der)` to a measured trust anchor (see
 /// `policy::compute_signer_anchor`, which folds them into the RTMR1 signer
 /// anchor) before trusting the payload.
 pub fn verify_cose_sign1_es384_x5chain(
@@ -265,15 +300,11 @@ pub fn verify_cose_sign1_es384_x5chain(
     )
     .map_err(|_| Error::SignatureVerification)?;
 
-    // 3. Anchor material for the caller: trust-anchor cert DER + leaf subject DER.
+    // 3. Anchor material for the caller: trust-anchor cert DER + leaf signer EKU.
     let root_der = x5chain_der[x5chain_der.len() - 1].to_vec();
-    let leaf_subject_der = leaf
-        .tbs_certificate
-        .subject
-        .to_der()
-        .map_err(|_| Error::ParseCertificate)?;
+    let leaf_eku_oid_der = extract_single_leaf_eku_oid_der(&leaf)?;
 
-    Ok((root_der, leaf_subject_der))
+    Ok((root_der, leaf_eku_oid_der))
 }
 
 fn extract_cert_chain_from_pem(cert_chain_pem: &[u8]) -> Result<Vec<CertificateDer>> {
@@ -408,25 +439,21 @@ fn verify_signature_with_algorithm(
 /// Performs the following checks:
 /// 1. Verifies the peer chain's internal signature integrity
 /// 2. Root CA must match between local and peer chains
-/// 3. Leaf certificate Subject Name must match
-/// 4. Every issuer certificate in the peer chain MUST carry the X.509
+/// 3. Every issuer certificate in the peer chain MUST carry the X.509
 ///    `BasicConstraints` extension with `cA=TRUE` (RFC 5280 §4.2.1.9). This
 ///    prevents a peer from presenting `[fake_leaf, legit_leaf, …]` where the
 ///    legit leaf's private key was stolen and used to sign a synthetic
 ///    sub-leaf — the legit leaf is not a CA, so it is not a valid issuer.
+/// 4. The local and peer leaves must assert the same single, dedicated EKU OID.
 ///
 /// Intentionally not checked:
 /// - **Intermediate cert identity** — intermediate cert contents are not
 ///   compared against the local chain's intermediates. This lets either
 ///   side rotate its intermediate CA(s) independently, as long as the
-///   shared root and the leaf Subject Name remain stable and every issuer
+///   shared root and the leaf signer-purpose EKU remain stable and every issuer
 ///   in the peer chain is itself a CA (check 4). Intermediate certs are
 ///   still validated structurally (signature integrity in check 1 and
 ///   CA-attribute in check 4).
-///
-/// Assumption: the leaf cert's Subject Name uniquely identifies the
-/// intended usage for the product/model — distinct usages must use
-/// distinct Subject Names in their leaf certs.
 pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -> Result<()> {
     let local_chain = extract_cert_chain_from_pem(local_chain_pem)?;
     let peer_chain = extract_cert_chain_from_pem(peer_chain_pem)?;
@@ -437,20 +464,7 @@ pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -
     // 2. Root CA must match (DER byte comparison)
     check_root_ca_match(&local_chain, &peer_chain)?;
 
-    // Parse leaf certs for subject name check
-    let local_leaf = x509::Certificate::from_der(local_chain[0].as_ref())
-        .map_err(|_| Error::ParseCertificate)?;
-    let peer_leaf =
-        x509::Certificate::from_der(peer_chain[0].as_ref()).map_err(|_| Error::ParseCertificate)?;
-
-    // 3. Leaf certificate Subject Name must match
-    if local_leaf.tbs_certificate.subject != peer_leaf.tbs_certificate.subject {
-        return Err(Error::PeerCertChainValidation(
-            "Leaf certificate Subject Name mismatch between local and peer chains".into(),
-        ));
-    }
-
-    // 4. Every issuer in the peer chain must be a CA.
+    // 3. Every issuer in the peer chain must be a CA.
     for cert_der in peer_chain.iter().skip(1) {
         let issuer =
             x509::Certificate::from_der(cert_der.as_ref()).map_err(|_| Error::ParseCertificate)?;
@@ -461,6 +475,29 @@ pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -
                     .into(),
             ));
         }
+    }
+
+    // 4. Leaf signer-purpose EKUs must match. The local measured chain defines
+    // the required purpose; a missing, ambiguous, any-purpose, or different
+    // peer EKU fails closed.
+    let local_leaf = x509::Certificate::from_der(local_chain[0].as_ref())
+        .map_err(|_| Error::ParseCertificate)?;
+    let peer_leaf =
+        x509::Certificate::from_der(peer_chain[0].as_ref()).map_err(|_| Error::ParseCertificate)?;
+    let local_eku = extract_single_leaf_eku_oid_der(&local_leaf).map_err(|_| {
+        Error::PeerCertChainValidation(
+            "Local leaf certificate has no single dedicated signer EKU".into(),
+        )
+    })?;
+    let peer_eku = extract_single_leaf_eku_oid_der(&peer_leaf).map_err(|_| {
+        Error::PeerCertChainValidation(
+            "Peer leaf certificate has no single dedicated signer EKU".into(),
+        )
+    })?;
+    if local_eku != peer_eku {
+        return Err(Error::PeerCertChainValidation(
+            "Leaf signer EKU mismatch between local and peer chains".into(),
+        ));
     }
 
     Ok(())
@@ -627,10 +664,9 @@ kXYiyuG9OEI=
     // Adversarial chain demonstrating the stolen-leaf-key attack:
     //   [fake_leaf, legit_leaf, intermediate, root]
     // The legit leaf has no BasicConstraints; the fake leaf was signed by
-    // the legit leaf's key while reusing the legit leaf's Subject Name, so
-    // the existing subject-name + root-match + signature-integrity checks
-    // all pass. Only the CA-attribute check on the legit leaf (as issuer)
-    // rejects this chain.
+    // the legit leaf's key. The chain's signature integrity and root match;
+    // the CA-attribute check on the legit leaf (as issuer) rejects it before
+    // signer-purpose EKU validation.
     fn attacker_chain() -> &'static [u8] {
         b"-----BEGIN CERTIFICATE-----
 MIICVzCCAd2gAwIBAgIUHTraNuO2R92W3rj+VUu757uTU/0wCgYIKoZIzj0EAwMw
@@ -710,13 +746,13 @@ m07Y31+o+LpsZuEnlIETx/zemHA=
 
     #[test]
     fn test_validate_peer_cert_chain_same_chain() {
-        let chain = test_chain();
+        let chain = include_bytes!("../test/eku/signer_a.pem");
         assert!(validate_peer_cert_chain(chain, chain).is_ok());
     }
 
     #[test]
     fn test_validate_peer_cert_chain_root_ca_mismatch() {
-        let chain = test_chain();
+        let chain = include_bytes!("../test/eku/signer_a.pem");
         let diff = different_root_chain();
         let result = validate_peer_cert_chain(chain, diff);
         assert!(result.is_err());
@@ -729,14 +765,61 @@ m07Y31+o+LpsZuEnlIETx/zemHA=
     }
 
     #[test]
-    fn test_validate_peer_cert_chain_subject_name_mismatch() {
-        let chain = test_chain();
-        let root = root_ca_only();
-        let result = validate_peer_cert_chain(chain, root);
+    fn test_validate_peer_cert_chain_accepts_subject_change_with_same_eku() {
+        let local = include_bytes!("../test/eku/signer_a.pem");
+        let peer = include_bytes!("../test/eku/signer_b.pem");
+        assert!(validate_peer_cert_chain(local, peer).is_ok());
+    }
+
+    #[test]
+    fn test_validate_peer_cert_chain_eku_mismatch() {
+        let local = include_bytes!("../test/eku/signer_a.pem");
+        let peer = include_bytes!("../test/eku/signer_other_eku.pem");
+        let result = validate_peer_cert_chain(local, peer);
         assert!(result.is_err());
         match result {
             Err(Error::PeerCertChainValidation(msg)) => {
-                assert!(msg.contains("Subject Name mismatch"));
+                assert!(msg.contains("EKU mismatch"));
+            }
+            _ => panic!("Expected PeerCertChainValidation error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_peer_cert_chain_missing_eku() {
+        let local = include_bytes!("../test/eku/signer_a.pem");
+        let peer = include_bytes!("../test/eku/signer_no_eku.pem");
+        let result = validate_peer_cert_chain(local, peer);
+        assert!(result.is_err());
+        match result {
+            Err(Error::PeerCertChainValidation(msg)) => {
+                assert!(msg.contains("no single dedicated signer EKU"));
+            }
+            _ => panic!("Expected PeerCertChainValidation error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_peer_cert_chain_rejects_ambiguous_ekus() {
+        let local = include_bytes!("../test/eku/signer_a.pem");
+        let peer = include_bytes!("../test/eku/signer_multiple_eku.pem");
+        let result = validate_peer_cert_chain(local, peer);
+        match result {
+            Err(Error::PeerCertChainValidation(msg)) => {
+                assert!(msg.contains("no single dedicated signer EKU"));
+            }
+            _ => panic!("Expected PeerCertChainValidation error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_peer_cert_chain_rejects_any_eku() {
+        let local = include_bytes!("../test/eku/signer_a.pem");
+        let peer = include_bytes!("../test/eku/signer_any_eku.pem");
+        let result = validate_peer_cert_chain(local, peer);
+        match result {
+            Err(Error::PeerCertChainValidation(msg)) => {
+                assert!(msg.contains("no single dedicated signer EKU"));
             }
             _ => panic!("Expected PeerCertChainValidation error"),
         }
