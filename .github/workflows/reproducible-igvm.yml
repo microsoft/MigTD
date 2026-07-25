@@ -1,0 +1,115 @@
+# Validates that the Azure IGVM image is a reproducible build, using the pinned
+# Docker toolchain we ship (sh_script/Azure/Dockerfile + docker_build_igvm.sh).
+#
+# The wrapper builds the IGVM inside the pinned ubuntu:26.04 container (root,
+# /root/MigTD, frozen clang/llvm/nasm + Rust 1.88.0 -- the real Azure build
+# environment). We run it twice from the same prepared sources and fail unless
+# the two migtd.igvm files are byte-identical. Building inside the pinned image
+# is what makes the result reproducible across machines/OS images: a different
+# clang produces different bytes (see doc/reproducible_build.md and readme.md).
+# An identical image also implies an identical MRTD.
+#
+# This is intentionally the *faithful* check -- it exercises the shipped
+# Dockerfile and wrapper and the exact toolchain the Azure image is built with,
+# rather than the host runner's toolchain.
+#
+# It is heavy (a docker image build plus two full IGVM builds, each including
+# the linux-sgx/OCaml attestation library and an LTO `cargo image`), so it runs
+# weekly, on manual dispatch, and on PRs that touch inputs affecting the build.
+name: reproducible-igvm
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly audit: Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+  pull_request:
+    paths:
+      - "sh_script/Azure/**"
+      - ".github/workflows/reproducible-igvm.yml"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproducible-igvm:
+    name: Azure IGVM reproducibility (pinned Docker image)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Free up disk space
+        run: |
+          # A docker image build plus two full IGVM builds need headroom.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+
+      - name: Prepare sources (ring/spdm patches; git-only)
+        # docker_build_igvm.sh local mode builds an already-prepared tree; the
+        # actual IGVM build (clang/rust/nasm) happens inside the container.
+        run: bash sh_script/preparation.sh
+
+      - name: Build Azure IGVM in the pinned container (run 1)
+        run: ./sh_script/Azure/docker_build_igvm.sh -t build-igvm -o "$RUNNER_TEMP/out1"
+
+      - name: Build Azure IGVM in the pinned container (run 2)
+        # Reuses the builder image from run 1 but builds in a fresh container, so
+        # the two IGVMs are independent rebuilds in the same pinned environment.
+        run: ./sh_script/Azure/docker_build_igvm.sh -t build-igvm -o "$RUNNER_TEMP/out2"
+
+      - name: Compare IGVM images
+        run: |
+          set -euo pipefail
+          A=$(awk '{print $1}' "$RUNNER_TEMP/out1/migtd.igvm.sha256")
+          B=$(awk '{print $1}' "$RUNNER_TEMP/out2/migtd.igvm.sha256")
+          {
+            echo "## Azure IGVM reproducibility (pinned Docker image)"
+            echo ""
+            echo "| run | sha256 |"
+            echo "|-----|--------|"
+            echo "| 1 | \`$A\` |"
+            echo "| 2 | \`$B\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$A" = "$B" ]; then
+            echo "Reproducible: two container builds produced an identical IGVM ($A)"
+            echo "**Result: reproducible** ✅" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "NOT reproducible: $A != $B"
+            ls -l "$RUNNER_TEMP"/out1/migtd.igvm "$RUNNER_TEMP"/out2/migtd.igvm || true
+            echo "First differing bytes:"
+            cmp -l "$RUNNER_TEMP"/out1/migtd.igvm "$RUNNER_TEMP"/out2/migtd.igvm | head -20 || true
+            echo "**Result: NOT reproducible** ❌ — see job logs and uploaded artifacts." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Upload IGVM images on mismatch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: igvm-repro-mismatch
+          path: |
+            ${{ runner.temp }}/out1/migtd.igvm
+            ${{ runner.temp }}/out2/migtd.igvm
+          if-no-files-found: ignore
