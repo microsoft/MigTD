@@ -1,0 +1,76 @@
+---
+type: Playbook
+title: Policy v2 Generation Workflow
+description: End-to-end tool chain for one-hash Policy v2 artifacts, JSON or CoRIM servTD endorsements, signer-anchor enrollment, and hash-stable updates.
+tags: [policy-v2, tools, signing, tcb-mapping]
+timestamp: 2026-07-22T22:32:31+00:00
+---
+
+# Policy v2 Generation Workflow
+
+Design sources:
+[tcb_mapping_design_proposal.md](../../doc/tcb_mapping_design_proposal.md) and
+[rtmr1_signer_anchor_proposal.md](../../doc/rtmr1_signer_anchor_proposal.md).
+The implementation source of truth is `src/policy/src/v2/measurement.rs` and
+`src/policy/src/v2/policy.rs`. Use this playbook when regenerating a v2 policy,
+rotating a mapping/signer leaf, or debugging a mismatched `SERVTD_INFO_HASH`.
+
+## Supported packaging paths
+
+```text
+Shared:
+  migtd-collateral-generator -> platform TCB/QE collaterals
+  migtd-policy-generator v2  -> { "policyData": ... }
+
+JSON compatibility path:
+  sign tdTcbMapping (tdinfo_hash -> SVN)
+  optionally sign tdIdentity (SVN -> date/status)
+  servtd-collateral-generator -> JSON servtdCollateral + issuer chains
+  cargo image --policy-v2 --policy <policy> --policy-issuer-chain <chain>
+
+CoRIM-only path:
+  omit --servtd-collateral when generating policyData
+  produce signed TCB-mapping CoRIM (SERVTD_INFO_HASH -> SVN)
+  enroll the precomputed 48-byte signer anchor and CoRIM:
+  cargo image --policy-v2 --policy <policy> \
+      --signer-anchor <anchor.bin> --servtd-corim <mapping.cose>
+```
+
+The legacy `{policyData, signature}` wrapper and `policy_v2_signed.json`
+filenames remain accepted, but the **outer policy signature is ignored**.
+PolicyData integrity comes from RTMR2. Authenticity of the re-issuable servTD
+endorsement comes from either the inner JSON signatures or the CoRIM
+`COSE_Sign1`, whose signer chain must resolve to the RTMR1 anchor.
+
+At boot, MigTD:
+
+1. Resolves the signer anchor
+   `A = SHA384(tag || H(rootDER) || leafEkuOidDER)` from a PEM chain or the
+   direct anchor slot and extends `SHA384(A)` into RTMR1.
+2. Extends canonical `policyData` into RTMR2 after redacting the JSON TCB
+   mapping, its issuer chain, and optional TD Identity + issuer chain. A
+   CoRIM-only policy has no `servtdCollateral` and is measured as-is.
+3. Verifies JSON/CoRIM signatures and binds their signer root+EKU to `A`.
+
+## Updating mappings and rotating signer leaves
+
+- `svnMappings[].tdMeasurements.tdinfo_hash` and CoRIM digest selectors use
+  the complete 48-byte `SERVTD_INFO_HASH`, not individual MRTD/RTMR fields.
+- Re-issuing a JSON mapping, CoRIM, or optional TD Identity is measurement
+  neutral because those bytes are outside RTMR2.
+- Rotating leaf or intermediate keys is measurement neutral only when the root
+  and signer-anchor EKU are unchanged; the new chain must still validate
+  and pass signer revocation checks.
+- When a CoRIM is enrolled it is the sole TCB lookup authority. Do not expect
+  JSON fallback on a CoRIM miss.
+- After enrollment, recompute the image hash with `migtd-hash` and require it
+  to equal the pre-enrollment value. A mismatch means measured policy content,
+  root, or signer EKU changed.
+
+## Gotcha
+
+Legacy scripts still use `config/templates/policy_v2_signed.json` and
+`policy_issuer_chain.pem`. CoRIM-only builds instead need a policy without
+`servtdCollateral`, the 48-byte anchor file, and the signed `.cose` mapping.
+Do not mix the direct-anchor and PEM-chain inputs accidentally: the direct
+anchor takes precedence when both CFV slots are populated.
