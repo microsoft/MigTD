@@ -127,6 +127,18 @@ jobs:
             test-command: "./migtdemu.sh --policy-v2 --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_pmi_b.json --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem --mock-report --both --no-sudo --log-level info"
             artifact-name: "policy-v2-all-chains-rotation-test-logs"
 
+          # Negative test: the TCB-mapping signer certificate is revoked by the
+          # signer CRL embedded in collaterals.servtdCrl, so every MigTD must
+          # fail closed at policy init (PolicyError::SignerRevoked) and refuse
+          # to migrate. Uses the policy_v2_signed_revoked.json variant emitted
+          # by build_AzCVMEmu_policy_and_test.sh on both sides.
+          - test-name: "Policy v2 Signer Revocation (Mock Report)"
+            test-type: "policy-v2-revoked"
+            install-jq: 'true'
+            timeout-seconds: 300
+            test-command: "./migtdemu.sh --policy-v2 --src-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --mock-report --both --no-sudo --log-level info"
+            artifact-name: "policy-v2-revoked-test-logs"
+
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -170,6 +182,12 @@ jobs:
           export SPDM_CONFIG="$(pwd)/config/spdm_config.json"
           cargo build --features "AzCVMEmu,policy_v2,test_disable_ra_and_accept_all,spdm_attestation" --no-default-features
 
+      - name: Build MigTD for signer revocation test
+        if: matrix.test-type == 'policy-v2-revoked'
+        run: |
+          echo "Prebuilding MigTD so the negative-test timeout covers runtime, not compilation..."
+          cargo build --release --features "AzCVMEmu,policy_v2,test_mock_report" --no-default-features
+
       - name: Verify emulation script
         if: matrix.test-type == 'skip-ra' || matrix.test-type == 'rebind-skip-ra' || matrix.test-type == 'spdm-skip-ra' || matrix.test-type == 'spdm-rebind-skip-ra'
         run: |
@@ -209,6 +227,31 @@ jobs:
           set -e
           
           echo "Test completed with exit code: $EXIT_CODE"
+
+          # Negative test: a revoked TCB-mapping signer must make every MigTD
+          # fail closed at policy init (before any migration), logging
+          # PolicyError::SignerRevoked. Its presence is the definitive proof
+          # the revocation control fired — the MigTD crashes at boot, so it can
+          # never complete a migration. Pass on that evidence.
+          if [[ "${{ matrix.test-type }}" == "policy-v2-revoked" ]]; then
+            if [[ $EXIT_CODE -eq 0 ]]; then
+              echo "❌ Revoked-signer policy unexpectedly completed successfully"
+              echo "test_status=failed" >> $GITHUB_OUTPUT
+              exit 1
+            elif grep -aq "SignerRevoked" migtd_migration_source.log migtd_migration_destination.log dest_*_out.log 2>/dev/null; then
+              echo "✅ Revocation enforced: MigTD refused a revoked-signer policy (SignerRevoked), exit=$EXIT_CODE"
+              echo "test_status=success" >> $GITHUB_OUTPUT
+              exit 0
+            elif [[ $EXIT_CODE -eq 124 ]]; then
+              echo "❌ Revocation test timed out without reaching SignerRevoked"
+              echo "test_status=timeout" >> $GITHUB_OUTPUT
+              exit 1
+            else
+              echo "❌ Expected a SignerRevoked error in the guest logs, but none was found (exit=$EXIT_CODE)"
+              echo "test_status=failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
           
           if [[ $EXIT_CODE -eq 0 ]]; then
             echo "✅ Test completed successfully"
@@ -329,6 +372,15 @@ jobs:
             echo "✅ Quote retry verification passed (5 failures + success on both sides)"
           fi
 
+          # Dump revocation-related log lines for the signer-revocation test.
+          if [[ "${{ matrix.test-type }}" == "policy-v2-revoked" ]]; then
+            echo ""
+            echo "=== Signer revocation log lines ==="
+            grep -a "SignerRevoked\|Failed to initialize migration policy\|revoked" \
+              migtd_migration_source.log migtd_migration_destination.log dest_*_out.log 2>/dev/null || \
+              echo "(no revocation-related lines found)"
+          fi
+
       - name: Upload test artifacts on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -343,6 +395,7 @@ jobs:
             config/AzCVMEmu/policy_v2_signed_b.json
             config/AzCVMEmu/policy_v2_signed_pm_b.json
             config/AzCVMEmu/policy_v2_signed_pmi_b.json
+            config/AzCVMEmu/policy_v2_signed_revoked.json
             config/AzCVMEmu/policy_issuer_chain.pem
             config/AzCVMEmu/policy_issuer_chain_a.pem
             config/AzCVMEmu/policy_issuer_chain_b.pem

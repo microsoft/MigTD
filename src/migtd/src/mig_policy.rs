@@ -139,9 +139,18 @@ mod v2 {
         attestation::root_ca::set_ca(root_ca_der.as_ref())
             .map_err(|_| PolicyError::InvalidCollateral)?;
 
-        VERIFIED_POLICY
+        let version = VERIFIED_POLICY
             .try_call_once(|| Ok(verified_policy))
-            .map(|p| p.get_version().to_string())
+            .map(|p| p.get_version().to_string())?;
+
+        #[cfg(feature = "test-get-quote")]
+        {
+            log::info!("test-get-quote: testing quote generation during init\n");
+            let _info = get_local_tcb_evaluation_info()?;
+            log::info!("test-get-quote: quote generation and verification succeeded\n");
+        }
+
+        Ok(version)
     }
 
     /// Generate a fresh local TCB evaluation info on demand by creating a
@@ -705,7 +714,22 @@ mod v2 {
         tdreport: &TdxReport,
         policy: &VerifiedPolicy,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
-        let tdinfo_hash = tdinfo_hash_from_td_info(&tdreport.td_info)?;
+        #[cfg(feature = "use-mock-quote")]
+        let mock_tdreport = attestation::tdreport::tdcall_report(
+            &[0u8; attestation::tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE],
+        )
+        .map_err(|_| PolicyError::GetTdxReport)?;
+        #[cfg(feature = "use-mock-quote")]
+        let mapping_tdreport = {
+            log::warn!(
+                "use-mock-quote: deriving rebinding MigTD TCB metadata from the mock quote report\n"
+            );
+            &mock_tdreport
+        };
+        #[cfg(not(feature = "use-mock-quote"))]
+        let mapping_tdreport = tdreport;
+
+        let tdinfo_hash = tdinfo_hash_from_td_info(&mapping_tdreport.td_info)?;
         let migtd = policy.servtd_lookup_by_tdinfo_hash(&tdinfo_hash);
 
         Ok(PolicyEvaluationInfo {
