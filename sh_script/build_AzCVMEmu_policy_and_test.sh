@@ -210,6 +210,9 @@ OUTPUT_POLICY_B="$OUTPUT_DIR/policy_v2_signed_b.json"
 OUTPUT_POLICY_PM_B="$OUTPUT_DIR/policy_v2_signed_pm_b.json"
 # Variant B with policy + tcb_mapping + td_identity leaf certs all rotated
 OUTPUT_POLICY_PMI_B="$OUTPUT_DIR/policy_v2_signed_pmi_b.json"
+# Variant "a" whose collaterals carry a signer CRL that REVOKES the tcb-mapping
+# signer leaf — used by the revocation e2e test (verify() must fail closed).
+OUTPUT_POLICY_REVOKED="$OUTPUT_DIR/policy_v2_signed_revoked.json"
 OUTPUT_CERT_CHAIN="$OUTPUT_DIR/policy_issuer_chain.pem"
 OUTPUT_CERT_CHAIN_A="$OUTPUT_DIR/policy_issuer_chain_a.pem"
 OUTPUT_CERT_CHAIN_B="$OUTPUT_DIR/policy_issuer_chain_b.pem"
@@ -262,6 +265,7 @@ generate_certificates() {
     local cert_validity_days="${3:-365}"
     local root_ca_subject="${4:-/CN=MigTD Root CA/O=Intel Corporation}"
     local leaf_subject="${5:-/CN=MigTD Policy Issuer/O=Intel Corporation}"
+    local signer_eku_oid="${MIGTD_SIGNER_EKU_OID:-1.3.6.1.4.1.32473.1.1}"
 
     # Validate key type first
     if [ "$key_type" != "P384" ]; then
@@ -295,10 +299,22 @@ generate_certificates() {
     #   - identity_signing_{a,b}  : signs td_identity  (embedded in servtd_collateral)
     # Variant "a" uses the same logical leaf for all three; variant "b" rotates
     # one or more of them depending on the test mode.
+    #
+    # All signer leaves carry the same single dedicated EKU. The default uses
+    # the RFC 5612 documentation PEN; production issuers must override
+    # MIGTD_SIGNER_EKU_OID with their allocated signer-purpose OID.
+    #
+    # `RawPolicyData::verify` binds both the
+    # embedded servtdTcbMappingIssuerChain and the (optional) servtdIdentityIssuerChain
+    # to the same RTMR1 signer anchor as the CFV mapping-signer chain;
+    # since the anchor is SHA384(root fingerprint + leaf EKU), all signers MUST
+    # share root + leaf EKU or verification fails closed
+    # with PolicyError::SignerAnchorMismatch. Rotating the identity key (variant
+    # "b") keeps the same EKU, so the anchor stays stable.
     for family_subject in \
         "policy_signing:/CN=MigTD Policy Issuer/O=Intel Corporation" \
         "mapping_signing:/CN=MigTD TCB Mapping Issuer/O=Intel Corporation" \
-        "identity_signing:/CN=MigTD TD Identity Issuer/O=Intel Corporation"; do
+        "identity_signing:/CN=MigTD TCB Mapping Issuer/O=Intel Corporation"; do
         local family="${family_subject%%:*}"
         local subject="${family_subject#*:}"
         # Default to the script's leaf_subject for the policy family to preserve
@@ -336,7 +352,7 @@ generate_certificates() {
                 -days $cert_validity_days \
                 -$hash_algo \
                 -extensions v3_ca \
-                -extfile <(echo -e "[v3_ca]\nkeyUsage = digitalSignature")
+                -extfile <(printf '[v3_ca]\nkeyUsage = digitalSignature\nextendedKeyUsage = %s\n' "$signer_eku_oid")
 
             cat "$output_dir/${family}_${suffix}.pem" "$output_dir/root_ca.pem" \
                 > "$output_dir/${family_chain_prefix}_${suffix}.pem"
@@ -348,6 +364,43 @@ generate_certificates() {
     # Keep backward-compatible aliases (default to "a")
     cp "$output_dir/policy_signing_a_pkcs8.key" "$output_dir/policy_signing_pkcs8.key"
     cp "$output_dir/policy_issuer_chain_a.pem" "$output_dir/policy_issuer_chain.pem"
+}
+
+# Generate two servtd signer CRLs, both signed by the shared root CA:
+#   servtd_crl_empty.pem   : revokes nothing (crlNumber 0x1000)
+#   servtd_crl_revoked.pem : revokes the mapping_signing_a leaf (crlNumber 0x1001)
+# The CRL issuer (root CA subject) matches the root cert present in every
+# mapping/identity signer chain, so crypto::verify_signer_chain_not_revoked can
+# authenticate it and check the leaf serials.
+generate_servtd_crls() {
+    local cert_dir="$1"
+    local hash_algo="sha384"
+    local cadir="$cert_dir/crl_ca"
+
+    mkdir -p "$cadir"
+    : > "$cadir/index.txt"
+    echo 1000 > "$cadir/crlnumber"
+    cat > "$cadir/ca.cnf" <<EOF
+[ca]
+default_ca = CA_default
+[CA_default]
+database = $cadir/index.txt
+crlnumber = $cadir/crlnumber
+default_md = $hash_algo
+default_crl_days = 3650
+EOF
+
+    # Empty CRL (crlNumber 0x1000).
+    openssl ca -config "$cadir/ca.cnf" -gencrl \
+        -keyfile "$cert_dir/root_ca.key" -cert "$cert_dir/root_ca.pem" \
+        -out "$cert_dir/servtd_crl_empty.pem" 2>/dev/null
+
+    # Revoke the mapping_signing_a leaf, then regenerate (crlNumber 0x1001).
+    openssl ca -config "$cadir/ca.cnf" -revoke "$cert_dir/mapping_signing_a.pem" \
+        -keyfile "$cert_dir/root_ca.key" -cert "$cert_dir/root_ca.pem" 2>/dev/null
+    openssl ca -config "$cadir/ca.cnf" -gencrl \
+        -keyfile "$cert_dir/root_ca.key" -cert "$cert_dir/root_ca.pem" \
+        -out "$cert_dir/servtd_crl_revoked.pem" 2>/dev/null
 }
 
 # Parse command line arguments
@@ -550,6 +603,12 @@ if ! cargo build --release -p migtd-policy-generator; then
     exit 1
 fi
 
+echo "Building migtd-hash..."
+if ! cargo build --release -p migtd-hash; then
+    echo -e "${RED}Error: Failed to build migtd-hash${NC}" >&2
+    exit 1
+fi
+
 # Verify tools exist
 # azcvm-extract-report may be emitted either to the local crate target/ or the
 # workspace target/ when CARGO_TARGET_DIR is set.
@@ -564,7 +623,7 @@ else
     exit 1
 fi
 
-for tool in json-signer servtd-collateral-generator migtd-policy-generator; do
+for tool in json-signer servtd-collateral-generator migtd-policy-generator migtd-hash; do
     if [ ! -f "$TOOLS_DIR/$tool" ]; then
         echo -e "${RED}Error: Tool '$tool' not found at $TOOLS_DIR/$tool${NC}" >&2
         exit 1
@@ -650,26 +709,63 @@ echo
 # Make sure no ending newline is added (important for signing)
 #
 echo -e "${BLUE}=== Step 3: Updating TD Identity Template ===${NC}"
+# Conditionally update tcbDate and issueDate only when they are behind the
+# policy's servtd tcbDate reference (greater-or-equal check).
+POLICY_TCB_REF=$(jq -r '
+  [.policy[] | .servtd.migtdIdentity.tcbDate.reference // empty] |
+  map(select(. != "")) | max // empty
+' "$POLICY_DATA_RAW" 2>/dev/null)
+
+DATE_UPDATES=""
+if [ -n "$POLICY_TCB_REF" ]; then
+    CURRENT_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    TEMPLATE_TCB_DATE=$(jq -r '.tcbLevels[0].tcbDate' "$TD_IDENTITY_TEMPLATE")
+    TEMPLATE_ISSUE_DATE=$(jq -r '.issueDate' "$TD_IDENTITY_TEMPLATE")
+    if [[ "$TEMPLATE_TCB_DATE" < "$POLICY_TCB_REF" ]]; then
+        DATE_UPDATES="$DATE_UPDATES | .tcbLevels[0].tcbDate = \"$CURRENT_UTC\""
+        echo -e "  Updating tcbDate: $TEMPLATE_TCB_DATE -> $CURRENT_UTC (reference: $POLICY_TCB_REF)"
+    fi
+    if [[ "$TEMPLATE_ISSUE_DATE" < "$POLICY_TCB_REF" ]]; then
+        DATE_UPDATES="$DATE_UPDATES | .issueDate = \"$CURRENT_UTC\""
+        echo -e "  Updating issueDate: $TEMPLATE_ISSUE_DATE -> $CURRENT_UTC (reference: $POLICY_TCB_REF)"
+    fi
+fi
+
 jq -c ".xfam = \"$XFAM\" | .attributes = \"$ATTRIBUTES\" | .mrConfigId = \"$MR_CONFIG_ID\" | \
 .mrOwner = \"$MR_OWNER\" | .mrOwnerConfig = \"$MR_OWNER_CONFIG\" | .mrsigner = \"$MRSIGNER\" | \
-.isvProdId = $ISV_PROD_ID | .tcbLevels[0].tcb.isvsvn = $ISVSVN" \
+.isvProdId = $ISV_PROD_ID | .tcbLevels[0].tcb.isvsvn = $ISVSVN $DATE_UPDATES" \
 "$TD_IDENTITY_TEMPLATE" | tr -d '\n' > "$TD_IDENTITY_UPDATED"
 
 echo -e "${GREEN}✓ TD Identity updated: $TD_IDENTITY_UPDATED${NC}"
 echo
 
 #
-# Step 4: Update tcb_mapping.json with extracted measurements
+# Step 4: Update tcb_mapping.json with the v2 tdinfo_hash
 # Make sure no ending newline is added (important for signing)
 #
+# Per doc/tcb_mapping_redesign.md, the v2 schema uses a single
+# `tdinfo_hash = SHA384(SHA384(unmasked_TDINFO_512) || u16_LE(0) || u64_LE(0))`.
+# We delegate the hash computation to the `migtd-hash --from-report` mode so
+# the math stays in one place (tools/migtd-hash/src/lib.rs::calculate_tdinfo_hash)
+# and the AzCVMEmu mock-report flow is guaranteed byte-identical to the
+# release pipeline.
+#
 echo -e "${BLUE}=== Step 4: Updating TCB Mapping Template ===${NC}"
-jq -c ".svnMappings[0].tdMeasurements.mrtd = \"$MRTD\" | \
-.svnMappings[0].tdMeasurements.rtmr0 = \"$RTMR0\" | \
-.svnMappings[0].tdMeasurements.rtmr1 = \"$RTMR1\" | \
+
+TDINFO_HASH_FILE="$TEMP_DIR/tdinfo_hash.hex"
+"$TOOLS_DIR/migtd-hash" \
+    --policy-v2 \
+    --from-report "$REPORT_DATA_FILE" \
+    --output-tdinfo-hash "$TDINFO_HASH_FILE"
+# Uppercase to match the convention used by signed policies.
+TDINFO_HASH=$(tr 'a-z' 'A-Z' < "$TDINFO_HASH_FILE")
+
+jq -c ".svnMappings[0].tdMeasurements = {\"tdinfo_hash\": \"$TDINFO_HASH\"} | \
 .svnMappings[0].isvsvn = $ISVSVN" \
 "$TCB_MAPPING_TEMPLATE" | tr -d '\n' > "$TCB_MAPPING_UPDATED"
 
 echo -e "${GREEN}✓ TCB Mapping updated: $TCB_MAPPING_UPDATED${NC}"
+echo -e "  tdinfo_hash = $TDINFO_HASH"
 echo
 
 #
@@ -679,6 +775,15 @@ echo -e "${BLUE}=== Step 5: Generating Certificates ===${NC}"
 generate_certificates "$CERT_DIR" "P384" 365
 
 echo -e "${GREEN}✓ Certificates generated in: $CERT_DIR${NC}"
+echo
+
+#
+# Step 5b: Generate servtd signer CRLs (embedded per-variant into servtdCollateral)
+#
+echo -e "${BLUE}=== Step 5b: Generating Signer CRLs ===${NC}"
+generate_servtd_crls "$CERT_DIR"
+
+echo -e "${GREEN}✓ Signer CRLs generated (empty + mapping-leaf-revoked)${NC}"
 echo
 
 #
@@ -706,6 +811,7 @@ build_signed_policy_variant() {
     local mapping_suffix="$3"    # a or b
     local policy_suffix="$4"     # a or b
     local output_policy="$5"
+    local servtd_crl_file="${6:-}"  # optional PEM CRL to embed in servtdCollateral
 
     local identity_key="$CERT_DIR/identity_signing_${identity_suffix}_pkcs8.key"
     local mapping_key="$CERT_DIR/mapping_signing_${mapping_suffix}_pkcs8.key"
@@ -734,11 +840,16 @@ build_signed_policy_variant() {
         --input "$TCB_MAPPING_UPDATED" \
         --output "$tcb_mapping_signed"
 
+    local servtd_crl_arg=()
+    if [ -n "$servtd_crl_file" ]; then
+        servtd_crl_arg=(--servtd-crl "$servtd_crl_file")
+    fi
     "$TOOLS_DIR/servtd-collateral-generator" \
         --identity "$td_identity_signed" \
         --identity-chain "$identity_chain" \
         --mapping "$tcb_mapping_signed" \
         --mapping-chain "$mapping_chain" \
+        "${servtd_crl_arg[@]}" \
         --output "$servtd_collateral"
 
     "$TOOLS_DIR/migtd-policy-generator" v2 \
@@ -758,10 +869,14 @@ build_signed_policy_variant() {
 }
 
 echo -e "${BLUE}=== Step 6-10: Building Signed Policy Variants ===${NC}"
-build_signed_policy_variant "a"     a a a "$OUTPUT_POLICY_A"
-build_signed_policy_variant "b"     a a b "$OUTPUT_POLICY_B"
-build_signed_policy_variant "pm_b"  a b b "$OUTPUT_POLICY_PM_B"
-build_signed_policy_variant "pmi_b" b b b "$OUTPUT_POLICY_PMI_B"
+build_signed_policy_variant "a"     a a a "$OUTPUT_POLICY_A"     "$CERT_DIR/servtd_crl_empty.pem"
+build_signed_policy_variant "b"     a a b "$OUTPUT_POLICY_B"     "$CERT_DIR/servtd_crl_empty.pem"
+build_signed_policy_variant "pm_b"  a b b "$OUTPUT_POLICY_PM_B"  "$CERT_DIR/servtd_crl_empty.pem"
+build_signed_policy_variant "pmi_b" b b b "$OUTPUT_POLICY_PMI_B" "$CERT_DIR/servtd_crl_empty.pem"
+# Revocation variant: same signers as "a", but its servtdCollateral carries a
+# servtdCrl that revokes the tcb-mapping signer leaf, so RawPolicyData::verify()
+# fails closed (PolicyError::SignerRevoked).
+build_signed_policy_variant "revoked" a a a "$OUTPUT_POLICY_REVOKED" "$CERT_DIR/servtd_crl_revoked.pem"
 
 # Also keep a default signed policy (variant a) for backward compat
 cp "$OUTPUT_POLICY_A" "$OUTPUT_POLICY"
@@ -773,8 +888,15 @@ echo
 # Step 11: Copying Certificate Chains to output directory
 #
 echo -e "${BLUE}=== Step 11: Copying Certificate Chains ===${NC}"
-cp "$CERT_DIR/policy_issuer_chain_a.pem" "$OUTPUT_CERT_CHAIN_A"
-cp "$CERT_DIR/policy_issuer_chain_b.pem" "$OUTPUT_CERT_CHAIN_B"
+# The CFV MIGTD_POLICY_ISSUER_CHAIN slot now carries the **TCB-mapping** issuer
+# chain (per doc/tcb_mapping_design_proposal.md: "RTMR1 = TCBMapping issuer cert
+# chain"). RTMR1 measures its signer anchor and RawPolicyData::verify() binds
+# the embedded servtdTcbMappingIssuerChain to that same anchor, so the CFV chain
+# and the embedded mapping chain MUST share root + leaf signer EKU. The old
+# policy_signing family only signed the (now-removed) outer policy signature and
+# is no longer the RTMR1 anchor.
+cp "$CERT_DIR/mapping_issuer_chain_a.pem" "$OUTPUT_CERT_CHAIN_A"
+cp "$CERT_DIR/mapping_issuer_chain_b.pem" "$OUTPUT_CERT_CHAIN_B"
 cp "$OUTPUT_CERT_CHAIN_A" "$OUTPUT_CERT_CHAIN"
 
 echo -e "${GREEN}✓ Certificate chain A: $OUTPUT_CERT_CHAIN_A${NC}"
@@ -828,7 +950,7 @@ fi
 echo
 
 #
-# Step 13: Test the policy (optional)
+# Step 13: Test the policy - migration flow (optional)
 #
 # Pass --skip-policy-generation: this script already generated the policy
 # files, so migtdemu.sh must not re-run the generator (which would clobber
@@ -849,7 +971,7 @@ if [[ -n "$EXTRA_FEATURES" ]]; then
 fi
 
 if [ -z "$SKIP_TEST" ]; then
-    echo -e "${BLUE}=== Step 13: Testing Policy ===${NC}"
+    echo -e "${BLUE}=== Step 13: Testing Policy (migration) ===${NC}"
     if [ "$USE_MOCK_REPORT" = true ]; then
         echo "Running with mock report mode: $TEST_CMD"
         echo -e "${YELLOW}Note: Using test_mock_report feature for mock TD reports/quotes${NC}"
@@ -861,19 +983,65 @@ if [ -z "$SKIP_TEST" ]; then
     cd "$PROJECT_ROOT"
     if $TEST_CMD; then
         echo
-        echo -e "${GREEN}✓✓✓ SUCCESS: Policy validation and key exchange completed! ✓✓✓${NC}"
+        echo -e "${GREEN}✓✓✓ SUCCESS: Migration policy validation and key exchange completed! ✓✓✓${NC}"
     else
         echo
-        echo -e "${YELLOW}⚠ Test failed. Check the output above for errors.${NC}"
+        echo -e "${YELLOW}⚠ Migration test failed. Check the output above for errors.${NC}"
         echo "You can manually test with:"
         echo "  $TEST_CMD"
         exit 1
     fi
 else
-    echo -e "${YELLOW}Test skipped. To test manually, run:${NC}"
+    echo -e "${YELLOW}Migration test skipped. To test manually, run:${NC}"
     echo "  $TEST_CMD"
+fi
+
+#
+# Step 14: Test the policy - prepare-rebind flow (optional)
+#
+# Runs the rebind-prepare operation which performs the rebinding handshake
+# (TLS, token exchange, and approval) using the same policy variants.
+REBIND_TEST_CMD="./migtdemu.sh --operation rebind-prepare --src-policy-file $OUTPUT_POLICY_A --src-policy-issuer-chain-file $OUTPUT_CERT_CHAIN_A --dst-policy-file $OUTPUT_POLICY_B --dst-policy-issuer-chain-file $OUTPUT_CERT_CHAIN_B --skip-policy-generation --debug --both"
+if [ "$USE_MOCK_REPORT" = true ]; then
+    REBIND_TEST_CMD="$REBIND_TEST_CMD --mock-report"
+
+    # Add mock quote file if specified
+    if [[ -n "$MOCK_QUOTE_FILE" ]]; then
+        REBIND_TEST_CMD="$REBIND_TEST_CMD --mock-quote-file $MOCK_QUOTE_FILE"
+    fi
+fi
+
+# Add extra features if specified
+if [[ -n "$EXTRA_FEATURES" ]]; then
+    REBIND_TEST_CMD="$REBIND_TEST_CMD --features $EXTRA_FEATURES"
+fi
+
+if [ -z "$SKIP_TEST" ]; then
+    echo
+    echo -e "${BLUE}=== Step 14: Testing Policy (prepare-rebind) ===${NC}"
+    if [ "$USE_MOCK_REPORT" = true ]; then
+        echo "Running with mock report mode: $REBIND_TEST_CMD"
+        echo -e "${YELLOW}Note: Using test_mock_report feature for mock TD reports/quotes${NC}"
+    else
+        echo "Running with real remote attestation: $REBIND_TEST_CMD"
+    fi
+    echo
+
+    cd "$PROJECT_ROOT"
+    if $REBIND_TEST_CMD; then
+        echo
+        echo -e "${GREEN}✓✓✓ SUCCESS: Prepare-rebind policy validation and token exchange completed! ✓✓✓${NC}"
+    else
+        echo
+        echo -e "${YELLOW}⚠ Prepare-rebind test failed. Check the output above for errors.${NC}"
+        echo "You can manually test with:"
+        echo "  $REBIND_TEST_CMD"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}Prepare-rebind test skipped. To test manually, run:${NC}"
+    echo "  $REBIND_TEST_CMD"
 fi
 
 echo
 echo -e "${GREEN}=== All Done! ===${NC}"
-
