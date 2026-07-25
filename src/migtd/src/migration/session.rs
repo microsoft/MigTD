@@ -1568,6 +1568,26 @@ mod test {
             cleanup_request(request_id);
         }
 
+        #[cfg(all(feature = "policy_v2", feature = "main"))]
+        #[test]
+        fn test_parse_start_rebinding_accepts_and_ignores_legacy_init_tdinfo() {
+            let request_id: u64 = 0xAA00_0000_0000_0003;
+            let payload = build_migration_payload_with_legacy_init(request_id, 1);
+            let buf = build_request_buffer(2, &payload);
+            let mut pending = None;
+            let result = parse_request(&buf, HDR_LEN, &mut pending);
+            match result {
+                Poll::Ready(Ok(WaitForRequestResponse::StartRebinding(info))) => {
+                    assert_eq!(info.mig_request_id, request_id);
+                    assert_eq!(info.has_init_data, 0);
+                    assert!(info.init_td_info_if_present().is_none());
+                }
+                _ => panic!("Expected StartRebinding, got unexpected variant"),
+            }
+            assert!(pending.is_none());
+            cleanup_request(request_id);
+        }
+
         #[test]
         fn test_parse_start_migration_truncated_payload() {
             // Payload is too short and data_length != expected size
