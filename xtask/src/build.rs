@@ -158,6 +158,7 @@ impl BuildArgs {
         self.build_shim_layout()?;
 
         let sh = Shell::new()?;
+        sh.set_var("RUSTFLAGS", Self::remap_rustflags());
         sh.change_dir(SHIM_FOLDER.as_path());
         if self.profile() == "release" {
             cmd!(sh, "cargo build -p td-shim --target x86_64-unknown-none --features=main,tdx,log/max_level_off --no-default-features --release")
@@ -221,6 +222,7 @@ impl BuildArgs {
         let sh = Shell::new()?;
         sh.set_var("CC_x86_64_unknown_none", "clang");
         sh.set_var("AR_x86_64_unknown_none", "llvm-ar");
+        sh.set_var("RUSTFLAGS", Self::remap_rustflags());
         sh.set_var(
             "SPDM_CONFIG",
             PROJECT_ROOT
@@ -312,6 +314,24 @@ impl BuildArgs {
         } else {
             "release"
         }
+    }
+
+    /// Build `--remap-path-prefix` flags so the project root, `CARGO_HOME`, and
+    /// `RUSTUP_HOME` map to fixed tokens. This makes the compiled bytes (and thus
+    /// MRTD) independent of the build path/user, enabling reproducible native
+    /// builds without the fixed-path build container.
+    fn remap_rustflags() -> String {
+        let project = PROJECT_ROOT.to_str().unwrap_or_default().to_string();
+        let home = env::var("HOME").unwrap_or_default();
+        let cargo_home = env::var("CARGO_HOME").unwrap_or_else(|_| format!("{home}/.cargo"));
+        let rustup_home = env::var("RUSTUP_HOME").unwrap_or_else(|_| format!("{home}/.rustup"));
+        let mut flags = env::var("RUSTFLAGS").map(|f| f + " ").unwrap_or_default();
+        flags.push_str(&format!(
+            "--remap-path-prefix={cargo_home}=/cargo \
+             --remap-path-prefix={rustup_home}=/rustup \
+             --remap-path-prefix={project}=/migtd"
+        ));
+        flags
     }
 
     fn features(&self) -> String {
