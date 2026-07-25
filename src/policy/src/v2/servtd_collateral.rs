@@ -166,7 +166,7 @@ pub struct SvnMapping {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Measurements {
     /// Single-hash measurement key per the TCB-mapping redesign
-    /// (`docs/tcb_mapping_redesign.md`).
+    /// (`doc/tcb_mapping_redesign.md`).
     ///
     /// Equals `init_servtd_info_hash` for production MigTDs (servtd_attr=0):
     ///   tdinfo_hash = SHA384(unmasked TDINFO_STRUCT bytes)
