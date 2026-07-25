@@ -314,10 +314,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --src-policy-file)
             SRC_POLICY_FILE="$2"
+            EXPLICIT_POLICY_FILE=true
             shift 2
             ;;
         --src-policy-issuer-chain-file)
             SRC_POLICY_ISSUER_CHAIN_FILE="$2"
+            EXPLICIT_POLICY_ISSUER_CHAIN=true
             shift 2
             ;;
         --src-signer-anchor-file)
@@ -337,10 +339,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dst-policy-file)
             DST_POLICY_FILE="$2"
+            EXPLICIT_POLICY_FILE=true
             shift 2
             ;;
         --dst-policy-issuer-chain-file)
             DST_POLICY_ISSUER_CHAIN_FILE="$2"
+            EXPLICIT_POLICY_ISSUER_CHAIN=true
             shift 2
             ;;
         --dst-signer-anchor-file)
