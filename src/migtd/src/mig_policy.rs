@@ -335,20 +335,16 @@ mod v2 {
             &tdx_report.td_info.mrownerconfig,
         )?;
 
-        // Verify the init tdinfo against servtd_ext hash
+        // Verify the init TDINFO against the source's ServtdExt hash.
+        //
+        // The authenticated source report carries the current source policy
+        // signer and SVN. Do not additionally require these measurements in
+        // the destination's local TCB mapping: that would require an older
+        // policy to predict future MigTD images and break migration during
+        // independently issued policy signer rotations.
         let servtd_ext_src_obj =
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
-        let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
-        let _engine_svn = policy
-            .servtd_tcb_mapping
-            .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
-                &init_td_info.mrtd,
-                &init_td_info.rtmr0,
-                &init_td_info.rtmr1,
-                Some(&init_td_info.rtmr2),
-                Some(&init_td_info.rtmr3),
-            ))
-            .ok_or(PolicyError::SvnMismatch)?;
+        verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
 
         // If backward policy exists, evaluate the migration src based on it.
         let relative_reference = get_local_tcb_evaluation_info()?;
@@ -967,9 +963,9 @@ mod v2 {
             false,
         )?;
 
-        // Cross-check init TDINFO against MROWNER/MROWNERCONFIG from
-        // verified quote supplemental data, verify init TDINFO integrity
-        // against ServtdExt hash, and allowlist-gate init measurements.
+        // Cross-check init TDINFO against MROWNER/MROWNERCONFIG from the
+        // verified quote supplemental data and verify its integrity against
+        // the source's ServtdExt hash.
         //
         // Skipped when running with mock quotes/reports that carry static
         // test data — the mock init TDINFO does not have measurements
@@ -985,19 +981,7 @@ mod v2 {
             // Verify init TDINFO integrity against ServtdExt hash
             let servtd_ext_obj =
                 ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
-            let init_td_info = verify_init_tdinfo(init_tdinfo, &servtd_ext_obj)?;
-
-            // Allowlist gate: init MigTD measurements must be in servtd_tcb_mapping
-            let _engine_svn = policy
-                .servtd_tcb_mapping
-                .get_engine_svn_by_measurements(&Measurements::new_from_bytes(
-                    &init_td_info.mrtd,
-                    &init_td_info.rtmr0,
-                    &init_td_info.rtmr1,
-                    Some(&init_td_info.rtmr2),
-                    Some(&init_td_info.rtmr3),
-                ))
-                .ok_or(PolicyError::SvnMismatch)?;
+            verify_init_tdinfo(init_tdinfo, &servtd_ext_obj)?;
         }
 
         Ok(suppl_data)
