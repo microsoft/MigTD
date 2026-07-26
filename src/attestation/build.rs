@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 use std::env;
+use std::path::Path;
 use std::process::Command;
 
 /// Detect the major version of the system `cc` when it is GCC.
@@ -47,6 +48,45 @@ fn attestation_make_cflags() -> Option<String> {
     (!cflags.is_empty()).then_some(cflags)
 }
 
+fn run_preparation_script(lib_path: &Path, script: &str, args: &[&str]) {
+    let status = Command::new("bash")
+        .arg(script)
+        .args(args)
+        .current_dir(lib_path)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to run {script}: {error}"));
+    assert!(status.success(), "{script} failed: {status}");
+}
+
+fn prepare_attestation_sources(lib_path: &Path, make_cflags: Option<&str>) {
+    if lib_path.join(".git").exists() {
+        let mut prep = Command::new("make");
+        prep.arg("-C")
+            .arg(lib_path)
+            .arg("servtd_attest_preparation");
+        if let Some(cflags) = make_cflags {
+            prep.env("CFLAGS", cflags);
+        }
+        let status = prep
+            .status()
+            .expect("failed to run make servtd_attest_preparation for attestation library!");
+        assert!(
+            status.success(),
+            "failed to build servtd_attest_preparation: {status}"
+        );
+        return;
+    }
+
+    // Source archives and docker-copied trees have populated submodules but no
+    // Git metadata. Run the non-Git parts of servtd_attest_preparation directly.
+    run_preparation_script(lib_path, "external/sgx-emm/create_symlink.sh", &[]);
+    run_preparation_script(
+        lib_path,
+        "external/dcap_source/QuoteVerification/prepare_sgxssl.sh",
+        &["nobuild"],
+    );
+}
+
 fn main() {
     // Skip the compilation of attestation library when the remote attestation is not enabled or
     // running unit test.
@@ -65,32 +105,17 @@ fn main() {
     let _ = env::var("AR").ok().map(|_| env::remove_var("AR"));
 
     let crate_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let lib_path = crate_path
-        .join("../../deps/linux-sgx")
-        .display()
-        .to_string();
+    let lib_path = crate_path.join("../../deps/linux-sgx");
 
     // GCC >= 14 turns several legacy DCAP warnings into hard errors; demote them so
     // the vendored linux-sgx attestation lib still builds. Preserves user CFLAGS.
     let make_cflags = attestation_make_cflags();
 
-    // make servtd_attest_preparation
-    let mut prep = Command::new("make");
-    prep.args(["-C", &lib_path, "servtd_attest_preparation"]);
-    if let Some(cflags) = &make_cflags {
-        prep.env("CFLAGS", cflags);
-    }
-    let status = prep
-        .status()
-        .expect("failed to run make servtd_attest_preparation for attestation library!");
-    assert!(
-        status.success(),
-        "failed to build servtd_attest_preparation: {status}"
-    );
+    prepare_attestation_sources(&lib_path, make_cflags.as_deref());
 
     // make servtd_attest
     let mut build = Command::new("make");
-    build.args(["-C", &lib_path, "servtd_attest"]);
+    build.arg("-C").arg(&lib_path).arg("servtd_attest");
     if let Some(cflags) = &make_cflags {
         build.env("CFLAGS", cflags);
     }
@@ -101,7 +126,7 @@ fn main() {
 
     let search_dir = format!(
         "{}/external/dcap_source/QuoteGeneration/quote_wrapper/servtd_attest/linux",
-        &lib_path
+        lib_path.display()
     );
 
     println!("cargo:rustc-link-search=native={search_dir}");
