@@ -213,6 +213,9 @@ REJECT=false
 CERT_DIR_OVERRIDE=""
 MEASURED_IMAGE=""
 MEASURED_MANIFEST="$PROJECT_ROOT/config/Azure/servtd_info.json"
+POLICY_SVN_OVERRIDE=""
+REVOKE_TDINFO_HASHES=()
+TCB_MAPPING_INPUT=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -254,6 +257,18 @@ while [[ $# -gt 0 ]]; do
             MEASURED_MANIFEST="$2"
             shift 2
             ;;
+        --policy-svn)
+            POLICY_SVN_OVERRIDE="$2"
+            shift 2
+            ;;
+        --tcb-mapping)
+            TCB_MAPPING_INPUT="$2"
+            shift 2
+            ;;
+        --revoke-tdinfo-hash)
+            REVOKE_TDINFO_HASHES+=("$2")
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo
@@ -271,8 +286,8 @@ while [[ $# -gt 0 ]]; do
             echo "                               certs generated, private key NOT deleted at the end)."
             echo "                               Needed for a stable RTMR1 across multiple invocations,"
             echo "                               e.g. the two-phase measure-then-bind tcb_mapping flow."
-            echo "  --measured-image IGVM        Override the tcb_mapping mrtd/rtmr0/rtmr1 with the REAL"
-            echo "                               measurements of an already-built MigTD IGVM, instead of"
+            echo "  --measured-image IGVM        Add the REAL tdinfo_hash of an already-built MigTD IGVM"
+            echo "                               to the cumulative TCB mapping, instead of using"
             echo "                               the mock report's synthetic values. Pairs with --cert-dir"
             echo "                               in a two-phase build: (1) build a placeholder-policy image"
             echo "                               with a persistent cert dir, (2) re-run with --measured-image"
@@ -280,6 +295,11 @@ while [[ $# -gt 0 ]]; do
             echo "                               measurements into the signed tcb_mapping/policy."
             echo "  --measured-manifest FILE     Manifest used to measure --measured-image (default:"
             echo "                               config/Azure/servtd_info.json)"
+            echo "  --policy-svn SVN             Override policySvn before signing (TiP/release staging)"
+            echo "  --tcb-mapping FILE           Previous authority-maintained mapping to extend"
+            echo "                               (default: existing output, then config/Azure)"
+            echo "  --revoke-tdinfo-hash HASH    Explicitly remove a historical tdinfo_hash"
+            echo "                               from the cumulative mapping (repeatable)"
             echo "  -h, --help                   Show this help message"
             echo
             echo "Examples:"
@@ -308,6 +328,12 @@ echo "  Allow-all policy: $ALLOW_ALL"
 echo "  Fetch collaterals: $FETCH_COLLATERALS"
 if [ "$FETCH_COLLATERALS" = true ]; then
     echo "  Azure region: $AZURE_REGION"
+fi
+if [ "${#REVOKE_TDINFO_HASHES[@]}" -gt 0 ]; then
+    echo "  Explicit mapping revocations: ${REVOKE_TDINFO_HASHES[*]}"
+fi
+if [ -n "$POLICY_SVN_OVERRIDE" ]; then
+    echo "  Policy SVN override: $POLICY_SVN_OVERRIDE"
 fi
 echo
 
@@ -338,12 +364,21 @@ if [ ! -f "$TD_IDENTITY_TEMPLATE" ]; then
 fi
 if [ ! -f "$TCB_MAPPING_TEMPLATE" ]; then
     echo -e "${YELLOW}Generating default tcb_mapping.json template${NC}"
-    printf '{"id":"BB9668CA-4EE8-4523-941A-B3B03BE46E03","version":1,"issueDate":"2025-01-01T00:00:00Z","nextUpdate":"2026-01-01T00:00:00Z","mrSigner":"%s","isvProdId":1,"svnMappings":[{"tdMeasurements":{"mrtd":"%s","rtmr0":"%s","rtmr1":"%s"},"isvsvn":1}]}' \
-        "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" "$(printf '0%.0s' {1..96})" > "$TCB_MAPPING_TEMPLATE"
+    cp "$PROJECT_ROOT/config/templates/tcb_mapping_seed.json" "$TCB_MAPPING_TEMPLATE"
+fi
+
+if [[ -n "$TCB_MAPPING_INPUT" && "$TCB_MAPPING_INPUT" != /* ]]; then
+    TCB_MAPPING_INPUT="$PROJECT_ROOT/$TCB_MAPPING_INPUT"
+fi
+TCB_MAPPING_SOURCE="$TCB_MAPPING_TEMPLATE"
+if [ -n "$TCB_MAPPING_INPUT" ]; then
+    TCB_MAPPING_SOURCE="$TCB_MAPPING_INPUT"
+elif [ -f "$OUTPUT_DIR/tcb_mapping.json" ]; then
+    TCB_MAPPING_SOURCE="$OUTPUT_DIR/tcb_mapping.json"
 fi
 
 # Verify input files exist
-for file in "$ACTIVE_POLICY_DATA_RAW"; do
+for file in "$ACTIVE_POLICY_DATA_RAW" "$TCB_MAPPING_SOURCE"; do
     if [ ! -f "$file" ]; then
         echo -e "${RED}Error: Required input file not found: $file${NC}" >&2
         exit 1
@@ -476,34 +511,21 @@ MRSIGNER=$(jq -r '.mrsigner // "000000000000000000000000000000000000000000000000
 ISV_PROD_ID=$(jq -r '.isvProdId // 0' "$REPORT_DATA_FILE")
 ISVSVN=$(jq -r '.isvsvn // 1' "$REPORT_DATA_FILE")
 
-# Optionally override MRTD/RTMR0/RTMR1 (the tcb_mapping measurement key) with
-# the REAL measurements of an already-built MigTD image, instead of the mock
-# report's synthetic values. td_identity.json's other fields (XFAM, attributes,
-# mrConfigId/mrOwner/mrOwnerConfig/mrsigner, isvProdId/isvsvn) are unaffected
-# by this: they describe the guest's runtime report, not the image binary, and
-# are independent of policy content (unlike RTMR1, which is chain-dependent).
+# Select the source for the current release's tdinfo_hash. TD identity fields
+# continue to come from the report; only the TCB mapping uses the measured
+# image when requested.
+MAPPING_MEASUREMENT_ARGS=(--from-report "$REPORT_DATA_FILE")
 if [ -n "$MEASURED_IMAGE" ]; then
-    echo "Building migtd-hash..."
-    (cd "$PROJECT_ROOT" && cargo build --release -p migtd-hash 2>&1 | grep -E "(Compiling|Finished|error)") || true
-    if [ ! -f "$TOOLS_DIR/migtd-hash" ]; then
-        echo -e "${RED}Error: Tool 'migtd-hash' not found at $TOOLS_DIR/migtd-hash${NC}" >&2
-        exit 1
-    fi
     # Resolve to absolute paths since we're running from $TEMP_DIR.
     MEASURED_IMAGE_ABS="$MEASURED_IMAGE"
     [[ "$MEASURED_IMAGE_ABS" = /* ]] || MEASURED_IMAGE_ABS="$PROJECT_ROOT/$MEASURED_IMAGE"
     MEASURED_MANIFEST_ABS="$MEASURED_MANIFEST"
     [[ "$MEASURED_MANIFEST_ABS" = /* ]] || MEASURED_MANIFEST_ABS="$PROJECT_ROOT/$MEASURED_MANIFEST"
-    MEASURED_TD_INFO="$TEMP_DIR/measured_td_info.json"
-    "$TOOLS_DIR/migtd-hash" \
-        --manifest "$MEASURED_MANIFEST_ABS" \
-        --image "$MEASURED_IMAGE_ABS" \
-        --policy-v2 \
-        --output-td-info "$MEASURED_TD_INFO" >/dev/null
-    MRTD=$(jq -r '.mrtd' "$MEASURED_TD_INFO")
-    RTMR0=$(jq -r '.rtmr0' "$MEASURED_TD_INFO")
-    RTMR1=$(jq -r '.rtmr1' "$MEASURED_TD_INFO")
-    echo -e "${YELLOW}Overriding tcb_mapping measurements with real values measured from: $MEASURED_IMAGE${NC}"
+    MAPPING_MEASUREMENT_ARGS=(
+        --manifest "$MEASURED_MANIFEST_ABS"
+        --image "$MEASURED_IMAGE_ABS"
+    )
+    echo -e "${YELLOW}Using real tdinfo_hash measured from: $MEASURED_IMAGE${NC}"
 fi
 
 echo "Extracted measurements:"
@@ -550,30 +572,34 @@ echo -e "${GREEN}✓ TD Identity updated: $TD_IDENTITY_UPDATED${NC}"
 echo
 
 #
-# Step 4: Update tcb_mapping.json with the v2 tdinfo_hash
+# Step 4: Update the cumulative tcb_mapping.json with the v2 tdinfo_hash
 # Make sure no ending newline is added (important for signing)
 #
-# Per doc/tcb_mapping_redesign.md, the v2 schema uses a single
-# `tdinfo_hash = SHA384(SHA384(unmasked_TDINFO_512) || u16_LE(0) || u64_LE(0))`.
-# We delegate the hash computation to the `migtd-hash --from-report` mode so
-# the math stays in one place (tools/migtd-hash/src/lib.rs::calculate_tdinfo_hash)
-# and the mock-quote flow is guaranteed byte-identical to the release pipeline.
+# The Rust helper retains all supported historical hashes, replaces the
+# current hash by key, rejects conflicting duplicates, applies only explicit
+# revocations, and emits deterministic compact JSON for signing.
 #
-echo -e "${BLUE}=== Step 4: Updating TCB Mapping Template ===${NC}"
+echo -e "${BLUE}=== Step 4: Updating Cumulative TCB Mapping ===${NC}"
 
 TDINFO_HASH_FILE="$TEMP_DIR/tdinfo_hash.hex"
+MAPPING_UPDATE_ARGS=(
+    --update-tcb-mapping "$TCB_MAPPING_SOURCE"
+    --output-tcb-mapping "$TCB_MAPPING_UPDATED"
+    --mapping-isvsvn "$ISVSVN"
+)
+for hash in "${REVOKE_TDINFO_HASHES[@]}"; do
+    MAPPING_UPDATE_ARGS+=(--revoke-tdinfo-hash "$hash")
+done
 "$TOOLS_DIR/migtd-hash" \
     --policy-v2 \
-    --from-report "$REPORT_DATA_FILE" \
-    --output-tdinfo-hash "$TDINFO_HASH_FILE"
+    "${MAPPING_MEASUREMENT_ARGS[@]}" \
+    --output-tdinfo-hash "$TDINFO_HASH_FILE" \
+    "${MAPPING_UPDATE_ARGS[@]}"
 # Uppercase to match the convention used by signed policies.
 TDINFO_HASH=$(tr 'a-z' 'A-Z' < "$TDINFO_HASH_FILE")
 
-jq -c ".svnMappings[0].tdMeasurements = {\"tdinfo_hash\": \"$TDINFO_HASH\"} | \
-.svnMappings[0].isvsvn = $ISVSVN" \
-"$TCB_MAPPING_TEMPLATE" | tr -d '\n' > "$TCB_MAPPING_UPDATED"
-
 echo -e "${GREEN}✓ TCB Mapping updated: $TCB_MAPPING_UPDATED${NC}"
+echo -e "  history source = $TCB_MAPPING_SOURCE"
 echo -e "  tdinfo_hash = $TDINFO_HASH"
 echo
 
@@ -654,6 +680,14 @@ echo -e "${BLUE}=== Step 9: Merging Policy Data ===${NC}"
     --collaterals "$COLLATERALS_FILE" \
     --servtd-collateral "$SERVTD_COLLATERAL" \
     --output "$POLICY_DATA_MERGED"
+
+if [ -n "$POLICY_SVN_OVERRIDE" ]; then
+    POLICY_DATA_WITH_SVN="$TEMP_DIR/policy_data_with_svn.json"
+    jq -c --argjson svn "$POLICY_SVN_OVERRIDE" \
+        '.policySvn = $svn' \
+        "$POLICY_DATA_MERGED" | tr -d '\n' > "$POLICY_DATA_WITH_SVN"
+    mv "$POLICY_DATA_WITH_SVN" "$POLICY_DATA_MERGED"
+fi
 
 echo -e "${GREEN}✓ Policy data merged: $POLICY_DATA_MERGED${NC}"
 echo
