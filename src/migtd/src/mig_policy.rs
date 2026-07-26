@@ -132,6 +132,9 @@ mod v2 {
             let anchor = resolve_signer_anchor(cert_chain)?;
             let corim = ServtdCorim::decode_signed(cose, 0, &anchor)?;
             verified_policy.set_servtd_corim(corim);
+            if let Some(servtd_crl) = verified_policy.servtd_crl.as_deref() {
+                verified_policy.verify_signer_chains_not_revoked(servtd_crl.as_bytes())?;
+            }
         }
 
         let root_ca_der = pem_cert_to_der(verified_policy.get_collaterals().root_ca.as_bytes())
@@ -163,7 +166,7 @@ mod v2 {
                 _ => PolicyError::QuoteGeneration,
             })?;
         let (fmspc, suppl_data) = verify_quote(&quote, policy.get_collaterals())?;
-        setup_evaluation_data(fmspc, &suppl_data, policy, policy.get_collaterals())
+        setup_evaluation_data(fmspc, &suppl_data, policy, policy, policy.get_collaterals())
     }
 
     /// Get reference to the global verified policy
@@ -444,6 +447,7 @@ mod v2 {
             fmspc,
             &suppl_data,
             &verified_policy,
+            policy,
             policy.get_collaterals(),
         )?;
         log::info!("BC> POL-CMN-04 setup_evaluation_data ok\n");
@@ -469,8 +473,12 @@ mod v2 {
         )?;
 
         // 3. Get TCB evaluation info from the collaterals
-        let evaluation_data =
-            setup_evaluation_data_with_tdreport(&tdreport_verified, &verified_policy)?;
+        let local_policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
+        let evaluation_data = setup_evaluation_data_with_tdreport(
+            &tdreport_verified,
+            &verified_policy,
+            local_policy,
+        )?;
 
         Ok((evaluation_data, verified_policy, tdreport_verified))
     }
@@ -500,14 +508,16 @@ mod v2 {
         verify_event_log(event_log, rtmrs).map_err(|_| PolicyError::InvalidEventLog)?;
 
         // 2. Verify the peer policy using the peer's issuer chain
-        let verified_policy = unverified_policy.verify(policy_issuer_chain)?;
+        let local_policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
+        let local_servtd_crl = local_policy.servtd_crl.as_deref().map(str::as_bytes);
+        let mut verified_policy = unverified_policy
+            .verify_with_authoritative_servtd_crl(policy_issuer_chain, local_servtd_crl)?;
 
         // 3. Validate that the peer's signer matches ours by comparing the
         //    RTMR1 signer anchor (root CA + leaf signer EKU) instead of the
         //    full policy issuer chain PEM. This supports the anchor-only (CoRIM)
         //    enrollment form, which carries no PEM. `verify()` has already
         //    bound the peer's embedded mapping chain to `signer_anchor`.
-        let local_policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
         if local_policy.signer_anchor != verified_policy.signer_anchor {
             return Err(PolicyError::PeerCertChainValidation);
         }
@@ -547,26 +557,15 @@ mod v2 {
             _ => return Err(PolicyError::PeerCertChainValidation),
         }
 
-        // 3b. Cross-check the peer's signer chain against OUR locally-trusted
-        //     CRL: a peer could ship a laundered (revocation-free) CRL of its
-        //     own, so the authoritative revocation list is the local one.
-        //     Fail-closed.
-        if let Some(servtd_crl) = local_policy.servtd_crl.as_deref() {
-            if let Some(peer_mc) = verified_policy.servtd_tcb_mapping_issuer_chain.as_deref() {
-                crypto::verify_signer_chain_not_revoked(peer_mc.as_bytes(), servtd_crl.as_bytes())
-                    .log_err("Peer tcb mapping signer revocation check")
-                    .map_err(|_| PolicyError::SignerRevoked)?;
-            }
-            if let Some(peer_identity_chain) =
-                verified_policy.servtd_identity_issuer_chain.as_deref()
-            {
-                crypto::verify_signer_chain_not_revoked(
-                    peer_identity_chain.as_bytes(),
-                    servtd_crl.as_bytes(),
-                )
-                .log_err("Peer td identity signer revocation check")
-                .map_err(|_| PolicyError::SignerRevoked)?;
-            }
+        // CoRIM is a local endorsement authority, not peer-supplied policy
+        // data. Attach our verified CoRIM for peer TCB lookups, then apply our
+        // measured CRL to every retained peer/local-authority signer chain.
+        #[cfg(feature = "servtd_corim")]
+        verified_policy.set_servtd_corim_from(local_policy);
+        if let Some(servtd_crl) = local_servtd_crl {
+            verified_policy
+                .verify_signer_chains_not_revoked(servtd_crl)
+                .log_err("Peer servtd signer revocation check")?;
         }
 
         // 4. Check the integrity of the policy with its event log
@@ -709,10 +708,12 @@ mod v2 {
         Ok(rtmrs)
     }
 
-    /// Compute the servtd signer CRL number from the verified policy, if a
-    /// signer CRL is present (`servtdCollateral.servtdCrl`). `None` when it is
-    /// absent (backward compatibility); `Some(n)` feeds the `servtd_crl_num`
-    /// anti-rollback floor.
+    /// Compute the servtd signer CRL number from the authoritative local
+    /// policy, if a signer CRL is present (`servtdCrl`, or its legacy nested
+    /// location). Peer evaluation uses this local number rather than trusting
+    /// the peer-delivered CRL. `None` when it is absent (backward
+    /// compatibility); `Some(n)` feeds the `servtd_crl_num` anti-rollback
+    /// floor.
     fn servtd_crl_num_from_policy(policy: &VerifiedPolicy) -> Result<Option<u32>, PolicyError> {
         policy
             .servtd_crl
@@ -726,6 +727,7 @@ mod v2 {
         fmspc: [u8; 6],
         suppl_data: &[u8],
         policy: &VerifiedPolicy,
+        authoritative_crl_policy: &VerifiedPolicy,
         collaterals: &Collaterals,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
         let (tcb_date, tcb_status) = get_tcb_date_and_status_from_suppl_data(suppl_data)?;
@@ -750,13 +752,14 @@ mod v2 {
             migtd_tcb_date: migtd.as_ref().and_then(|m| m.tcb_date.clone()),
             pck_crl_num: Some(pck_crl_num),
             root_ca_crl_num: Some(root_ca_crl_num),
-            servtd_crl_num: servtd_crl_num_from_policy(policy)?,
+            servtd_crl_num: servtd_crl_num_from_policy(authoritative_crl_policy)?,
         })
     }
 
     fn setup_evaluation_data_with_tdreport(
         tdreport: &TdxReport,
         policy: &VerifiedPolicy,
+        authoritative_crl_policy: &VerifiedPolicy,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
         #[cfg(feature = "use-mock-quote")]
         let mock_tdreport = attestation::tdreport::tdcall_report(
@@ -787,7 +790,7 @@ mod v2 {
             migtd_tcb_date: migtd.as_ref().and_then(|m| m.tcb_date.clone()),
             pck_crl_num: None,
             root_ca_crl_num: None,
-            servtd_crl_num: servtd_crl_num_from_policy(policy)?,
+            servtd_crl_num: servtd_crl_num_from_policy(authoritative_crl_policy)?,
         })
     }
 
