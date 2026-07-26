@@ -3,7 +3,7 @@ type: Playbook
 title: Agent Notes — MigTD
 description: The always-read entry point — session-start/end ritual and links to every topical knowledge file. Read this first.
 tags: [entry-point, workflow, living-document]
-timestamp: 2026-07-22T22:32:31+00:00
+timestamp: 2026-07-26T00:14:16+00:00
 ---
 
 # Agent Notes — MigTD
@@ -45,6 +45,13 @@ RTMR2 measures canonical `policyData` after redacting the re-issuable servTD
 endorsements; and the JSON mapping or CoRIM resolves the complete
 `tdinfo_hash` directly to SVN. Do not reintroduce per-register TCB lookups,
 leaf-Subject trust, or an outer policy-signature dependency.
+
+Init/current SVN ordering must use the authenticated source's verified
+one-hash mapping: resolve `ServtdExt.init_servtd_info_hash`, resolve the
+source's current report `tdinfo_hash`, and require `init SVN <= current SVN`.
+This is not a destination-local allowlist lookup. The current code has not
+fully completed this transition: it maps the current source hash but still
+derives init/current ordering from full Init_TDINFO `MROWNERCONFIG`.
 
 ## Mandatory post-push CI monitoring
 
