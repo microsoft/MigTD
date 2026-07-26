@@ -23,9 +23,16 @@ WORKDIR /root
 #   build the SGX/DCAP attestation library (deps/linux-sgx) pulled in by the
 #   `igvm-attest` build (attestation/build.rs only skips it under feature "test")
 # - git : required by sh_script/preparation.sh to (re)patch the `ring` submodule
-# DEBIAN_FRONTEND is set for tzdata.
-RUN apt-get update && \
-    DEBIAN_FRONTEND="noninteractive" apt-get install --no-install-recommends -y \
+# DEBIAN_FRONTEND is set for tzdata. Use HTTPS because GitHub-hosted runners
+# may not allow package downloads over port 80, and retry transient failures.
+RUN sed -i \
+        -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' \
+        -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g' \
+        /etc/apt/sources.list.d/ubuntu.sources && \
+    apt-get -o Acquire::Retries=5 -o Acquire::https::Timeout=30 update && \
+    DEBIAN_FRONTEND="noninteractive" apt-get \
+        -o Acquire::Retries=5 -o Acquire::https::Timeout=30 \
+        install --no-install-recommends -y \
     build-essential unzip ca-certificates curl gcc git libssl-dev pkg-config ssh \
     clang llvm nasm \
     ocaml ocamlbuild wget libtool autoconf autotools-dev automake cmake perl \
