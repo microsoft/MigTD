@@ -64,6 +64,14 @@ pub enum PolicyError {
     /// listed in the authoritative signer CRL (`servtdCrl`), or that CRL
     /// failed authentication. Fail-closed.
     SignerRevoked,
+    /// The signed servTD TCB mapping's monotonic `version` is below the
+    /// hardware-bound policy SVN floor, or below the trusted local mapping
+    /// generation during peer authentication.
+    ServtdTcbMappingRollback,
+    /// The signed servTD Identity's monotonic `version` is below the
+    /// hardware-bound policy SVN floor, or below the trusted local identity
+    /// generation during peer authentication.
+    ServtdIdentityRollback,
 }
 
 pub struct Report<'a> {

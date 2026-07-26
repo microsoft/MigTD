@@ -264,8 +264,12 @@ impl<'a> VerifiedPolicy<'a> {
     /// lookups resolve against the CoRIM and the legacy JSON collateral is no
     /// longer consulted.
     #[cfg(feature = "servtd_corim")]
-    pub fn set_servtd_corim(&mut self, corim: ServtdCorim) {
+    pub fn set_servtd_corim(&mut self, corim: ServtdCorim) -> Result<(), PolicyError> {
+        if !generation_meets_floor(corim.generation(), self.policy_data.policy_svn) {
+            return Err(PolicyError::ServtdTcbMappingRollback);
+        }
         self.servtd_corim = Some(ServtdCorimAuthority::Owned(corim));
+        Ok(())
     }
 
     /// Use the local, already signature/anchor-verified CoRIM as the authority
@@ -310,6 +314,47 @@ impl<'a> VerifiedPolicy<'a> {
         Ok(())
     }
 
+    fn json_tcb_mapping_generation(&self) -> Option<u64> {
+        self.servtd_tcb_mapping
+            .as_ref()
+            .map(|mapping| mapping.version as u64)
+    }
+
+    fn json_identity_generation(&self) -> Option<u64> {
+        self.servtd_identity
+            .as_ref()
+            .map(|identity| identity.version as u64)
+    }
+
+    /// Require this policy's signed JSON servTD collateral to be at least as
+    /// new as the locally trusted policy's like-for-like JSON collateral.
+    ///
+    /// CoRIM `tag-version` and JSON mapping `version` are independent
+    /// generation namespaces and are never compared. CoRIM generation is used
+    /// only for its local measured policy-SVN floor when the CoRIM is attached.
+    /// A peer may carry a newer JSON generation, which preserves rolling
+    /// upgrades and signer rotation. A missing or older peer JSON generation
+    /// fails closed when the local policy has a corresponding JSON baseline.
+    pub fn ensure_servtd_collateral_not_older_than(
+        &self,
+        trusted_policy: &VerifiedPolicy,
+    ) -> Result<(), PolicyError> {
+        if !generation_meets_trusted_minimum(
+            self.json_identity_generation(),
+            trusted_policy.json_identity_generation(),
+        ) {
+            return Err(PolicyError::ServtdIdentityRollback);
+        }
+
+        if !generation_meets_trusted_minimum(
+            self.json_tcb_mapping_generation(),
+            trusted_policy.json_tcb_mapping_generation(),
+        ) {
+            return Err(PolicyError::ServtdTcbMappingRollback);
+        }
+        Ok(())
+    }
+
     /// Resolve the MigTD ISV SVN (and, when the optional TD Identity is
     /// present, its `tcb_date` / `tcb_status`) from a 48-byte `tdinfo_hash`
     /// (= `init/cur_servtd_info_hash`).
@@ -325,6 +370,7 @@ impl<'a> VerifiedPolicy<'a> {
         if let Some(corim) = &self.servtd_corim {
             return corim.as_ref().lookup_by_tdinfo_hash(tdinfo_hash);
         }
+
         // JSON path — hash -> SVN via the one-hash TCB mapping, then optional
         // SVN -> (date, status) via the TD Identity when it is shipped.
         let isvsvn = self
@@ -352,6 +398,17 @@ impl<'a> VerifiedPolicy<'a> {
     pub fn servtd_lookup_by_report(&self, report: &Report) -> Option<ServtdLookup> {
         let hash = crate::v2::compute_tdinfo_hash_from_report(report).ok()?;
         self.servtd_lookup_by_tdinfo_hash(&hash)
+    }
+}
+
+fn generation_meets_floor(generation: u64, policy_svn: u32) -> bool {
+    generation >= policy_svn as u64
+}
+
+fn generation_meets_trusted_minimum(candidate: Option<u64>, trusted: Option<u64>) -> bool {
+    match trusted {
+        Some(minimum) => matches!(candidate, Some(generation) if generation >= minimum),
+        None => true,
     }
 }
 
@@ -491,6 +548,23 @@ impl<'a> RawPolicyData<'a> {
                     (None, None) => None,
                     _ => return Err(PolicyError::InvalidServtdIdentity),
                 };
+
+                // `issueDate` / `nextUpdate` cannot establish security
+                // freshness because MigTD has no trusted wall clock. Treat
+                // each signed artifact's `version` as a monotonic generation
+                // and bind its minimum to policySvn, which is measured in
+                // RTMR2 and checked against TDINFO.MROWNERCONFIG at startup.
+                if let Some(identity) = &servtd_identity {
+                    if !generation_meets_floor(identity.version as u64, policy_data.policy_svn) {
+                        return Err(PolicyError::ServtdIdentityRollback);
+                    }
+                }
+                if !generation_meets_floor(
+                    servtd_tcb_mapping.version as u64,
+                    policy_data.policy_svn,
+                ) {
+                    return Err(PolicyError::ServtdTcbMappingRollback);
+                }
 
                 // Bind the TCB-mapping signer chain to the RTMR1 signer anchor.
                 // `servtdTcbMappingIssuerChain` is redacted from RTMR2 (measured
@@ -1161,7 +1235,196 @@ mod test {
         let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
         let issuer_chain =
             include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
-        policy.verify(issuer_chain).unwrap();
+        let verified = policy.verify(issuer_chain).unwrap();
+        assert_eq!(
+            verified.servtd_tcb_mapping.as_ref().unwrap().version,
+            verified.policy_data.get_policy_svn()
+        );
+        assert_eq!(
+            verified.servtd_identity.as_ref().unwrap().version,
+            verified.policy_data.get_policy_svn()
+        );
+    }
+
+    fn policy_with_svn(policy_data: &[u8], policy_svn: u32) -> String {
+        let policy = core::str::from_utf8(policy_data).unwrap();
+        let current = r#""policySvn":1"#;
+        assert!(policy.contains(current));
+        policy.replacen(current, format!(r#""policySvn":{policy_svn}"#).as_str(), 1)
+    }
+
+    #[test]
+    fn verify_rejects_stale_correctly_signed_mapping() {
+        // Only policySvn changes. The inner mapping bytes and signature remain
+        // exactly the tracked, valid generation-1 artifact.
+        let stale = policy_with_svn(
+            include_bytes!("../../test/policy_v2/policy_v2_svn_only.json"),
+            2,
+        );
+        let policy = RawPolicyData::deserialize_from_json(stale.as_bytes()).unwrap();
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+
+        match policy.verify(issuer_chain) {
+            Err(PolicyError::ServtdTcbMappingRollback) => {}
+            Err(other) => panic!("expected mapping rollback, got {:?}", other),
+            Ok(_) => panic!("stale signed mapping unexpectedly verified"),
+        }
+    }
+
+    #[test]
+    fn verify_rejects_stale_correctly_signed_identity() {
+        // The full fixture contains valid generation-1 mapping and identity
+        // signatures. Raising only the measured policy floor makes the
+        // identity stale without relying on wall-clock fields.
+        let stale = policy_with_svn(include_bytes!("../../test/policy_v2/policy_v2.json"), 2);
+        let policy = RawPolicyData::deserialize_from_json(stale.as_bytes()).unwrap();
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+
+        match policy.verify(issuer_chain) {
+            Err(PolicyError::ServtdIdentityRollback) => {}
+            Err(other) => panic!("expected identity rollback, got {:?}", other),
+            Ok(_) => panic!("stale signed identity unexpectedly verified"),
+        }
+    }
+
+    #[test]
+    fn peer_freshness_rejects_older_mapping_and_identity() {
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        let mut trusted = policy.verify(issuer_chain).unwrap();
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        let peer = policy.verify(issuer_chain).unwrap();
+        trusted.servtd_identity.as_mut().unwrap().version = 2;
+        match peer.ensure_servtd_collateral_not_older_than(&trusted) {
+            Err(PolicyError::ServtdIdentityRollback) => {}
+            Err(other) => panic!("expected identity rollback, got {:?}", other),
+            Ok(_) => panic!("older peer identity unexpectedly passed"),
+        }
+
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        let mut trusted = policy.verify(issuer_chain).unwrap();
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        let peer = policy.verify(issuer_chain).unwrap();
+        trusted.servtd_tcb_mapping.as_mut().unwrap().version = 2;
+        match peer.ensure_servtd_collateral_not_older_than(&trusted) {
+            Err(PolicyError::ServtdTcbMappingRollback) => {}
+            Err(other) => panic!("expected mapping rollback, got {:?}", other),
+            Ok(_) => panic!("older peer mapping unexpectedly passed"),
+        }
+    }
+
+    #[test]
+    fn peer_freshness_allows_current_generation_and_signer_rotation() {
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+        let local = RawPolicyData::deserialize_from_json(policy_data)
+            .unwrap()
+            .verify(issuer_chain)
+            .unwrap();
+        let peer = RawPolicyData::deserialize_from_json(policy_data)
+            .unwrap()
+            .verify(issuer_chain)
+            .unwrap();
+
+        peer.ensure_servtd_collateral_not_older_than(&local)
+            .expect("equal current generations should pass");
+
+        // Freshness is generation-based, not leaf-key-based. The existing
+        // anchor validation accepts independently rotated leaves under the
+        // same root and signer-purpose EKU.
+        let signer_a = include_bytes!("../../../crypto/test/eku/signer_a.pem");
+        let signer_b = include_bytes!("../../../crypto/test/eku/signer_b.pem");
+        crypto::validate_peer_cert_chain(signer_a, signer_b)
+            .expect("same-anchor signer rotation should remain valid");
+    }
+
+    #[cfg(feature = "servtd_corim")]
+    fn verified_json_policy_with_corim_generation(generation: u64) -> VerifiedPolicy<'static> {
+        use crate::v2::ServtdCorim;
+
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+        let mut verified = RawPolicyData::deserialize_from_json(policy_data)
+            .unwrap()
+            .verify(issuer_chain)
+            .unwrap();
+        let mut corim = ServtdCorim::decode(
+            include_bytes!("../../test/policy_v2/corim/tcb_mapping.cbor"),
+            0,
+        )
+        .unwrap();
+        corim.set_generation_for_test(generation);
+        verified.set_servtd_corim(corim).unwrap();
+        verified
+    }
+
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn local_corim_accepts_current_peer_json_generations() {
+        // The local CoRIM generation is intentionally much newer than the
+        // local/peer JSON mapping generation. They are independent namespaces,
+        // so the current peer JSON mapping and identity must still pass.
+        let local = verified_json_policy_with_corim_generation(7);
+        let peer = RawPolicyData::deserialize_from_json(include_bytes!(
+            "../../test/policy_v2/policy_v2.json"
+        ))
+        .unwrap()
+        .verify(include_bytes!(
+            "../../test/policy_v2/cert_chain/policy_issuer_chain.pem"
+        ))
+        .unwrap();
+
+        peer.ensure_servtd_collateral_not_older_than(&local)
+            .expect("current peer JSON collateral should pass local JSON baselines");
+    }
+
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn local_corim_rejects_stale_peer_json_identity() {
+        let mut local = verified_json_policy_with_corim_generation(7);
+        local.servtd_identity.as_mut().unwrap().version = 2;
+        let peer = RawPolicyData::deserialize_from_json(include_bytes!(
+            "../../test/policy_v2/policy_v2.json"
+        ))
+        .unwrap()
+        .verify(include_bytes!(
+            "../../test/policy_v2/cert_chain/policy_issuer_chain.pem"
+        ))
+        .unwrap();
+
+        match peer.ensure_servtd_collateral_not_older_than(&local) {
+            Err(PolicyError::ServtdIdentityRollback) => {}
+            Err(other) => panic!("expected identity rollback, got {:?}", other),
+            Ok(_) => panic!("stale peer JSON identity unexpectedly passed local CoRIM policy"),
+        }
+    }
+
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn local_corim_rejects_stale_peer_json_mapping() {
+        let mut local = verified_json_policy_with_corim_generation(7);
+        local.servtd_tcb_mapping.as_mut().unwrap().version = 2;
+        let peer = RawPolicyData::deserialize_from_json(include_bytes!(
+            "../../test/policy_v2/policy_v2.json"
+        ))
+        .unwrap()
+        .verify(include_bytes!(
+            "../../test/policy_v2/cert_chain/policy_issuer_chain.pem"
+        ))
+        .unwrap();
+
+        match peer.ensure_servtd_collateral_not_older_than(&local) {
+            Err(PolicyError::ServtdTcbMappingRollback) => {}
+            Err(other) => panic!("expected mapping rollback, got {:?}", other),
+            Ok(_) => panic!("stale peer JSON mapping unexpectedly passed local CoRIM policy"),
+        }
     }
 
     /// SVN-only deployment: a policy whose `servtdCollateral` ships **no**
@@ -1529,7 +1792,9 @@ mod test {
         // Attach a CoRIM that only knows the pipeline sample's release
         // (hash 347c6170…79286384 -> svn 1).
         let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cbor");
-        verified.set_servtd_corim(ServtdCorim::decode(tcb, 0).unwrap());
+        verified
+            .set_servtd_corim(ServtdCorim::decode(tcb, 0).unwrap())
+            .unwrap();
 
         // Fail-closed: the legacy hash is no longer resolvable (no fallback).
         assert!(verified
@@ -1544,6 +1809,49 @@ mod test {
         let hit = verified.servtd_lookup_by_tdinfo_hash(&corim_hash);
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().isvsvn, 1);
+    }
+
+    #[cfg(feature = "servtd_corim")]
+    fn corim_only_policy(policy_svn: u32) -> String {
+        let wrapped = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let raw = RawPolicyData::deserialize_from_json(wrapped).unwrap();
+        let mut policy_data: serde_json::Value =
+            serde_json::from_str(raw.policy_data.get()).unwrap();
+        policy_data["policySvn"] = serde_json::Value::from(policy_svn);
+        policy_data
+            .as_object_mut()
+            .unwrap()
+            .remove("servtdCollateral");
+        format!(r#"{{"policyData":{policy_data}}}"#)
+    }
+
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn corim_generation_is_bound_to_policy_svn() {
+        use crate::v2::ServtdCorim;
+
+        let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cbor");
+        let anchor = [0xA5u8; SHA384_DIGEST_SIZE];
+
+        let current_json = corim_only_policy(1);
+        let mut current = RawPolicyData::deserialize_from_json(current_json.as_bytes())
+            .unwrap()
+            .verify(&anchor)
+            .unwrap();
+        current
+            .set_servtd_corim(ServtdCorim::decode(tcb, 0).unwrap())
+            .expect("tracked generation-1 CoRIM should meet policy SVN 1");
+
+        let stale_json = corim_only_policy(2);
+        let mut stale = RawPolicyData::deserialize_from_json(stale_json.as_bytes())
+            .unwrap()
+            .verify(&anchor)
+            .unwrap();
+        match stale.set_servtd_corim(ServtdCorim::decode(tcb, 0).unwrap()) {
+            Err(PolicyError::ServtdTcbMappingRollback) => {}
+            Err(other) => panic!("expected CoRIM mapping rollback, got {:?}", other),
+            Ok(_) => panic!("stale CoRIM generation unexpectedly passed"),
+        }
     }
 
     #[test]

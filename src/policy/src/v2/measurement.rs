@@ -40,6 +40,13 @@
 //! **RTMR1** (the signer anchor) instead. See
 //! `doc/corim_attestation_design.md` §3.2.
 //!
+//! Because MigTD has no trusted wall clock, the redacted artifacts use their
+//! signed monotonic `version` (CoRIM: CoMID `tag-version`) as an issuance
+//! generation. Each generation must be at least the measured `policySvn`,
+//! whose value is also checked against TDINFO.MROWNERCONFIG. Peer JSON
+//! collateral is compared against the corresponding local JSON generation;
+//! CoRIM `tag-version` is not compared with the independent JSON namespace.
+//!
 //! ## Canonicalization
 //!
 //! "Canonical" means: object keys sorted alphabetically at every nesting
@@ -227,6 +234,10 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 ///   `servtdCollateral.servtdIdentityIssuerChain` (**non-strict** — removed if
 ///   present) because the optional TD Identity must remain re-issuable without
 ///   re-releasing the image, and its issuer chain is bound into RTMR1 instead.
+///   Its signed `version` is anti-rollback protected by the measured
+///   `policySvn` floor and peer-generation comparison.
+/// * The redacted TCB mapping's signed `version` (or CoMID `tag-version`) uses
+///   the same no-clock anti-rollback rule.
 ///
 /// Every other field — `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
 /// `backwardPolicy`, `collaterals`, `servtdCollateral.majorVersion`, and

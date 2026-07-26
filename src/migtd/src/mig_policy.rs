@@ -131,7 +131,7 @@ mod v2 {
         if let Some(cose) = crate::config::get_servtd_corim() {
             let anchor = resolve_signer_anchor(cert_chain)?;
             let corim = ServtdCorim::decode_signed(cose, 0, &anchor)?;
-            verified_policy.set_servtd_corim(corim);
+            verified_policy.set_servtd_corim(corim)?;
             log::info!("Loaded signed ServTD CoRIM endorsement");
             if let Some(servtd_crl) = verified_policy.servtd_crl.as_deref() {
                 verified_policy.verify_signer_chains_not_revoked(servtd_crl.as_bytes())?;
@@ -522,6 +522,16 @@ mod v2 {
         if local_policy.signer_anchor != verified_policy.signer_anchor {
             return Err(PolicyError::PeerCertChainValidation);
         }
+
+        // Redacted signed collateral is not covered byte-for-byte by RTMR2.
+        // Require the peer to present JSON generations at least as new as our
+        // like-for-like locally trusted JSON artifacts, so an older
+        // still-valid signature cannot restore an authorization or TCB status
+        // that the authority withdrew. CoRIM tag-version is a separate
+        // namespace and is used only for the local policy-SVN floor. Newer JSON
+        // generations remain valid, preserving rolling upgrades and signer
+        // rotation under the stable RTMR1 anchor.
+        verified_policy.ensure_servtd_collateral_not_older_than(local_policy)?;
 
         // Cross-check the JSON mapping issuer chains when both sides ship one
         // (defense-in-depth; the signer_anchor equality above already binds the

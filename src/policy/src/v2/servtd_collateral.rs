@@ -84,6 +84,10 @@ impl<'a> RawServtdIdentity<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct TdIdentity {
     pub id: String,
+    /// Monotonic issuance generation. MigTD requires this to be at least the
+    /// measured policy SVN and never older than the local peer-comparison
+    /// baseline. It is deliberately independent of `issueDate` /
+    /// `nextUpdate`, because firmware has no trusted wall clock.
     pub version: u32,
     pub issue_date: String,
     pub next_update: String,
@@ -151,6 +155,10 @@ impl<'a> RawServtdTcbMapping<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct TdTcbMapping {
     pub id: String,
+    /// Monotonic issuance generation. MigTD requires this to be at least the
+    /// measured policy SVN and never older than the local peer-comparison
+    /// baseline. It is deliberately independent of `issueDate` /
+    /// `nextUpdate`, because firmware has no trusted wall clock.
     pub version: u32,
     pub issue_date: String,
     pub next_update: String,

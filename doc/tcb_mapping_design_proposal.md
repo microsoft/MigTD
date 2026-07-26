@@ -222,6 +222,28 @@ into RTMR2 by virtue of being inside the canonical object bytes. Redacting
 after the IGVM is shipped without perturbing `tdinfo_hash`. `servtdTcbMapping`
 is signed by the policy signer, whose chain is measured into RTMR1.
 
+### No-clock anti-rollback for redacted collateral
+
+Signature verification alone does not establish freshness: an older mapping or
+TD Identity under the same signer anchor remains correctly signed. MigTD has no
+trusted wall clock, so `issueDate` and `nextUpdate` are not security inputs.
+
+The signed `version` in the JSON TCB mapping and TD Identity is therefore a
+monotonic issuance generation. A CoRIM mapping uses the CoMID `tag-version`.
+Every local artifact generation must be at least `policySvn`, which is measured
+in RTMR2 and checked against `TDINFO.MROWNERCONFIG` at startup. During migration
+and rebinding, peer JSON mapping and identity generations must also be at least
+the corresponding locally trusted JSON generations. CoRIM `tag-version` is a
+separate namespace and is used only for the local measured `policySvn` floor;
+it is never compared with a peer JSON mapping `version`. Newer like-for-like
+generations are accepted, preserving rolling upgrades and signer-leaf rotation
+under the stable RTMR1 anchor.
+
+To withdraw an older generation, the authority raises `policySvn` (and
+MROWNERCONFIG) to that generation and signs replacement collateral. Older
+correctly signed artifacts then fail both local boot verification and peer
+authentication without consulting VMM-provided time.
+
 This single extend folds together two security properties:
 detecting drift between the authority-endorsed `policyData` bytes and the bytes loaded
 into the running MigTD (covered by canonicalizing the whole `policyData`
