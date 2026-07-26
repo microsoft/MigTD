@@ -300,7 +300,7 @@ pub fn check_policy_integrity(
 ) -> Result<(), PolicyError> {
     // RTMR2 is extended once with the canonical bytes of `policyData` with
     // `servtdCollateral.servtdTcbMapping` removed. See
-    // `doc/tcb_mapping_redesign.md` for the rationale. The verifier
+    // `doc/tcb_mapping_design_proposal.md` for the rationale. The verifier
     // recomputes those exact bytes via the same helper used by the runtime
     // extender (`get_policy_and_measure`) and `migtd-hash` (offline RTMR2
     // simulator), then asserts the event-log entry's recorded digest matches.
