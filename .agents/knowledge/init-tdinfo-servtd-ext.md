@@ -8,14 +8,9 @@ timestamp: 2026-07-26T00:14:16+00:00
 
 # Init_TDINFO and ServtdExt Usage Summary
 
-> Reflects the `one_hash` code (SERVTD_EXT always opted-in; `verify_servtd_info_hash`
-> direct-hash comparison). MigTD does **not** implement the SERVTD_EXT opt-out
-> (TDCS.ATTRIBUTES bit 17) wire-protocol variant.
->
-> **Design vs. implementation:** the completed one-hash design compares init
-> and current SVNs by resolving both hashes through the authenticated source's
-> verified mapping. The current code maps only the current hash and still uses
-> transitional full Init_TDINFO `MROWNERCONFIG` continuity.
+> Reflects the `one_hash` code. MigTD compares init and current SVNs by
+> resolving both hashes through the authenticated source's verified mapping.
+> The legacy Init_TDINFO wire field is accepted for framing but ignored.
 
 ## Definitions
 
@@ -56,24 +51,9 @@ Metadata stored in the target TD's TDCS, read by the *current* MigTD via `TDG.SE
 | `cur_servtd_attr` | 8 B | SERVTD_ATTR of the currently bound MigTD |
 | reserved fields | 116 B | Padding |
 
----
-
-## `verify_servtd_info_hash` — Init_TDINFO integrity check
-
-`verify_init_tdinfo(init_tdinfo, servtd_ext)` is a thin wrapper over `verify_servtd_info_hash(init_tdinfo, servtd_ext.init_attr, servtd_ext.init_servtd_info_hash)`, which:
-
-1. Parses Init_TDINFO bytes into a `TdInfo`.
-2. Zeros the TDINFO fields flagged by the `init_attr` IGNORE bits (`SERVTD_ATTR_IGNORE_ATTRIBUTES`, `_XFAM`, `_MRTD`, `_MRCONFIGID`, `_MROWNER`, `_MROWNERCONFIG`, `_RTMR0..3`).
-3. Computes `info_hash = SHA384(masked_tdinfo)`.
-4. Compares `info_hash` **directly** to `init_servtd_info_hash`. **Hard fail** (`InvalidTdReport`) on mismatch.
-5. Returns the parsed `TdInfo`.
-
-> A single SHA-384 of the masked TDINFO, compared directly — there is **no**
-> extra `SHA384(SHA384(tdinfo) || SERVTD_TYPE || attr)` wrapping.
-
 ## One-hash init/current SVN ordering
 
-The intended verification is:
+The enforced verification is:
 
 1. Verify the source quote/TDREPORT and measured policy.
 2. Compute the authenticated source's current `tdinfo_hash` and resolve it
@@ -87,18 +67,14 @@ an older destination must not be required to predict future source releases.
 Because the signed source mapping endorses both hashes, no VMM-provided full
 Init_TDINFO or MROWNER continuity check is needed for SVN ordering.
 
-**Current status:** steps 1-2 are implemented. Steps 3-4 are not. Current code
-instead verifies a full Init_TDINFO against `init_servtd_info_hash` and
-compares its `MROWNERCONFIG` SVN to the current source report's
-`MROWNERCONFIG`.
-
 ---
 
 ## Usage in each path (SPDM)
 
 ### Migration (source → destination)
 
-**Source side** (`spdm_req`): reads `ServtdExt` via `read_servtd_ext()`, obtains Init_TDINFO, sends both as VDM elements.
+**Source side** (`spdm_req`): reads `ServtdExt` via `read_servtd_ext()` and
+sends it with the legacy Init_TDINFO VDM element.
 
 **Destination side** (`spdm_rsp` → `mig_policy::authenticate_migration_source_with_init_tdinfo`):
 1. Receives ServtdExt and Init_TDINFO; stores ServtdExt in responder context.
@@ -106,10 +82,10 @@ compares its `MROWNERCONFIG` SVN to the current source report's
    policy/event log, and signer anchor; it resolves the **current source
    TDINFO hash** through the source's verified JSON mapping or CoRIM to build
    `evaluation_data_src`.
-3. **Policy evaluation** — `evaluate_policy_common` + `evaluate_policy_backward` against `relative_reference = get_local_tcb_evaluation_info()` (the **local** MigTD's TCB, not Init_TDINFO).
-4. **Init-TDINFO verification — real hardware only** (gated `#[cfg(not(any(AzCVMEmu, test_mock_report, use-mock-quote)))]`; bypassed under EMU/mock where the emulated/mock TDINFO has no real measurements):
-   - `verify_peer_init_tdinfo_against_suppl_data()` — cross-checks init `mrowner`/`mrownerconfig` against the **quote supplemental data** (init mrowner == quote mrowner; init policy SVN ≤ current policy SVN; `mrownerconfig[4..48]` all-zero).
-   - `verify_init_tdinfo()` → `verify_servtd_info_hash()` — **integrity, enforced**.
+3. Resolves `ServtdExt.init_servtd_info_hash` through the same authenticated
+   source mapping and requires `init SVN <= current SVN`. Either mapping miss
+   fails closed.
+4. **Policy evaluation** — `evaluate_policy_common` + `evaluate_policy_backward` against `relative_reference = get_local_tcb_evaluation_info()` (the **local** MigTD's TCB, not Init_TDINFO).
 5. **SERVTD_ATTR check** (at MSK exchange, `session.rs::exchange_msk`): both sides call `verify_servtd_attr()` on their own bound target, checking `cur_servtd_attr == EXPECTED_SERVTD_ATTR` (hardcoded `0x0`). The historical `cur == init_attr` comparison was **removed** (it could falsely reject after a legitimate rebind).
 6. **Approved hash write**: destination computes `SHA384(ServtdExt with cur_servtd_info_hash + cur_servtd_attr zeroed)` and writes it to `APPROVED_SERVTD_EXT_HASH` (`write_approved_servtd_ext_hash`).
 
@@ -122,13 +98,14 @@ compares its `MROWNERCONFIG` SVN to the current source report's
    measured policy/event log, and signer anchor; it resolves the old MigTD's
    **current TDINFO hash** through that verified policy's JSON mapping or
    CoRIM to build `evaluation_data_src`.
-2. **Init-TDINFO cross-check** (`verify_peer_init_tdinfo_against_owner`): uses `mrowner`/`mrownerconfig` from the old MigTD's **verified TDREPORT**. Same mrowner/SVN checks as migration. ⚠️ **TEST MODE** — logged, non-fatal.
-3. **Init-TDINFO integrity** (`verify_init_tdinfo` → `verify_servtd_info_hash`): **enforced in all build modes** (not gated by AzCVMEmu, unlike migration).
-4. **No local init-image allowlist.** Requiring the new MigTD's mapping to
+2. Resolves `ServtdExt.init_servtd_info_hash` through the old MigTD's
+   authenticated mapping and requires `init SVN <= current SVN`. Either
+   mapping miss fails closed.
+3. **No local init-image allowlist.** Requiring the new MigTD's mapping to
    contain the old init image would force an older release to predict future
    rotations and would break bidirectional rebind.
-5. **Policy evaluation** — `evaluate_policy_backward` against `relative_reference = get_local_tcb_evaluation_info()` (local TCB, not Init_TDINFO).
-6. **Approved hash write** + **rebind attr write** (`write_servtd_rebind_attr`, rebinding-specific).
+4. **Policy evaluation** — `evaluate_policy_backward` against `relative_reference = get_local_tcb_evaluation_info()` (local TCB, not Init_TDINFO).
+5. **Approved hash write** + **rebind attr write** (`write_servtd_rebind_attr`, rebinding-specific).
 
 ---
 
@@ -137,20 +114,16 @@ compares its `MROWNERCONFIG` SVN to the current source report's
 | Aspect | Migration (destination) | Rebinding (new MigTD) |
 |---|---|---|
 | Peer attestation | Quote + supplemental data | TDREPORT |
-| Init-TDINFO cross-check (mrowner + SVN) | vs quote suppl data; real-HW only | vs TDREPORT; TEST MODE (logged, non-fatal) |
-| Init-TDINFO integrity vs `init_servtd_info_hash` | ✅ enforced; real-HW only (bypassed in EMU/mock) | ✅ enforced; all build modes |
+| Init/current SVN ordering | Source mapping; enforced | Source mapping; enforced |
+| Legacy Init_TDINFO | Ignored | Ignored |
 | Init image lookup in destination's local mapping | ❌ deliberately absent | ❌ deliberately absent |
 | Policy-eval relative reference | local TCB (`get_local_tcb_evaluation_info`) | local TCB (`get_local_tcb_evaluation_info`) |
 | Policy rules evaluated | common + backward | backward |
 | `write_approved_servtd_ext_hash` | ✅ | ✅ |
 | `write_servtd_rebind_attr` | ❌ | ✅ |
 
-Current code uses Init_TDINFO for transitional continuity/integrity against
-`init_servtd_info_hash`; it does **not** look it up in the destination's local
-TCB mapping. The completed one-hash flow replaces that dependency with an
-init-hash lookup through the authenticated source's mapping, alongside the
-existing current-hash lookup. **Neither design uses Init_TDINFO as the
-policy-evaluation relative reference** — policy still evaluates the peer
+The one-hash flow does not use Init_TDINFO for continuity, integrity, or as
+the policy-evaluation relative reference. Policy still evaluates the peer
 against the local MigTD's TCB.
 
 ---
@@ -161,12 +134,9 @@ The two inputs serve different purposes:
 
 | Check | What it verifies | Input |
 |---|---|---|
-| init/current continuity (target design) | The initially bound release is no newer than the authenticated current source release | `init_servtd_info_hash` and current report `tdinfo_hash`, both resolved through the source's verified mapping |
-| init/current continuity (current code) | Transitional policy-SVN continuity | Init and current-peer `mrowner`, `mrownerconfig` |
-| Init_TDINFO integrity (current code) | The wire TDINFO hashes to `ServtdExt.init_servtd_info_hash` after SERVTD_ATTR masking | Complete Init_TDINFO + `ServtdExt` |
+| init/current continuity | The initially bound release is no newer than the authenticated current source release | `init_servtd_info_hash` and current report `tdinfo_hash`, both resolved through the source's verified mapping |
 | current-image TCB lookup | The authenticated current peer image resolves to SVN (and optional date/status) | Complete current `tdinfo_hash` via JSON mapping or CoRIM |
 | cross-peer signer trust | Source and destination belong to the same signer authority while allowing leaf/intermediate rotation | RTMR1 signer anchor: root fingerprint + enrolled signer-purpose EKU |
 
-Do not add a destination-local lookup of Init_TDINFO. Add the missing
-`init_servtd_info_hash` lookup to the authenticated source's verified mapping
-and compare its SVN with the already-resolved current source SVN.
+Do not add a destination-local lookup of Init_TDINFO or restore dependence on
+its wire contents.

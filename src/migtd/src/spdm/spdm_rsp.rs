@@ -756,8 +756,8 @@ fn rsp_verify_peer_attestation_v2(
         return Err(SPDM_STATUS_INVALID_MSG_FIELD);
     }
 
-    // 2. Authenticate remote, verify init TDINFO integrity against ServtdExt,
-    //    and evaluate policy with init TDINFO as reference.
+    // 2. Authenticate remote, verify init/current mapped-SVN ordering from
+    //    ServtdExt, and evaluate the source against local policy.
     #[cfg(not(feature = "test_disable_ra_and_accept_all"))]
     {
         let verified_report_peer = match mig_policy::authenticate_migration_source_with_init_tdinfo(
