@@ -141,8 +141,10 @@ impl<'a> RawServtdTcbMapping<'a> {
         )
         .map_err(|_| PolicyError::SignatureVerificationFailed)?;
 
-        serde_json::from_str::<TdTcbMapping>(self.td_tcb_mapping.get())
-            .map_err(|_| PolicyError::InvalidServtdTcbMapping)
+        let mapping = serde_json::from_str::<TdTcbMapping>(self.td_tcb_mapping.get())
+            .map_err(|_| PolicyError::InvalidServtdTcbMapping)?;
+        mapping.validate()?;
+        Ok(mapping)
     }
 }
 
@@ -192,6 +194,28 @@ impl Measurements {
 }
 
 impl TdTcbMapping {
+    fn validate(&self) -> Result<(), PolicyError> {
+        for (index, mapping) in self.svn_mappings.iter().enumerate() {
+            let hash = hex_string_to_bytes(&mapping.td_measurements.tdinfo_hash)
+                .map_err(|_| PolicyError::InvalidServtdTcbMapping)?;
+            if hash.len() != SHA384_DIGEST_SIZE {
+                return Err(PolicyError::InvalidServtdTcbMapping);
+            }
+
+            for previous in &self.svn_mappings[..index] {
+                if previous
+                    .td_measurements
+                    .tdinfo_hash
+                    .eq_ignore_ascii_case(&mapping.td_measurements.tdinfo_hash)
+                    && previous.isvsvn != mapping.isvsvn
+                {
+                    return Err(PolicyError::InvalidServtdTcbMapping);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Look up the engine SVN for the TD represented by `report` by computing
     /// `tdinfo_hash` (per redesign §RTMR-layout) and matching the
     /// `svnMappings[].tdMeasurements.tdinfoHash` entries.
@@ -371,18 +395,24 @@ mod test {
     fn test_get_engine_svn() {
         let engine_bytes = include_bytes!("../../test/policy_v2/tcb_mapping.json");
         let engine: TdTcbMapping = serde_json::from_slice(engine_bytes).unwrap();
+        engine.validate().unwrap();
 
-        // The first svnMappings entry in the test fixture is the canonical
-        // tdinfo_hash (= SHA384(TDINFO) = init_servtd_info_hash for attr=0).
-        let expected_hash = engine.svn_mappings[0].td_measurements.tdinfo_hash.clone();
+        // A source policy must retain both the historical hash that initialized
+        // the tenant TD and the current source MigTD hash.
+        let init_hash = engine.svn_mappings[0].td_measurements.tdinfo_hash.clone();
+        let current_hash = engine.svn_mappings[1].td_measurements.tdinfo_hash.clone();
         let target = Measurements {
-            tdinfo_hash: expected_hash.clone(),
+            tdinfo_hash: init_hash.clone(),
         };
         assert_eq!(engine.get_engine_svn_by_measurements(&target), Some(1));
+        let current = Measurements {
+            tdinfo_hash: current_hash,
+        };
+        assert_eq!(engine.get_engine_svn_by_measurements(&current), Some(2));
 
         // Case-insensitive match.
         let lower = Measurements {
-            tdinfo_hash: expected_hash.to_ascii_lowercase(),
+            tdinfo_hash: init_hash.to_ascii_lowercase(),
         };
         assert_eq!(engine.get_engine_svn_by_measurements(&lower), Some(1));
 
@@ -393,6 +423,30 @@ mod test {
                     .into(),
         };
         assert!(engine.get_engine_svn_by_measurements(&bogus).is_none());
+    }
+
+    #[test]
+    fn conflicting_duplicate_tdinfo_hash_is_invalid() {
+        let hash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mapping: TdTcbMapping = serde_json::from_str(&format!(
+            r#"{{
+                "id": "mapping",
+                "version": 1,
+                "issueDate": "2025-01-01T00:00:00Z",
+                "nextUpdate": "2026-01-01T00:00:00Z",
+                "svnMappings": [
+                    {{"tdMeasurements": {{"tdinfo_hash": "{hash}"}}, "isvsvn": 1}},
+                    {{"tdMeasurements": {{"tdinfo_hash": "{}"}}, "isvsvn": 2}}
+                ]
+            }}"#,
+            hash.to_ascii_lowercase()
+        ))
+        .unwrap();
+
+        assert!(matches!(
+            mapping.validate(),
+            Err(PolicyError::InvalidServtdTcbMapping)
+        ));
     }
 
     #[test]

@@ -452,3 +452,11 @@ The service consults two signed endorsement artifacts:
 ```
 
 This design enables self-contained reverse lookup: the attestation service can derive MigTD identity and trustworthiness entirely from the `tdinfo_hash` → SVN mapping and the trust baseline, without requiring additional out-of-band endorsements.
+
+Operationally, `svnMappings` is cumulative. A source MigTD policy must retain
+the hash that initialized a tenant TD and the hash of the currently
+authenticated source MigTD. Release generation therefore starts from the
+previous authority-maintained mapping, adds or replaces the current release by
+hash, and removes an older hash only through an explicit reviewed revocation.
+Mappings are sorted before signing, and duplicate hashes with conflicting SVN
+values are invalid.
