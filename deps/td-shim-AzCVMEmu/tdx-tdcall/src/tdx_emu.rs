@@ -137,6 +137,10 @@ pub fn set_emulated_start_migration(
         target_td_uuid,
         binding_handle,
     });
+
+    // Migration reads SERVTD_EXT just like rebinding. Populate the emulated
+    // target-TD fields so policy-v2 can authenticate init/current SVN order.
+    populate_servtd_fields(binding_handle, target_td_uuid);
 }
 
 /// Helper: Set a GetTDReport request
