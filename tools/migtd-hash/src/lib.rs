@@ -212,7 +212,7 @@ pub fn calculate_servtd_info_hash(td_info: TdInfoStruct) -> Result<Vec<u8>, Erro
 
 /// Compute the canonical v2 `tdinfo_hash` for a production MigTD (attr=0).
 ///
-/// Definition (per TDX module spec and `doc/tcb_mapping_redesign.md`):
+/// Definition (per TDX module spec and `doc/tcb_mapping_design_proposal.md`):
 ///   `tdinfo_hash = SHA384(TDINFO_STRUCT_512_bytes)`
 ///
 /// This equals `init_servtd_info_hash` in SERVTD_EXT_STRUCT when `servtd_attr
@@ -268,7 +268,7 @@ fn rtmr2(cfv: &[u8], is_ra_disabled: bool, is_policy_v2: bool) -> Result<Vec<u8>
         if is_policy_v2 {
             // v2 (single-extend RTMR2): one extend over the canonical bytes
             // of `policyData` with `servtdCollateral.servtdTcbMapping`
-            // removed. See doc/tcb_mapping_redesign.md. The exact same
+            // removed. See doc/tcb_mapping_design_proposal.md. The exact same
             // helper is used by the runtime (`get_policy_and_measure`) and
             // the integrity verifier (`check_policy_integrity`), so a
             // mismatch here would also break runtime attestation — there is

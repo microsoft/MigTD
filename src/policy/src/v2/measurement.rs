@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-//! Policy v2 measurement primitives, per `doc/tcb_mapping_redesign.md`.
+//! Policy v2 measurement primitives, per `doc/tcb_mapping_design_proposal.md`.
 //!
 //! These helpers are used by both the runtime (`migtd::bin::migtd::main`) and
 //! the offline build tool (`migtd-hash`) so the two compute identical values
