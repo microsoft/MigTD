@@ -22,6 +22,7 @@
 
 * [AzCVMEmu Build & Run — Agent Cheat Sheet](azcvmemu-build-and-run.md) - Feature-flag combinations, prerequisites, `migtdemu.sh` invocations.
 * [Policy v2 Generation Workflow](policy-v2-workflow.md) - End-to-end tool chain to produce/sign policy v2 artifacts and rotate the TCB mapping.
+* [CoRIM-Only Release Validation Skill](../skills/migtd-corim-release/SKILL.md) - Exact release-source setup, runtime policy contract, CI coverage, and TiP failure triage.
 * [Integration Testing — QEMU/vsock and Azure TiP](integration-testing.md) - The two non-EMU integration test layers, build/run commands, current status.
 * [MigTD TiP Lab-Blade Troubleshooting Skill](../skills/migtd-tip-troubleshoot/SKILL.md) - PowerTest/HCSTest setup, host validation, serial/hash diagnosis, and Hyper-V ETW capture.
 * [Release Process](release-process.md) - Version semantics, release content checklist, release steps.
