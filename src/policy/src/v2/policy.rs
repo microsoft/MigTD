@@ -1245,6 +1245,44 @@ mod test {
         assert!(date_bar.evaluate(&value, &relative).is_ok());
     }
 
+    #[test]
+    fn azure_corim_policy_uses_svn_only_servtd_rule() {
+        let policy: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../../config/Azure/policy_data_raw.json"
+        ))
+        .unwrap();
+        let servtd = policy["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|entry| entry.get("servtd"))
+            .unwrap()
+            .clone();
+        let servtd: ServtdPolicy = serde_json::from_value(servtd).unwrap();
+
+        let local = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(2),
+            ..Default::default()
+        };
+        let same = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(2),
+            ..Default::default()
+        };
+        assert!(servtd.evaluate(&same, &local).is_ok());
+
+        let newer = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(3),
+            ..Default::default()
+        };
+        assert!(servtd.evaluate(&newer, &local).is_ok());
+
+        let older = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(1),
+            ..Default::default()
+        };
+        assert!(servtd.evaluate(&older, &local).is_err());
+    }
+
     /// The outer policy-blob signature has been removed from the trust model.
     /// A policy with **no** outer `signature` field must still deserialize and
     /// verify — integrity is established by the RTMR2 measurement, checked
