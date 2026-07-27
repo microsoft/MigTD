@@ -22,6 +22,11 @@ compiles, mapping project root → `/migtd`, `CARGO_HOME` → `/cargo`,
 `RUSTUP_HOME` → `/rustup`. Verified: clean builds in two different paths
 produced identical sha256 for both Linux TDVF and Azure IGVM outputs.
 
+`sh_script/Azure/docker_build_igvm.sh` can copy explicit policy, issuer-chain
+or 48-byte signer-anchor, and signed ServTD CoRIM inputs into fixed container
+paths. Release callers therefore do not need to mutate tracked template files
+before using the pinned build environment.
+
 ## What's NOT covered by the fix
 
 - **Raw `cargo build` invocations outside `xtask`** (e.g. test scripts) still

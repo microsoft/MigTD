@@ -31,6 +31,27 @@ which is the requirement called out in the README's *Reproducible Build* section
 ./sh_script/docker.sh -f container
 ```
 
+The Azure wrapper also accepts explicit release inputs without modifying the
+source checkout. It copies the files into the build container and passes fixed
+container paths to the Azure Makefile:
+
+```
+./sh_script/Azure/docker_build_igvm.sh \
+  --target build-igvm \
+  --features vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation,igvm-attest,servtd_corim \
+  --policy /path/to/policy_v2.json \
+  --signer-anchor /path/to/signer_anchor.bin \
+  --output /path/to/output
+```
+
+`--policy-issuer-chain` is available for the legacy chain enrollment form and
+is mutually exclusive with `--signer-anchor`. A signed TCB-mapping CoRIM can be
+included with `--servtd-corim`; release pipelines can instead build with the
+stable signer anchor and enroll the per-release signed CoRIM afterward.
+Explicit inputs support `build-igvm` or `build-igvm generate-hash-v2` for a
+local source export; `build-igvm-all` is additionally available with `--clone`,
+where the Git metadata needed by its preparation step is present.
+
 ### Dependency and toolchain pinning
 
 - `Cargo.lock` is committed and locks all transitive crate versions.
@@ -151,4 +172,3 @@ are therefore mostly for **native** (non-container) builds and for hardening.
 and verify MRTD without replicating the exact `/root/MigTD` path, on any
 machine/CI checkout dir; and to drop the hard dependency on the container. Only
 #1 is needed for that — the rest is hardening.
-
