@@ -6,6 +6,9 @@ use std::env;
 use std::path::Path;
 use std::process::Command;
 
+const PRUNE_ENV: &str = "MIGTD_PRUNE_UNUSED_LINUX_SGX";
+const SOURCE_EXPORT_ENV: &str = "MIGTD_SOURCE_EXPORT";
+
 /// Detect the major version of the system `cc` when it is GCC.
 ///
 /// Returns `None` for clang or when detection fails.
@@ -87,6 +90,32 @@ fn prepare_attestation_sources(lib_path: &Path, make_cflags: Option<&str>) {
     );
 }
 
+fn env_flag(name: &str) -> bool {
+    match env::var(name) {
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => true,
+        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") => false,
+        Ok(value) => panic!("{name} must be 0, 1, true, or false; got {value:?}"),
+        Err(env::VarError::NotPresent) => false,
+        Err(error) => panic!("failed to read {name}: {error}"),
+    }
+}
+
+fn prune_mode(lib_path: &Path) -> Option<&'static str> {
+    if env_flag(SOURCE_EXPORT_ENV) {
+        assert!(
+            !lib_path.join(".git").exists(),
+            "{SOURCE_EXPORT_ENV}=1 is only valid for a source export without Git metadata"
+        );
+        return Some("--source-export");
+    }
+
+    if env_flag(PRUNE_ENV) || env_flag("TF_BUILD") {
+        return Some("--git-checkout");
+    }
+
+    None
+}
+
 fn main() {
     // Skip the compilation of attestation library when the remote attestation is not enabled or
     // running unit test.
@@ -106,12 +135,41 @@ fn main() {
 
     let crate_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let lib_path = crate_path.join("../../deps/linux-sgx");
+    let prune_script = crate_path.join("prune-unused-linux-sgx.sh");
+    let fixup_script = crate_path.join("fixup-libservtd-attest-lib.sh");
+
+    println!("cargo:rerun-if-env-changed={PRUNE_ENV}");
+    println!("cargo:rerun-if-env-changed={SOURCE_EXPORT_ENV}");
+    println!("cargo:rerun-if-env-changed=TF_BUILD");
+    println!("cargo:rerun-if-changed={}", lib_path.display());
+    println!("cargo:rerun-if-changed={}", prune_script.display());
+    println!("cargo:rerun-if-changed={}", fixup_script.display());
 
     // GCC >= 14 turns several legacy DCAP warnings into hard errors; demote them so
     // the vendored linux-sgx attestation lib still builds. Preserves user CFLAGS.
     let make_cflags = attestation_make_cflags();
 
     prepare_attestation_sources(&lib_path, make_cflags.as_deref());
+
+    // Component Governance builds and ephemeral source exports remove upstream
+    // trees that ServTD attestation does not use. Developer builds are
+    // non-destructive unless pruning is explicitly requested.
+    if let Some(mode) = prune_mode(&lib_path) {
+        let status = match Command::new("bash")
+            .arg(&prune_script)
+            .arg(mode)
+            .arg(&lib_path)
+            .current_dir(&crate_path)
+            .status()
+        {
+            Ok(status) => status,
+            Err(error) => panic!("failed to run {}: {error}", prune_script.display()),
+        };
+        assert!(
+            status.success(),
+            "failed to prune unused linux-sgx sources: {status}"
+        );
+    }
 
     // make servtd_attest
     let mut build = Command::new("make");
@@ -135,9 +193,8 @@ fn main() {
     #[cfg(feature = "AzCVMEmu")]
     {
         // Run the fixup script to create the modified library for AzCVMEmu
-        let script_path = crate_path.join("fixup-libservtd-attest-lib.sh");
         let status = Command::new("bash")
-            .arg(&script_path)
+            .arg(&fixup_script)
             .current_dir(&crate_path)
             .status()
             .expect("failed to run fixup-libservtd-attest-lib.sh script!");

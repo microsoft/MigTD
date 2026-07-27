@@ -133,6 +133,9 @@ else
         # build matches the clone build. build.rs only tests existence, so the
         # marker content is irrelevant.
         echo 'echo gitlink > /root/MigTD/deps/td-shim/library/ring/.git'
+        # Mark this no-Git copy as an ephemeral source export so attestation
+        # pruning can run without weakening checkout safety checks.
+        echo 'export MIGTD_SOURCE_EXPORT=1'
         echo 'cd /root/MigTD/sh_script/Azure && make '"$TARGET"
     } > "$WORK/_build.sh"
 fi
