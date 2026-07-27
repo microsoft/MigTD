@@ -8,9 +8,8 @@ timestamp: 2026-07-10T19:26:55+00:00
 
 # MigTD Domain Facts
 
-> Split from [AGENT_NOTES.md](/AGENT_NOTES.md) §5. Read before flagging
-> anything as a bug — many "obvious" issues here are already-settled design
-> decisions.
+> Condensed in the root [agent guide](../../AGENTS.md). Read before flagging
+> anything as a bug.
 
 ## Trust model
 
