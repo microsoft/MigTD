@@ -22,7 +22,8 @@ param(
     [string]$PowerTestPath = "$env:ProgramFiles\WindowsPowerShell\Modules\PowerTest",
     [switch]$NoPersistentSecrets,
     [switch]$CaptureSerial,
-    [ValidateRange(0, 60)] [int]$SerialDrainTimeoutSeconds = 30
+    [ValidateRange(0, 60)] [int]$SerialDrainTimeoutSeconds = 30,
+    [switch]$SkipHashEvidenceValidation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +42,7 @@ $parameters = @{
     NoPersistentSecrets = $NoPersistentSecrets
     CaptureSerial = $CaptureSerial
     SerialDrainTimeoutSeconds = $SerialDrainTimeoutSeconds
+    SkipHashEvidenceValidation = $SkipHashEvidenceValidation
 }
 
 & $driver @parameters

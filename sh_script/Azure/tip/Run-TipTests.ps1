@@ -1,14 +1,11 @@
 <#
 .SYNOPSIS
-  Run the TiP loopback test suite over a built package directory.
+  Backward-compatible entrypoint for TiP hardware test suites.
 
 .DESCRIPTION
-  Runs an agent-independent mock-quote migration and ServTdExt prebind check.
-  Optionally installs bundled dependencies, configures the host, and runs the
-  regular IGVMAgent-dependent policy cases.
-
-.EXAMPLE
-  .\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
+  Delegates to Invoke-TipHarness.ps1 in Run mode. By default this runs the fast
+  PR suite (mock-quote migration + ServTdExt prebind). -IncludeAgentCases maps
+  to the deep release suite (agent cases + rebind).
 #>
 [CmdletBinding()]
 param(
@@ -17,80 +14,31 @@ param(
     [switch]$InstallDependencies,
     [switch]$ConfigureHost,
     [switch]$IncludeAgentCases,
-    [switch]$CaptureSerial
+    [switch]$CaptureSerial = $true,
+    [string]$ResultsPath,
+    [string]$EvidenceDir,
+    [switch]$SkipHashEvidenceValidation,
+    [ValidateSet('PrFast', 'ReleaseDeep')]
+    [string]$Suite
 )
+
 $ErrorActionPreference = 'Stop'
-
-if ($InstallDependencies) {
-    $installer = Join-Path $PackageDir 'Install-TipDependencies.ps1'
-    if (-not (Test-Path $installer)) {
-        throw "Dependency installer not found: $installer"
-    }
-    $setupOutput = @(& $installer -PackageDir $PackageDir `
-        -ConfigureHost:$ConfigureHost -Force)
-    $setupResult = $setupOutput |
-        Where-Object { $_.PSObject.Properties.Name -contains 'RebootRequired' } |
-        Select-Object -Last 1
-    if (-not $setupResult) {
-        throw 'Dependency installer did not return setup status.'
-    }
-    $setupOutput | Where-Object { $_ -ne $setupResult } | Out-Host
-    $setupResult | Format-List | Out-Host
-    $PowerTestPath = $setupResult.PowerTestPath
-    if ($setupResult.RebootRequired) {
-        throw 'Dependency installation changed Secure Firmware. Reboot the host, then rerun Run-TipTests.ps1 without -InstallDependencies.'
-    }
-} elseif ($ConfigureHost) {
-    $validator = Join-Path $PackageDir 'troubleshooting\Test-TdxLmLabBlade.ps1'
-    & $validator -PowerTestPath $PowerTestPath -Configure
+$harness = Join-Path $PSScriptRoot 'Invoke-TipHarness.ps1'
+if (-not (Test-Path $harness)) {
+    throw "Harness wrapper not found: $harness"
 }
 
-$cases = @(
-    @{ Name = 'accept-all_mock_quote'; File = 'test-migtd-accept-all_mock_quote.igvm'; Reject = $false; NoSecrets = $true }
-)
-if ($IncludeAgentCases) {
-    $cases += @(
-        @{ Name = 'accept-all'; File = 'test-migtd-accept-all.igvm'; Reject = $false; NoSecrets = $false },
-        @{ Name = 'policy'; File = 'test-migtd.igvm'; Reject = $false; NoSecrets = $false },
-        @{ Name = 'reject-all'; File = 'test-migtd-reject-all.igvm'; Reject = $true; NoSecrets = $false }
-    )
+if (-not $PSBoundParameters.ContainsKey('Suite')) {
+    $Suite = if ($IncludeAgentCases) { 'ReleaseDeep' } else { 'PrFast' }
 }
 
-$loopback = Join-Path $PSScriptRoot 'Invoke-TdxLmLoopback.ps1'
-if (-not (Test-Path $loopback)) {
-    throw "Loopback driver not found: $loopback"
-}
-$results = @()
-foreach ($c in $cases) {
-    $igvm = Join-Path $PackageDir $c.File
-    if (-not (Test-Path $igvm)) { Write-Warning "skip $($c.Name): $igvm not found"; continue }
-    Write-Host "`n=== $($c.Name) ==="
-    try {
-        & $loopback -IgvmFilePath $igvm -ExpectReject:$c.Reject `
-            -PowerTestPath $PowerTestPath -NoPersistentSecrets:$c.NoSecrets `
-            -CaptureSerial:$CaptureSerial
-        $results += [pscustomobject]@{ Case = $c.Name; Result = 'PASS' }
-    } catch {
-        $results += [pscustomobject]@{ Case = $c.Name; Result = "FAIL: $_" }
-    }
-}
-
-$prebindIgvm = Join-Path $PackageDir 'test-migtd-accept-all_mock_quote.igvm'
-if (Test-Path $prebindIgvm) {
-    Write-Host "`n=== ServTdExt prebind ==="
-    try {
-        $prebindScript = Join-Path $PackageDir 'Test-TdxServTdExtPrebind.ps1'
-        if (-not (Test-Path $prebindScript)) {
-            throw "ServTdExt test script not found: $prebindScript"
-        }
-        & $prebindScript `
-            -IgvmFilePath $prebindIgvm -PowerTestPath $PowerTestPath `
-            -NoPersistentSecrets -CaptureSerial:$CaptureSerial
-        $results += [pscustomobject]@{ Case = 'ServTdExt prebind'; Result = 'PASS' }
-    } catch {
-        $results += [pscustomobject]@{ Case = 'ServTdExt prebind'; Result = "FAIL: $_" }
-    }
-}
-
-$results | Format-Table -AutoSize
-if ($results.Result -match 'FAIL') { exit 1 }
+& $harness -Mode Run `
+    -PackageDir $PackageDir `
+    -Suite $Suite `
+    -PowerTestPath $PowerTestPath `
+    -InstallDependencies:$InstallDependencies `
+    -ConfigureHost:$ConfigureHost `
+    -CaptureSerial:$CaptureSerial `
+    -ResultsPath $ResultsPath `
+    -EvidenceDir $EvidenceDir `
+    -SkipHashEvidenceValidation:$SkipHashEvidenceValidation

@@ -1,0 +1,413 @@
+# Mandatory PR gate: Azure-flavour IGVM build + real TiP/TDX hardware acceptance.
+#
+# Two jobs that both must succeed for the PR check to pass:
+#   build  – Ubuntu-22.04 hosted runner.  Builds the mock-quote allow-all IGVM
+#            inside the pinned Docker toolchain (sh_script/Azure/Dockerfile) and
+#            uploads a deterministic artifact package.
+#   accept – [self-hosted, tdx-tip] real TDX hardware.  Never emulation.
+#            Verifies sibling hash evidence before loading the IGVM, runs the
+#            PrFast suite (mock-quote migration + ServTdExt prebind) via the
+#            shipped Invoke-TipHarness.ps1, and publishes results.json + serial
+#            + hash evidence even on failure.  Fails closed on missing evidence
+#            or runner outage.  Cleans up host state unconditionally.
+#
+# Build success alone does NOT satisfy this check.
+# Does not repurpose integration-tdx.yml (optional/broken).
+#
+# Runner prerequisites (accept job):
+#   - Windows with Hyper-V + TDX hardware support
+#   - Runner service configured to run elevated (#Requires -RunAsAdministrator)
+#   - PowerTest module at default path
+#     (%ProgramFiles%\WindowsPowerShell\Modules\PowerTest)
+name: pr-azure-tip
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "doc/**"
+
+permissions:
+  contents: read
+
+# Cancel in-flight build jobs on the same PR ref when a new commit is pushed
+# to avoid wasting GitHub-hosted minutes.  The accept job uses its own
+# concurrency group with cancel-in-progress: false so a running hardware test
+# is never aborted mid-flight (which would leave the labblade dirty).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.88.0
+  TOOLCHAIN_PROFILE: minimal
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Job 1 — build
+  # Ubuntu-22.04 (GitHub-hosted).  No hardware required.
+  #
+  # Artifact package uploaded:
+  #   test-migtd-accept-all_mock_quote.igvm
+  #       allow-all policy + built-in mock quote; igvm-attest bypassed.
+  #   test-migtd-accept-all_mock_quote.igvm.hash
+  #       SERVTD_INFO_HASH (96 hex chars) — passed to TDH.SERVTD.PREBIND.
+  #   test-migtd-accept-all_mock_quote.igvm.hash.evidence.json
+  #       Schema-v1 sibling-hash evidence blob; Resolve-TipMigTdHashFromFiles
+  #       verifies both igvmSha256 and migTdInfoHash before any hardware load.
+  #   Invoke-TipHarness.ps1   TipHarness.Common.ps1   (harness + shared helpers)
+  #   Invoke-TdxLmLoopback.ps1   Test-TdxServTdExtPrebind.ps1   (case scripts)
+  #   Run-TipTests.ps1   Test-TdxLmRebind.ps1   Install-TipDependencies.ps1
+  # --------------------------------------------------------------------------
+  build:
+    name: Build Azure IGVM test artifacts
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      # The Docker toolchain image build + full IGVM compilation need headroom.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+
+      # Installs LLVM-10, NASM, OCaml, Rust 1.88.0, x86_64-unknown-none target,
+      # and runs sh_script/preparation.sh (ring / spdm-rs patches).
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-environment
+
+      # Build the allow-all mock-quote IGVM inside the pinned Ubuntu container
+      # (sh_script/Azure/Dockerfile) — the same toolchain used for Azure
+      # production builds.  Outputs migtd.igvm + migtd.igvm.sha256 to igvm-out/.
+      - name: Build Azure IGVM (mock-quote allow-all) in pinned container
+        run: |
+          mkdir -p igvm-out
+          ./sh_script/Azure/docker_build_igvm.sh \
+            -t build-igvm-mock-quote-allow-all \
+            -o igvm-out/
+
+      # Use --json --output-file to write {"servtdInfoHash":"<hex>"} atomically,
+      # then parse .servtdInfoHash deterministically with jq — no tail/tr
+      # brittleness, and the field name is locked to the CLI's own constant
+      # (SERVTD_INFO_HASH_KEY = "servtdInfoHash").  Matches release behavior
+      # where the pipeline calls the tool with --json.
+      - name: Compute SERVTD_INFO_HASH (migtd-hash)
+        run: |
+          cargo build -p migtd-hash --release
+          ./target/release/migtd-hash \
+            --manifest config/Azure/servtd_info.json \
+            --image   igvm-out/migtd.igvm \
+            --policy-v2 \
+            --json \
+            --output-file igvm-out/migtd.igvm.hash.json
+          jq -re '.servtdInfoHash | select(test("^[0-9a-fA-F]{96}$"))' \
+            igvm-out/migtd.igvm.hash.json > igvm-out/migtd.igvm.hash
+          echo "SERVTD_INFO_HASH: $(cat igvm-out/migtd.igvm.hash)"
+
+      # Assemble the artifact package directory.
+      # Files are named to match the convention expected by Invoke-TipHarness.ps1
+      # PrFast suite (pkg:test-migtd-accept-all_mock_quote.igvm).
+      # The .hash.evidence.json file is the schema-v1 sibling-hash blob that
+      # Resolve-TipMigTdHashFromFiles (TipHarness.Common.ps1) uses to verify
+      # both the SERVTD_INFO_HASH and the IGVM SHA256 before any hardware load.
+      # Test scripts are copied read-only; sh_script/Azure/tip/ is owned by Mouse.
+      - name: Assemble artifact package
+        run: |
+          set -euo pipefail
+          IGVM_NAME="test-migtd-accept-all_mock_quote.igvm"
+          mkdir -p tip-artifact
+
+          cp igvm-out/migtd.igvm      "tip-artifact/${IGVM_NAME}"
+          cp igvm-out/migtd.igvm.hash "tip-artifact/${IGVM_NAME}.hash"
+
+          IGVM_SHA256=$(sha256sum "tip-artifact/${IGVM_NAME}" | awk '{print $1}')
+          MIGTD_HASH=$(cat igvm-out/migtd.igvm.hash)
+
+          # Schema-v1 sibling-hash evidence blob (harness fail-closed contract).
+          printf \
+            '{"schemaVersion":1,"evidenceType":"igvm-sibling-hash","migTdInfoHash":"%s","igvmSha256":"%s","igvmFileName":"%s"}\n' \
+            "${MIGTD_HASH}" "${IGVM_SHA256}" "${IGVM_NAME}" \
+            > "tip-artifact/${IGVM_NAME}.hash.evidence.json"
+
+          # Harness entry point + shared helpers
+          cp sh_script/Azure/tip/Invoke-TipHarness.ps1     tip-artifact/
+          cp sh_script/Azure/tip/TipHarness.Common.ps1     tip-artifact/
+          # Case scripts invoked by the PrFast suite
+          cp sh_script/Azure/tip/Invoke-TdxLmLoopback.ps1     tip-artifact/
+          cp sh_script/Azure/tip/Test-TdxServTdExtPrebind.ps1  tip-artifact/
+          # Auxiliary scripts included for completeness
+          cp sh_script/Azure/tip/Run-TipTests.ps1              tip-artifact/
+          cp sh_script/Azure/tip/Test-TdxLmRebind.ps1          tip-artifact/
+          cp sh_script/Azure/tip/Install-TipDependencies.ps1   tip-artifact/
+
+          echo "--- Artifact contents ---"
+          ls -lh tip-artifact/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: azure-tip-artifacts-${{ github.sha }}
+          path: tip-artifact/
+          retention-days: 7
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Job 2 — accept
+  # [self-hosted, tdx-tip] real TDX hardware.  NEVER emulation.
+  #
+  # Harness: Invoke-TipHarness.ps1 -Mode Run -Suite PrFast
+  #   Case 1 — pr-mock-quote-migration
+  #       Invoke-TdxLmLoopback.ps1, NoPersistentSecrets
+  #       MigTdId=tipmigtd-pr-mock  VmName=tiptd-pr-mock
+  #   Case 2 — pr-servtdext-prebind
+  #       Test-TdxServTdExtPrebind.ps1, NoPersistentSecrets
+  #       MigTdId=tipmigtd-pr-prebind  VmName=tiptd-pr-prebind
+  #
+  # Evidence: tip-evidence/results.json, tip-evidence/serial/**, *.hash,
+  #           *.evidence.json — uploaded unconditionally.
+  #
+  # Build success alone does NOT make this check green.
+  # --------------------------------------------------------------------------
+  accept:
+    name: TiP/TDX hardware acceptance
+    needs: build
+    # Gate 1 (environment): protected environment requires named maintainer
+    # approval before any workflow step runs on the self-hosted TDX blade.
+    # Configure reviewer requirements under Settings → Environments →
+    # tip-hardware-gate in the repository.
+    environment: tip-hardware-gate
+    # Gate 2 (job condition): only run on same-repository PRs that carry the
+    # tip-approved label.  A maintainer must add the label explicitly; fork PRs
+    # and unlabelled same-repo PRs are skipped — build still runs for feedback.
+    # Both gates are independent; neither alone is sufficient.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'tip-approved')
+    # Separate concurrency group with cancel-in-progress: false.
+    # A new push to the same PR queues a new accept run rather than killing
+    # the in-progress hardware test, which would leave the labblade dirty.
+    concurrency:
+      group: tdx-tip-accept-${{ github.ref }}
+      cancel-in-progress: false
+    runs-on: [self-hosted, tdx-tip]
+    timeout-minutes: 45
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Download artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: azure-tip-artifacts-${{ github.sha }}
+          path: tip-pkg
+
+      # Pre-flight integrity check: verify the sibling hash evidence file is
+      # present, schema-valid, and the IGVM SHA256 matches before any hardware
+      # interaction starts.  The harness will perform the authoritative
+      # cryptographic verification again inside Resolve-TipMigTdHashFromFiles;
+      # this step surfaces corruption or incomplete builds with a fast, clear
+      # message before touching the hardware at all.
+      - name: Pre-flight — verify sibling hash evidence before hardware load
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $igvmName     = 'test-migtd-accept-all_mock_quote.igvm'
+          $igvmPath     = "tip-pkg\$igvmName"
+          $evidencePath = "tip-pkg\$igvmName.hash.evidence.json"
+
+          if (-not (Test-Path $evidencePath)) {
+            throw "Sibling hash evidence not found: $evidencePath — artifact is incomplete or corrupt."
+          }
+          $ev = Get-Content $evidencePath -Raw | ConvertFrom-Json
+          if ([int]$ev.schemaVersion -ne 1 -or [string]$ev.evidenceType -ne 'igvm-sibling-hash') {
+            throw "Unsupported hash evidence schema in $evidencePath"
+          }
+          if ([string]$ev.migTdInfoHash -notmatch '^[0-9a-fA-F]{96}$') {
+            throw "migTdInfoHash is not 96 hex chars in $evidencePath"
+          }
+          if ([string]$ev.igvmSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "igvmSha256 is not 64 hex chars in $evidencePath"
+          }
+
+          $actual   = (Get-FileHash -Path $igvmPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = [string]$ev.igvmSha256.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "IGVM SHA256 mismatch — will not load on hardware.`n  expected: $expected`n    actual: $actual"
+          }
+          Write-Host "Pre-flight OK  igvmSha256=$actual"
+          Write-Host "Pre-flight OK  migTdInfoHash=$([string]$ev.migTdInfoHash)"
+
+      # Run the PrFast acceptance suite via the shipped harness.
+      # The harness verifies sibling hash evidence (authoritative check), runs
+      # both cases on real TDX hardware, and writes results.json.
+      # Exit 1 when any case fails; exit 0 only when all cases pass.
+      - name: Run PrFast acceptance suite via Invoke-TipHarness
+        id: acceptance
+        shell: pwsh
+        run: |
+          & 'tip-pkg\Invoke-TipHarness.ps1' `
+            -Mode        Run `
+            -Suite       PrFast `
+            -PackageDir  'tip-pkg' `
+            -EvidenceDir 'tip-evidence' `
+            -CaptureSerial
+
+      # Upload results.json, serial logs, and hash evidence unconditionally so
+      # reviewers can diagnose failures.  if-no-files-found: warn keeps this
+      # step green even when the harness was interrupted before producing output;
+      # the "fail closed" step below catches that case explicitly.
+      - name: Publish evidence (always — even on failure)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tip-evidence-${{ github.sha }}
+          path: |
+            tip-evidence/
+            tip-pkg/test-migtd-accept-all_mock_quote.igvm.hash
+            tip-pkg/test-migtd-accept-all_mock_quote.igvm.hash.evidence.json
+          if-no-files-found: warn
+
+      # Fail closed: if results.json is absent the runner was interrupted
+      # (power loss, preemption, OOM kill) — treat as a hard check failure so
+      # the PR cannot merge on a silent runner outage.
+      - name: Fail closed on missing results.json
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'tip-evidence\results.json')) {
+            Write-Error 'results.json was not produced — runner outage or unexpected abort. Failing closed.'
+            exit 1
+          }
+          Write-Host 'Evidence present: tip-evidence\results.json'
+
+      # Cleanup backstop. Runs unconditionally; must fail closed if host state
+      # cannot be returned to DisabledByDefault with residual mappings removed.
+      - name: Cleanup host state
+        if: always()
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          function New-SyntheticHash {
+            param([Parameter(Mandatory)] [string]$Hash)
+            return -join ($Hash.ToCharArray() | ForEach-Object {
+              '{0:x}' -f (([Convert]::ToInt32("$_", 16) + 1) % 16)
+            })
+          }
+
+          $cleanupFailures = [System.Collections.Generic.List[string]]::new()
+          $candidateHashes = [System.Collections.Generic.List[string]]::new()
+
+          $hashFile = 'tip-pkg\test-migtd-accept-all_mock_quote.igvm.hash'
+          if (Test-Path $hashFile) {
+            try {
+              $migTdHash = (Get-Content $hashFile -Raw).Trim().ToLowerInvariant()
+              if ($migTdHash -match '^[0-9a-f]{96}$') {
+                $candidateHashes.Add($migTdHash)
+              } else {
+                $cleanupFailures.Add("Hash file format invalid: $hashFile")
+              }
+            } catch {
+              $cleanupFailures.Add("Read hash file failed: $($_.Exception.Message)")
+            }
+          }
+
+          $evidencePath = 'tip-pkg\test-migtd-accept-all_mock_quote.igvm.hash.evidence.json'
+          if (Test-Path $evidencePath) {
+            try {
+              $ev = Get-Content $evidencePath -Raw | ConvertFrom-Json
+              $evHash = ([string]$ev.migTdInfoHash).ToLowerInvariant()
+              if ($evHash -match '^[0-9a-f]{96}$') { $candidateHashes.Add($evHash) }
+            } catch {
+              $cleanupFailures.Add("Read hash evidence failed: $($_.Exception.Message)")
+            }
+          }
+
+          $hashesToReset = [System.Collections.Generic.List[string]]::new()
+          foreach ($hash in @($candidateHashes | Select-Object -Unique)) {
+            $hashesToReset.Add($hash)
+            $hashesToReset.Add((New-SyntheticHash -Hash $hash))
+          }
+          $hashesToReset = @($hashesToReset | Select-Object -Unique)
+          if ($hashesToReset.Count -eq 0) {
+            $cleanupFailures.Add('No MigTD hash candidate found for DisabledByDefault reset/removal.')
+          }
+
+          foreach ($hash in $hashesToReset) {
+            try {
+              Set-VMHostMigrationPolicy DisabledByDefault $hash -ErrorAction Stop
+            } catch {
+              $cleanupFailures.Add("Set-VMHostMigrationPolicy DisabledByDefault $hash failed: $($_.Exception.Message)")
+            }
+            try {
+              Remove-VmHostMigrationTdMapping -MigTdHash $hash -ErrorAction Stop
+            } catch {
+              # An absent mapping is idempotent success in a backstop: per-case cleanup
+              # normally removes the mapping first. Only verified not-found responses are
+              # benign; all other errors (access denied, invalid argument, etc.) fail closed.
+              # No Get-VmHostMigrationTdMapping exists, so post-removal verification is
+              # not possible; absence of an exception is the authoritative signal.
+              $isAlreadyAbsent = (
+                $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+                $_.Exception.Message -match '(?i)\bnot[\s\-]+found\b|\bdoes\s+not\s+exist\b|\bcannot[\s\-]+find\b|\bno\s+mapping\b'
+              )
+              if (-not $isAlreadyAbsent) {
+                $cleanupFailures.Add("Remove-VmHostMigrationTdMapping $hash failed: $($_.Exception.Message)")
+              }
+            }
+          }
+
+          # PrFast suite VM names (from Get-RunCases -SelectedSuite PrFast).
+          foreach ($vmName in @(
+            'tiptd-pr-mock',      'tipmigtd-pr-mock',
+            'tiptd-pr-prebind',   'tipmigtd-pr-prebind'
+          )) {
+            $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
+            if (-not $vm) { continue }
+            try {
+              Stop-VM -Name $vmName -TurnOff -Force -ErrorAction Stop
+            } catch {
+              $cleanupFailures.Add("Stop-VM $vmName failed: $($_.Exception.Message)")
+            }
+            try {
+              Remove-VM -Name $vmName -Force -ErrorAction Stop
+            } catch {
+              $cleanupFailures.Add("Remove-VM $vmName failed: $($_.Exception.Message)")
+            }
+          }
+
+          if (Test-Path 'tip-pkg') {
+            try {
+              Remove-Item -Recurse -Force tip-pkg -ErrorAction Stop
+            } catch {
+              $cleanupFailures.Add("Remove-Item tip-pkg failed: $($_.Exception.Message)")
+            }
+          }
+
+          if ($cleanupFailures.Count -gt 0) {
+            Write-Error 'Cleanup did not establish the required safe host state.'
+            foreach ($failure in $cleanupFailures) { Write-Error " - $failure" }
+            Write-Error 'If this runner was hard-killed, post-steps may not execute; remediate host state before reuse.'
+            exit 1
+          }
+
+          Write-Host 'Cleanup established safe host state (DisabledByDefault + mapping/VM removal).'

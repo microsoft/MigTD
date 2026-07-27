@@ -136,7 +136,7 @@ enroll_policy() {
       -o "$PROJECT_ROOT/$IMG" )
 }
 emit() {  # name
-  local name="$1" stem base
+  local name="$1" stem base migtd_hash igvm_sha256 evidence_json
   stem="$(artifact_stem "$name")"
   base="$OUT_DIR/$stem.igvm"
   cp "$IMG" "$base"
@@ -144,7 +144,23 @@ emit() {  # name
   # Do not use --calc-servtd-hash here: that produces the outer TDREPORT
   # SERVTD_HASH and TDH.SERVTD.BIND rejects it with TDX_SERVTD_INFO_HASH_MISMATCH.
   "$HASH_BIN" --manifest "$MANIFEST" --image "$base" --policy-v2 | tail -n1 | tr -d '[:space:]' > "$base.hash"
-  echo "  built $stem  hash=$(cat "$base.hash")"
+  migtd_hash="$(cat "$base.hash")"
+  igvm_sha256="$(sha256sum "$base" | awk '{print $1}')"
+  evidence_json="$base.hash.evidence.json"
+  jq -n \
+    --arg igvm_file "$(basename "$base")" \
+    --arg igvm_sha256 "$igvm_sha256" \
+    --arg migtd_hash "$migtd_hash" \
+    --arg generated_utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      schemaVersion: 1,
+      evidenceType: "igvm-sibling-hash",
+      igvmFileName: $igvm_file,
+      igvmSha256: $igvm_sha256,
+      migTdInfoHash: $migtd_hash,
+      generatedUtc: $generated_utc
+    }' > "$evidence_json"
+  echo "  built $stem  hash=$migtd_hash  sha256=$igvm_sha256"
 }
 
 emit_real_policy_pair() { # name
@@ -276,6 +292,7 @@ mkdir -p "$OUT_DIR"
 find "$OUT_DIR" -maxdepth 1 -type f \
   \( -name 'test-migtd*.igvm' -o \
      -name 'test-migtd*.igvm.hash' -o \
+     -name 'test-migtd*.igvm.hash.evidence.json' -o \
      -name 'test-migtd*.policy.json' \) \
   -delete
 mkdir -p "$POLICY_DIR"
