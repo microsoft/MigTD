@@ -44,6 +44,14 @@ Stages mirror the four workflows: **format → deny → main → emu** (after
 `prep`). The script stops at the first failure. **Fix the root cause; don't
 skip ahead.**
 
+The EMU stage includes the CoRIM-only policy contract plus the migration and
+rebind scenarios from `integration-emu.yml`. Keep the workflow and gauntlet
+commands synchronized when adding or changing a matrix case.
+
+The format workflow also runs `sh_script/check_commit_trailers.sh` over every
+pull-request commit. AI tools belong in `Assisted-by`; only humans may appear
+in `Signed-off-by` and `Co-authored-by`.
+
 `cargo test` alone is **not sufficient** for changes to:
 
 - `event_log` / RTMR replay
