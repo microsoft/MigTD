@@ -102,6 +102,20 @@ jobs:
             test-command: "./migtdemu.sh --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --mock-report --features spdm_attestation --both --no-sudo --log-level info"
             artifact-name: "spdm-policy-v2-test-logs"
 
+          - test-name: "CoRIM-only SPDM Migration (Mock Report)"
+            test-type: "corim-migration"
+            install-jq: 'true'
+            timeout-seconds: 900
+            test-command: "./migtdemu.sh --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_corim.json --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor.bin --servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim.cose --mock-report --features spdm_attestation --both --no-sudo --log-level info"
+            artifact-name: "corim-migration-test-logs"
+
+          - test-name: "CoRIM-only Rebind Prepare (Mock Report)"
+            test-type: "corim-rebind"
+            install-jq: 'true'
+            timeout-seconds: 900
+            test-command: "./migtdemu.sh --operation rebind-prepare --policy-file ./config/AzCVMEmu/policy_v2_corim.json --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor.bin --servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim.cose --mock-report --features spdm_attestation --both --no-sudo --log-level info"
+            artifact-name: "corim-rebind-test-logs"
+
           - test-name: "SPDM Rebind Prepare (Skip RA)"
             test-type: "spdm-rebind-skip-ra"
             install-jq: 'true'
@@ -235,9 +249,18 @@ jobs:
         if: matrix.install-jq == 'true'
         run: |
           echo "Generating AzCVMEmu policy files with mock measurements..."
-          ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report --skip-test
+          GEN_ARGS=(--mock-report --skip-test)
+          if [[ "${{ matrix.test-type }}" == corim-* ]]; then
+            GEN_ARGS+=(--corim-only)
+          fi
+          ./sh_script/build_AzCVMEmu_policy_and_test.sh "${GEN_ARGS[@]}"
           echo "Policy files generated:"
           ls -la config/AzCVMEmu/policy_v2_signed*.json config/AzCVMEmu/policy_issuer_chain*.pem
+          if [[ "${{ matrix.test-type }}" == corim-* ]]; then
+            ls -la config/AzCVMEmu/policy_v2_corim.json \
+              config/AzCVMEmu/servtd_signer_anchor.bin \
+              config/AzCVMEmu/tcb_mapping_corim.cose
+          fi
 
       - name: Run test
         id: test_run
@@ -396,6 +419,29 @@ jobs:
             echo "✅ Quote retry verification passed (5 failures + success on both sides)"
           fi
 
+          # Prove the CoRIM-only scenarios did not fall back to legacy JSON
+          # servtdCollateral and that both peers attached the signed CoRIM.
+          if [[ "${{ matrix.test-type }}" == corim-* ]]; then
+            echo ""
+            echo "=== Verifying CoRIM-only runtime path ==="
+            if ! jq -e '.policyData | has("servtdCollateral") | not' config/AzCVMEmu/policy_v2_corim.json >/dev/null; then
+              echo "❌ CoRIM-only policy contains legacy servtdCollateral"
+              exit 1
+            fi
+            if [[ $(wc -c < config/AzCVMEmu/servtd_signer_anchor.bin) -ne 48 ]]; then
+              echo "❌ ServTD signer anchor is not 48 bytes"
+              exit 1
+            fi
+            for ROLE in source destination; do
+              LOG=$(find . -maxdepth 1 -name "migtd_*_${ROLE}.log" -print -quit)
+              if [[ -z "$LOG" ]] || ! grep -aq "Loaded signed ServTD CoRIM endorsement" "$LOG"; then
+                echo "❌ Missing signed-CoRIM attachment evidence for $ROLE"
+                exit 1
+              fi
+              echo "✅ $ROLE attached the signed ServTD CoRIM"
+            done
+          fi
+
           # Dump revocation-related log lines for the signer-revocation test.
           if [[ "${{ matrix.test-type }}" == "policy-v2-revoked" ]]; then
             echo ""
@@ -423,6 +469,9 @@ jobs:
             config/AzCVMEmu/policy_issuer_chain.pem
             config/AzCVMEmu/policy_issuer_chain_a.pem
             config/AzCVMEmu/policy_issuer_chain_b.pem
+            config/AzCVMEmu/policy_v2_corim.json
+            config/AzCVMEmu/servtd_signer_anchor.bin
+            config/AzCVMEmu/tcb_mapping_corim.cose
             target/release/migtd
           retention-days: 7
           if-no-files-found: ignore

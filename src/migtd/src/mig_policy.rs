@@ -132,6 +132,7 @@ mod v2 {
             let anchor = resolve_signer_anchor(cert_chain)?;
             let corim = ServtdCorim::decode_signed(cose, 0, &anchor)?;
             verified_policy.set_servtd_corim(corim);
+            log::info!("Loaded signed ServTD CoRIM endorsement");
             if let Some(servtd_crl) = verified_policy.servtd_crl.as_deref() {
                 verified_policy.verify_signer_chains_not_revoked(servtd_crl.as_bytes())?;
             }

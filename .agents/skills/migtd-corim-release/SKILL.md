@@ -83,9 +83,9 @@ Run the reusable gate:
 .agents/skills/migtd-corim-release/scripts/check-corim-only-policy.sh
 ```
 
-## 4. Why legacy EMU tests can miss this
+## 4. Run CoRIM-only EMU flows
 
-The existing policy-v2 EMU scenarios call
+Legacy policy-v2 EMU scenarios call
 `build_AzCVMEmu_policy_and_test.sh`, which generates a legacy JSON
 `servtdCollateral` containing TD identity. Those tests:
 
@@ -94,10 +94,46 @@ The existing policy-v2 EMU scenarios call
 - resolve MigTD date/status from JSON TD identity;
 - therefore cannot detect an invalid date/status rule in a CoRIM-only release.
 
-Keep the dedicated `CoRIM-only Azure release policy` job in
+Generate the canonical mock-report CoRIM inputs explicitly:
+
+```bash
+./sh_script/build_AzCVMEmu_policy_and_test.sh \
+  --mock-report --corim-only --skip-test
+```
+
+This emits:
+
+- `policy_v2_corim.json`, with no `policyData.servtdCollateral`;
+- `servtd_signer_anchor.bin`, exactly 48 bytes;
+- `tcb_mapping_corim.cose`, signed and keyed to the canonical mock report's
+  `tdinfo_hash`.
+
+The builder fails if the mock report hash drifts from the committed fixture.
+Run both required runtime paths:
+
+```bash
+./migtdemu.sh --policy-v2 \
+  --policy-file config/AzCVMEmu/policy_v2_corim.json \
+  --servtd-signer-anchor-file config/AzCVMEmu/servtd_signer_anchor.bin \
+  --servtd-corim-file config/AzCVMEmu/tcb_mapping_corim.cose \
+  --mock-report --features spdm_attestation --both --no-sudo
+
+./migtdemu.sh --operation rebind-prepare \
+  --policy-file config/AzCVMEmu/policy_v2_corim.json \
+  --servtd-signer-anchor-file config/AzCVMEmu/servtd_signer_anchor.bin \
+  --servtd-corim-file config/AzCVMEmu/tcb_mapping_corim.cose \
+  --mock-report --features spdm_attestation --both --no-sudo
+```
+
+Require `Loaded signed ServTD CoRIM endorsement` in both source and
+destination logs. That line, together with the absence of
+`servtdCollateral`, proves the test did not fall back to legacy JSON.
+
+Keep the dedicated policy contract job and both CoRIM-only runtime cases in
 `.github/workflows/integration-emu.yml`. It builds the production feature
 combination and runs policy tests against the production Azure policy plus a
-real TCB-mapping CoRIM fixture.
+real TCB-mapping CoRIM fixture; the runtime cases cover SPDM migration and
+rebind-prepare with the actual CoRIM-only firmware-volume inputs.
 
 ## 5. Failure signature
 
