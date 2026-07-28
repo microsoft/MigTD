@@ -372,21 +372,12 @@ mod v2 {
 
         // Per GHCI 1.5: cross-check the peer's wire-claimed init TDINFO against
         // the peer's verified TDREPORT — init policy signer and init SVN must
-        // be consistent with the peer's current self-report.
-        //
-        // REVERT_ME: TEST MODE — failures are logged but do not abort, so MigTD can
-        // run against hosts that have not yet been updated to provision MROWNER/MROWNERCONFIG.
-        if let Err(e) = verify_peer_init_tdinfo_against_owner(
+        // be consistent with the peer's current self-report. Fail-closed.
+        verify_peer_init_tdinfo_against_owner(
             init_tdinfo,
             &tdx_report.td_info.mrowner,
             &tdx_report.td_info.mrownerconfig,
-        ) {
-            log::error!(
-                "verify_peer_init_tdinfo_against_owner failed: {:?} \
-                 (ignored: TEST MODE, continuing)\n",
-                e
-            );
-        }
+        )?;
 
         // Verify the init tdinfo against servtd_ext hash
         let servtd_ext_src_obj =
@@ -875,35 +866,6 @@ mod v2 {
         Ok(())
     }
 
-    /// Per GHCI 1.5: Verify initMigtdData.MROWNERCONFIG <= own policy SVN.
-    ///
-    /// NOTE: the `MROWNER == own policy-signer key hash` binding has been
-    /// **deprecated** (see [`verify_own_tdinfo`]); only the MROWNERCONFIG
-    /// (policy SVN floor) binding is enforced.
-    pub fn verify_init_migtd_data_policy_binding(
-        init_td_info: &[u8; crate::migration::TD_INFO_SIZE],
-    ) -> Result<(), PolicyError> {
-        use crate::migration::td_info_mrownerconfig;
-
-        let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
-        let my_policy_svn = policy.policy_data.get_policy_svn();
-
-        // Check MROWNERCONFIG (init policy_svn) <= my policy_svn
-        let init_mrownerconfig = td_info_mrownerconfig(init_td_info);
-        let mut init_svn_bytes = [0u8; 4];
-        init_svn_bytes.copy_from_slice(&init_mrownerconfig[..4]);
-        let init_policy_svn = u32::from_le_bytes(init_svn_bytes);
-        // Remaining 44 bytes should be zero
-        if init_mrownerconfig[4..] != [0u8; SHA384_DIGEST_SIZE - 4] {
-            return Err(PolicyError::InvalidParameter);
-        }
-        if init_policy_svn > my_policy_svn {
-            return Err(PolicyError::SvnMismatch);
-        }
-
-        Ok(())
-    }
-
     /// Per GHCI 1.5: Cross-check a peer's wire-supplied init TDINFO_STRUCT against
     /// the peer's authenticated TDREPORT (or equivalent verified report data).
     ///
@@ -1371,6 +1333,36 @@ mod v2 {
         assert!(matches!(
             verify_peer_init_tdinfo_against_suppl_data(&init, &suppl),
             Err(PolicyError::SvnMismatch)
+        ));
+    }
+
+    // Regression tests for the REVERT_ME removal in authenticate_rebinding_old:
+    // verify_peer_init_tdinfo_against_owner MUST be fail-closed (return Err),
+    // not a soft-fail. Previously a REVERT_ME bypass logged the error and
+    // continued; these tests document the mandatory fail-closed contract.
+    #[test]
+    fn test_rebinding_peer_init_tdinfo_owner_check_fail_closed_svn_exceeds_peer() {
+        let peer_mrowner = [0xAAu8; 48];
+        // init_tdinfo claims SVN 99, peer's current SVN is 1 — must reject.
+        let init = make_init_tdinfo(&peer_mrowner, 99);
+        let peer_mrownerconfig = make_peer_mrownerconfig(1);
+        assert!(matches!(
+            verify_peer_init_tdinfo_against_owner(&init, &peer_mrowner, &peer_mrownerconfig),
+            Err(PolicyError::SvnMismatch)
+        ));
+    }
+
+    #[test]
+    fn test_rebinding_peer_init_tdinfo_owner_check_fail_closed_mrowner_mismatch() {
+        // init_tdinfo carries a different MROWNER than the peer's authenticated
+        // TDREPORT — must reject, never soft-pass.
+        let init_mrowner = [0x11u8; 48];
+        let peer_mrowner = [0x22u8; 48];
+        let init = make_init_tdinfo(&init_mrowner, 1);
+        let peer_mrownerconfig = make_peer_mrownerconfig(5);
+        assert!(matches!(
+            verify_peer_init_tdinfo_against_owner(&init, &peer_mrowner, &peer_mrownerconfig),
+            Err(PolicyError::PolicyHashMismatch)
         ));
     }
 }

@@ -592,18 +592,13 @@ pub struct VmmLoggerBackend;
 /// `LOG_TRUNCATE_HEAD` bytes, the last `LOG_TRUNCATE_TAIL` bytes, and the
 /// number of bytes that were dropped.
 ///
-/// REVERT_ME (debug): doubled from 128/64/16 to 256/128/32 so the
-/// 48-byte hash and TDINFO field dumps in `mig_policy::verify_servtd_info_hash`
-/// fit on a single line without being chopped (`init_servtd_info_hash`
-/// rendered as 96 hex chars plus its label exceeds the original 128-byte
-/// limit). Revert these along with the verify_servtd_info_hash soft-fail.
-const LOG_TRUNCATE_THRESHOLD: usize = 256;
-const LOG_TRUNCATE_HEAD: usize = 128;
-const LOG_TRUNCATE_TAIL: usize = 32;
+const LOG_TRUNCATE_THRESHOLD: usize = 128;
+const LOG_TRUNCATE_HEAD: usize = 64;
+const LOG_TRUNCATE_TAIL: usize = 16;
 
 /// Truncate `msg` if it exceeds `LOG_TRUNCATE_THRESHOLD`.
 /// Returns the original message unchanged when it fits, or a replacement of
-/// the form: `[first ~128 bytes]... [last ~32 bytes], log truncated number of bytes: N`
+/// the form: `[first ~64 bytes]... [last ~16 bytes], log truncated number of bytes: N`
 ///
 /// Head and tail boundaries are adjusted to the nearest UTF-8 character
 /// boundary so that multi-byte characters are never split.
