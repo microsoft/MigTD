@@ -1177,4 +1177,72 @@ mod tests {
 
         assert!(update_tcb_mapping_v2(input.as_bytes(), None, &[HASH_11.to_string()]).is_err());
     }
+
+    // ── tdinfo_hash equality gate tests ─────────────────────────────────────
+    // These cover the property exercised by check_tdinfo_hash_equality.sh:
+    // the SHA-384 of the packed TDINFO_STRUCT must be identical for identical
+    // inputs (gate passes) and diverge for any single-field change (gate rejects).
+
+    #[test]
+    fn tdinfo_hash_gate_positive_same_struct_yields_same_hash() {
+        // Gate passes: identical inputs → identical 48-byte hash.
+        use super::{calculate_tdinfo_hash, clone_td_info};
+        use td_shim_tools::tee_info_hash::TdInfoStruct;
+
+        let td = TdInfoStruct::default();
+        let pre_final = calculate_tdinfo_hash(clone_td_info(&td))
+            .expect("calculate_tdinfo_hash must not fail on default TdInfoStruct");
+        let final_hash = calculate_tdinfo_hash(clone_td_info(&td))
+            .expect("calculate_tdinfo_hash must not fail on default TdInfoStruct");
+
+        assert_eq!(
+            pre_final, final_hash,
+            "gate must pass: same TDINFO_STRUCT produces identical tdinfo_hash"
+        );
+        assert_eq!(pre_final.len(), 48, "tdinfo_hash must be exactly 48 bytes");
+    }
+
+    #[test]
+    fn tdinfo_hash_gate_negative_mrtd_change_causes_mismatch() {
+        // Gate rejects: any MRTD byte change must produce a different hash.
+        // This is the deliberate measured-mapping negative: if the binary that
+        // was measured into the TCB mapping differs from the deployed binary
+        // (so MRTD changes), the gate must catch it.
+        use super::{calculate_tdinfo_hash, clone_td_info};
+        use td_shim_tools::tee_info_hash::TdInfoStruct;
+
+        let baseline = TdInfoStruct::default();
+        let pre_final =
+            calculate_tdinfo_hash(clone_td_info(&baseline)).expect("calculate_tdinfo_hash failed");
+
+        let mut tampered = TdInfoStruct::default();
+        tampered.mrtd[0] = 0xAB; // Simulate a different binary measurement.
+        let final_hash = calculate_tdinfo_hash(tampered).expect("calculate_tdinfo_hash failed");
+
+        assert_ne!(
+            pre_final, final_hash,
+            "gate must reject: changed MRTD must produce a different tdinfo_hash"
+        );
+    }
+
+    #[test]
+    fn tdinfo_hash_gate_negative_rtmr_change_causes_mismatch() {
+        // Gate rejects: an RTMR change (e.g. different policy signer or policy
+        // content) must also be detected.
+        use super::{calculate_tdinfo_hash, clone_td_info};
+        use td_shim_tools::tee_info_hash::TdInfoStruct;
+
+        let baseline = TdInfoStruct::default();
+        let pre_final =
+            calculate_tdinfo_hash(clone_td_info(&baseline)).expect("calculate_tdinfo_hash failed");
+
+        let mut tampered = TdInfoStruct::default();
+        tampered.rtmr1[47] = 0xFF; // Simulate a different policy signer anchor.
+        let final_hash = calculate_tdinfo_hash(tampered).expect("calculate_tdinfo_hash failed");
+
+        assert_ne!(
+            pre_final, final_hash,
+            "gate must reject: changed RTMR1 must produce a different tdinfo_hash"
+        );
+    }
 }

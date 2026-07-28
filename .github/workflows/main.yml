@@ -72,4 +72,95 @@ jobs:
           cargo build -p migtd-policy-verifier
           cargo build -p servtd-collateral-generator
 
+  tdinfo-hash-gate:
+    name: tdinfo_hash equality gate (positive + mismatch-negative)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build migtd-hash
+        run: cargo build --release -p migtd-hash
+
+      - name: Run migtd-hash unit tests (tdinfo_hash gate tests)
+        run: cargo test -p migtd-hash
+
+      - name: Prepare synthetic report for gate tests
+        # Craft a deterministic all-zero report JSON that matches the field
+        # structure expected by `migtd-hash --from-report --policy-v2`.
+        # The values are synthetic (not from real hardware); the gate test only
+        # needs a stable, reproducible source to verify the comparison logic.
+        run: |
+          Z48="$(printf '%0.s00' {1..48})"
+          Z8="$(printf '%0.s00' {1..8})"
+          printf '{"attributes":"%s","xfam":"%s","mrtd":"%s","mrConfigId":"%s","mrOwner":"%s","mrOwnerConfig":"%s","rtmr0":"%s","rtmr1":"%s","rtmr2":"%s","rtmr3":"%s"}' \
+              "$Z8" "$Z8" "$Z48" "$Z48" "$Z48" "$Z48" "$Z48" "$Z48" "$Z48" "$Z48" \
+              > synthetic_report.json
+          echo "Synthetic report:"
+          cat synthetic_report.json
+
+      - name: Derive pre-final hash from synthetic report
+        run: |
+          ./target/release/migtd-hash \
+              --policy-v2 \
+              --from-report synthetic_report.json \
+              --output-tdinfo-hash pre_final_hash.hex
+          echo "Pre-final tdinfo_hash: $(cat pre_final_hash.hex)"
+
+      - name: Gate positive test — matching hash must exit 0
+        run: |
+          bash sh_script/check_tdinfo_hash_equality.sh \
+              --pre-final-hash pre_final_hash.hex \
+              --from-report    synthetic_report.json \
+              --audit-output   gate_audit_positive.json \
+              --verbose
+          echo "Positive gate test PASSED (exit 0 as expected)"
+
+      - name: Gate negative test — deliberate mismatch must exit 1
+        # Corrupt the first byte of the pre-final hash to simulate a mapping
+        # entry that doesn't match the binary being deployed.  The gate MUST
+        # fail with exit code 1 (the "deliberate measured-mapping negative").
+        run: |
+          GOOD_HASH="$(cat pre_final_hash.hex)"
+          # Replace first two hex chars ('00') with 'ff' to create a mismatch.
+          WRONG_HASH="ff${GOOD_HASH:2}"
+          echo "$WRONG_HASH" > wrong_hash.hex
+          echo "Injected wrong pre-final hash: $WRONG_HASH"
+          echo "Actual hash from report:        $GOOD_HASH"
+
+          exit_code=0
+          bash sh_script/check_tdinfo_hash_equality.sh \
+              --pre-final-hash wrong_hash.hex \
+              --from-report    synthetic_report.json \
+              --audit-output   gate_audit_negative.json \
+              --verbose || exit_code=$?
+
+          if [ "$exit_code" -eq 1 ]; then
+              echo "Negative gate test PASSED — mismatch correctly rejected (exit 1)"
+          else
+              echo "FAIL: gate returned exit $exit_code; expected 1 for mismatch" >&2
+              exit 1
+          fi
+
+      - name: Upload gate audit records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tdinfo-hash-gate-audit
+          path: |
+            gate_audit_positive.json
+            gate_audit_negative.json
+            pre_final_hash.hex
+          if-no-files-found: ignore
+
           
