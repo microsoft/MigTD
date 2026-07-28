@@ -12,6 +12,40 @@ permissions:
   contents: read
 
 jobs:
+  commit-trailers:
+    name: Commit trailers
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/one_hash'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout commit history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Check pull request commit trailers
+        if: github.event_name == 'pull_request'
+        run: |
+          sh_script/check_commit_trailers.sh \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
+      - name: Check pushed commit trailers
+        if: github.event_name == 'push'
+        env:
+          BASE_COMMIT: ${{ github.event.before }}
+          HEAD_COMMIT: ${{ github.sha }}
+        run: |
+          if [[ "$BASE_COMMIT" =~ ^0+$ ]]; then
+            echo "Cannot determine the previous commit for a protected branch push." >&2
+            exit 1
+          fi
+          sh_script/check_commit_trailers.sh "$BASE_COMMIT" "$HEAD_COMMIT"
+
   clippy:
     name: Clippy
     runs-on: ubuntu-22.04
