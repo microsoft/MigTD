@@ -37,6 +37,9 @@
 #   # Skip the integration test at the end
 #   ./sh_script/build_AzCVMEmu_policy_and_test.sh --skip-test
 #
+#   # Also emit CoRIM-only artifacts for the canonical mock report
+#   ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report --corim-only
+#
 #   # Custom output directory
 #   ./sh_script/build_AzCVMEmu_policy_and_test.sh --output-dir /path/to/output
 #
@@ -192,6 +195,10 @@ POLICY_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_v2_raw.json"
 TD_IDENTITY_TEMPLATE="$SOURCE_MATERIAL_DIR/td_identity.json"
 TCB_MAPPING_TEMPLATE="$SOURCE_MATERIAL_DIR/tcb_mapping.json"
 COLLATERALS_FILE="$SOURCE_MATERIAL_DIR/collateral_azure_thim.json"
+CORIM_FIXTURE_DIR="$SOURCE_MATERIAL_DIR/corim"
+CORIM_FIXTURE="$CORIM_FIXTURE_DIR/tcb_mapping.cose"
+CORIM_SIGNER_ANCHOR_FIXTURE="$CORIM_FIXTURE_DIR/signer_anchor.bin"
+CORIM_MOCK_TDINFO_HASH="1ADC25055B5188A615FF0A2B4781C0E1F38D4369CA688C775EE321E142FBE4534C14EDE61D9C570967996F6C8E8F5F76"
 
 # Intermediate files
 REPORT_DATA_FILE="$TEMP_DIR/report_data.json"
@@ -216,6 +223,9 @@ OUTPUT_POLICY_REVOKED="$OUTPUT_DIR/policy_v2_signed_revoked.json"
 OUTPUT_CERT_CHAIN="$OUTPUT_DIR/policy_issuer_chain.pem"
 OUTPUT_CERT_CHAIN_A="$OUTPUT_DIR/policy_issuer_chain_a.pem"
 OUTPUT_CERT_CHAIN_B="$OUTPUT_DIR/policy_issuer_chain_b.pem"
+OUTPUT_CORIM_POLICY="$OUTPUT_DIR/policy_v2_corim.json"
+OUTPUT_CORIM="$OUTPUT_DIR/tcb_mapping_corim.cose"
+OUTPUT_CORIM_SIGNER_ANCHOR="$OUTPUT_DIR/servtd_signer_anchor.bin"
 CERT_DIR="$TEMP_DIR/certs"
 PRIVATE_KEY="$CERT_DIR/policy_signing_pkcs8.key"
 PRIVATE_KEY_A="$CERT_DIR/policy_signing_a_pkcs8.key"
@@ -411,6 +421,7 @@ AZURE_REGION="useast"
 EXTRA_FEATURES=""
 REVOKE_TDINFO_HASHES=()
 TCB_MAPPING_INPUT=""
+GENERATE_CORIM_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -424,6 +435,9 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_CERT_CHAIN="$OUTPUT_DIR/policy_issuer_chain.pem"
             OUTPUT_CERT_CHAIN_A="$OUTPUT_DIR/policy_issuer_chain_a.pem"
             OUTPUT_CERT_CHAIN_B="$OUTPUT_DIR/policy_issuer_chain_b.pem"
+            OUTPUT_CORIM_POLICY="$OUTPUT_DIR/policy_v2_corim.json"
+            OUTPUT_CORIM="$OUTPUT_DIR/tcb_mapping_corim.cose"
+            OUTPUT_CORIM_SIGNER_ANCHOR="$OUTPUT_DIR/servtd_signer_anchor.bin"
             shift 2
             ;;
         --skip-test)
@@ -432,6 +446,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --mock-report)
             USE_MOCK_REPORT=true
+            shift
+            ;;
+        --corim-only)
+            GENERATE_CORIM_ONLY=true
             shift
             ;;
         --mock-quote-file)
@@ -465,6 +483,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --output-dir DIR             Output directory for generated files (default: config/AzCVMEmu)"
             echo "  --skip-test                  Skip running the MigTD test at the end"
             echo "  --mock-report                Use mock report data with test_mock_report feature"
+            echo "  --corim-only                 Also generate CoRIM-only policy/runtime inputs"
             echo "  --mock-quote-file FILE       Path to mock quote file (--mock-report will be turned on)"
             echo "  --fetch-collaterals          Fetch fresh collaterals from Azure THIM before generating policy"
             echo "  --azure-region REGION        Azure region for THIM (useast, westus, northeurope)"
@@ -482,6 +501,9 @@ while [[ $# -gt 0 ]]; do
             echo
             echo "  # Mock report mode (uses test_mock_report feature):"
             echo "  $0 --mock-report"
+            echo
+            echo "  # Mock report mode with CoRIM-only release inputs:"
+            echo "  $0 --mock-report --corim-only"
             echo
             echo "  # Mock report mode with custom quote file:"
             echo "  $0 --mock-quote-file ./config/AzCVMEmu/az_migtd_quote.blob"
@@ -515,6 +537,7 @@ echo "  Source material: $SOURCE_MATERIAL_DIR"
 echo "  Output directory: $OUTPUT_DIR"
 echo "  Temp directory: $TEMP_DIR"
 echo "  Mock report mode: $USE_MOCK_REPORT"
+echo "  Generate CoRIM-only artifacts: $GENERATE_CORIM_ONLY"
 if [[ -n "$MOCK_QUOTE_FILE" ]]; then
     echo "  Mock quote file: $MOCK_QUOTE_FILE"
 fi
@@ -548,6 +571,14 @@ for file in "$POLICY_DATA_RAW" "$TD_IDENTITY_TEMPLATE" "$TCB_MAPPING_SOURCE"; do
         exit 1
     fi
 done
+if [ "$GENERATE_CORIM_ONLY" = true ]; then
+    for file in "$CORIM_FIXTURE" "$CORIM_SIGNER_ANCHOR_FIXTURE"; do
+        if [ ! -f "$file" ]; then
+            echo -e "${RED}Error: Required CoRIM fixture not found: $file${NC}" >&2
+            exit 1
+        fi
+    done
+fi
 
 #
 # Step 0: Fetch fresh collaterals from Azure THIM (optional)
@@ -799,6 +830,38 @@ echo -e "  tdinfo_hash = $TDINFO_HASH"
 echo
 
 #
+# Step 4b: Generate CoRIM-only runtime inputs for the canonical mock report
+#
+if [ "$GENERATE_CORIM_ONLY" = true ]; then
+    echo -e "${BLUE}=== Step 4b: Generating CoRIM-only Runtime Inputs ===${NC}"
+    if [ "$TDINFO_HASH" != "$CORIM_MOCK_TDINFO_HASH" ]; then
+        echo -e "${RED}Error: CoRIM fixture is for canonical mock tdinfo_hash $CORIM_MOCK_TDINFO_HASH, got $TDINFO_HASH${NC}" >&2
+        exit 1
+    fi
+
+    CORIM_POLICY_DATA_RAW="$TEMP_DIR/policy_v2_corim_raw.json"
+    CORIM_POLICY_DATA_MERGED="$TEMP_DIR/policy_v2_corim_merged.json"
+    jq -c '.policy += [{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]' \
+        "$POLICY_DATA_RAW" > "$CORIM_POLICY_DATA_RAW"
+    "$TOOLS_DIR/migtd-policy-generator" v2 \
+        --policy-data "$CORIM_POLICY_DATA_RAW" \
+        --collaterals "$COLLATERALS_FILE" \
+        --output "$CORIM_POLICY_DATA_MERGED"
+    jq -c '{policyData:.}' "$CORIM_POLICY_DATA_MERGED" > "$OUTPUT_CORIM_POLICY"
+
+    if jq -e '.policyData | has("servtdCollateral")' "$OUTPUT_CORIM_POLICY" >/dev/null; then
+        echo -e "${RED}Error: Generated CoRIM-only policy unexpectedly contains servtdCollateral${NC}" >&2
+        exit 1
+    fi
+    cp "$CORIM_FIXTURE" "$OUTPUT_CORIM"
+    cp "$CORIM_SIGNER_ANCHOR_FIXTURE" "$OUTPUT_CORIM_SIGNER_ANCHOR"
+    echo -e "${GREEN}✓ CoRIM-only policy: $OUTPUT_CORIM_POLICY${NC}"
+    echo -e "${GREEN}✓ Signed TCB-mapping CoRIM: $OUTPUT_CORIM${NC}"
+    echo -e "${GREEN}✓ ServTD signer anchor: $OUTPUT_CORIM_SIGNER_ANCHOR${NC}"
+    echo
+fi
+
+#
 # Step 5: Generate certificates and signing key
 #
 echo -e "${BLUE}=== Step 5: Generating Certificates ===${NC}"
@@ -963,6 +1026,11 @@ echo "  📄 Policy (default):       $OUTPUT_POLICY"
 echo "  📄 Cert chain (a):         $OUTPUT_CERT_CHAIN_A"
 echo "  📄 Cert chain (b):         $OUTPUT_CERT_CHAIN_B"
 echo "  📄 Cert chain (default):   $OUTPUT_CERT_CHAIN"
+if [ "$GENERATE_CORIM_ONLY" = true ]; then
+    echo "  📄 CoRIM-only policy:      $OUTPUT_CORIM_POLICY"
+    echo "  📄 Signed TCB CoRIM:       $OUTPUT_CORIM"
+    echo "  📄 ServTD signer anchor:   $OUTPUT_CORIM_SIGNER_ANCHOR"
+fi
 echo
 
 if [ "$USE_MOCK_REPORT" = true ]; then
