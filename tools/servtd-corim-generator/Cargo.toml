@@ -1,0 +1,14 @@
+[package]
+name = "servtd-corim-generator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+clap = { version = "4.0", features = ["derive"] }
+corim = { version = "0.1.3", features = ["profile-intel"] }
+hex = "0.4"
+policy = { path = "../../src/policy", features = ["policy_v2", "servtd_corim"] }
+ring = "0.17.14"
+sha2 = "0.10"
