@@ -124,6 +124,10 @@ Rules for every AI-assisted change.
 - Do not track `.copilot-review-issues/`.
 - Use `[Copilot Review]` for review issue titles.
 - Check account permissions before filing issues.
+- Under WSL, use Git or `gh` through their normal GitHub authentication flow.
+  A successful `git push` proves the cached Windows Git Credential Manager
+  credential is usable; do not query GCM directly and mistake an API prompt
+  without GitHub's authentication challenge for a missing cache.
 
 ## Contribution and commits
 
