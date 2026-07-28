@@ -16,6 +16,12 @@ IGVM_FEATURES_GET_QUOTE = $(IGVM_FEATURES_BASE),igvm-attest
 IGVM_FEATURES_MOCK_QUOTE = $(IGVM_FEATURES_BASE),use-mock-quote
 IGVM_FEATURES_GET_QUOTE_TEST = $(IGVM_FEATURES_GET_QUOTE),test-get-quote
 IGVM_MANIFEST ?= config/Azure/servtd_info.json
+IGVM_POLICY ?= config/templates/policy_v2_signed.json
+IGVM_POLICY_ISSUER_CHAIN ?= config/templates/policy_issuer_chain.pem
+IGVM_SIGNER_ANCHOR ?=
+IGVM_SERVTD_CORIM ?=
+IGVM_POLICY_SIGNER_ARGS = $(if $(strip $(IGVM_SIGNER_ANCHOR)),--signer-anchor $(IGVM_SIGNER_ANCHOR),--policy-issuer-chain $(IGVM_POLICY_ISSUER_CHAIN))
+IGVM_SERVTD_CORIM_ARGS = $(if $(strip $(IGVM_SERVTD_CORIM)),--servtd-corim $(IGVM_SERVTD_CORIM),)
 
 .PHONY: pre-build generate-hash generate-hash-v2 generate-hash-v2-verbose generate-hash-verbose
 .PHONY: generate-hash-accept generate-hash-get-quote
@@ -25,8 +31,12 @@ IGVM_MANIFEST ?= config/Azure/servtd_info.json
 .PHONY: build-igvm-get-quote build-igvm-get-quote-all
 .PHONY: build-igvm-mock-quote generate-policy-mock-quote
 .PHONY: build-igvm-mock-quote-allow-all generate-policy-mock-quote-allow-all
+.PHONY: supports-release-inputs-v1
 
 .DEFAULT_GOAL := build-igvm-all
+
+supports-release-inputs-v1:
+	@:
 
 help:
 	@echo "Available targets:"
@@ -78,8 +88,7 @@ generate-hash-v2-verbose: generate-hash-verbose
 build-igvm:
 	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
 	 --image-format igvm --output $(IGVM_FILE) --debug \
-	 --policy-v2 --policy config/templates/policy_v2_signed.json \
-	 --policy-issuer-chain config/templates/policy_issuer_chain.pem \
+	 --policy-v2 --policy $(IGVM_POLICY) $(IGVM_POLICY_SIGNER_ARGS) $(IGVM_SERVTD_CORIM_ARGS) \
 	 --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
 
 build-igvm-all: pre-build build-igvm generate-hash-v2
