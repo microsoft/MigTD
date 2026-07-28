@@ -43,7 +43,12 @@ jobs:
           install-tpm-tools: 'true'
 
       - name: Build and test CoRIM-only policy contract
-        run: .agents/skills/migtd-corim-release/scripts/check-corim-only-policy.sh
+        run: |
+          export SPDM_CONFIG="$GITHUB_WORKSPACE/config/spdm_config.json"
+          cargo build \
+            --no-default-features \
+            --features "AzCVMEmu,policy_v2,test_mock_report,spdm_attestation,servtd_corim"
+          cargo test -p policy --features "policy_v2,servtd_corim"
 
   emulation-tests:
     name: ${{ matrix.test-name }}
