@@ -148,12 +148,3 @@ UnqualifiedMigTdInfo
 inspect the `servtd.migtdIdentity` rule before debugging SPDM. Errors such as
 `missing remote_information`, `ERROR_PEER`, and key-exchange failures afterward
 are normally consequences of the responder rejecting policy evaluation.
-
-## 6. GitHub authentication under WSL
-
-A successful `git push` proves the cached Windows Git Credential Manager
-credential is usable from WSL. Do not interpret a later interactive prompt
-from a hand-written API call as evidence that the cache is missing. Prefer
-`gh pr create` when available or use the pull-request URL printed by
-`git push`; avoid querying GCM directly without GitHub's normal authentication
-challenge.
