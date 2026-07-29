@@ -76,6 +76,12 @@ jobs:
       - name: Test linux-sgx pruning safety
         run: bash src/attestation/test-prune-unused-linux-sgx.sh
 
+      - name: Test policy-only enrollment artifact contract
+        run: bash sh_script/Azure/test_policy_only_enrollment_contract.sh
+
+      - name: Test Docker wrapper sidecar contract
+        run: bash sh_script/Azure/test_docker_build_igvm_wrapper.sh
+
       - name: Build Azure IGVM in the pinned container (run 1)
         run: ./sh_script/Azure/docker_build_igvm.sh -t build-igvm -o "$RUNNER_TEMP/out1"
 
