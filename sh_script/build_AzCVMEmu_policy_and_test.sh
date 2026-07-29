@@ -861,6 +861,7 @@ if [ "$GENERATE_CORIM_ONLY" = true ]; then
     "$TOOLS_DIR/servtd-corim-generator" \
         --tdinfo-hash "$TDINFO_HASH" \
         --svn "$ISVSVN" \
+        --generation "$POLICY_SVN" \
         --cert-chain "$CERT_DIR/mapping_issuer_chain_a.pem" \
         --private-key "$MAPPING_PRIVATE_KEY_A" \
         --signer-eku-oid "$SIGNER_EKU_OID" \

@@ -242,3 +242,8 @@ entry all fail closed.
 development. It signs with locally generated ephemeral keys for
 `build_AzCVMEmu_policy_and_test.sh --corim-only`. Public Docker/Make targets
 never invoke it, generate keys, or sign production artifacts.
+
+Generated CoRIM artifacts intentionally omit CWT `nbf` and `exp` claims
+because MigTD has no trusted wall clock. The producer instead sets the CoMID
+`tag-version` from `policySvn`; runtime anti-rollback enforcement compares
+that monotonic generation with the measured policy-SVN floor.

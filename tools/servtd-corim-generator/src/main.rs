@@ -47,6 +47,11 @@ struct Cli {
     #[arg(long)]
     svn: u16,
 
+    /// Monotonic CoMID generation. This must meet the measured policySvn floor
+    /// used by MigTD's anti-rollback policy.
+    #[arg(long)]
+    generation: u64,
+
     /// Leaf-first PEM certificate chain embedded into the COSE x5chain
     #[arg(long)]
     cert_chain: PathBuf,
@@ -82,7 +87,7 @@ fn main() -> Result<()> {
         bail!("certificate chain must contain at least a leaf and root certificate");
     }
 
-    let payload = build_tcb_mapping(&hash, cli.svn)?;
+    let payload = build_tcb_mapping(&hash, cli.svn, cli.generation)?;
     let issuer = did_x509_issuer(&certificates, &cli.signer_eku_oid)?;
     let kid = Sha256::digest(&certificates[0]).to_vec();
     let mut builder = signed_builder(payload, &certificates, kid, issuer);
@@ -151,7 +156,7 @@ fn migration_td_environment() -> EnvironmentMap {
     }
 }
 
-fn build_tcb_mapping(hash: &[u8], svn: u16) -> Result<Vec<u8>> {
+fn build_tcb_mapping(hash: &[u8], svn: u16, generation: u64) -> Result<Vec<u8>> {
     let digest = Digest::new(SHA384_ALG, hash.to_vec());
     let reference = ReferenceTriple::new(
         migration_td_environment(),
@@ -195,6 +200,7 @@ fn build_tcb_mapping(hash: &[u8], svn: u16) -> Result<Vec<u8>> {
     );
 
     let comid = ComidBuilder::new(TagIdChoice::Text(TCB_MAPPING_CORIM_TAG_ID.into()))
+        .set_tag_version(generation)
         .add_reference_triple(reference)
         .add_conditional_endorsement_series(ces)
         .build()
@@ -218,9 +224,15 @@ fn signed_builder(
         .map(|cert| CborValue::Bytes(cert.clone()))
         .collect();
     SignedCorimBuilder::new(CoseAlgorithm::Es384, payload)
-        .set_cwt_claims(CwtClaims::new(issuer))
+        .set_cwt_claims(runtime_cwt_claims(issuer))
         .add_protected(COSE_HEADER_KID, CborValue::Bytes(kid))
         .add_protected(COSE_HEADER_X5CHAIN, CborValue::Array(x5chain))
+}
+
+fn runtime_cwt_claims(issuer: String) -> CwtClaims {
+    // MigTD has no trusted wall clock. Freshness is enforced by the measured
+    // policySvn floor and the CoMID tag generation, never CWT time claims.
+    CwtClaims::new(issuer)
 }
 
 fn did_x509_issuer(certificates: &[Vec<u8>], signer_eku_oid: &str) -> Result<String> {
@@ -287,4 +299,26 @@ fn load_pem_block(pem: &[u8], label: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .context("decode PKCS#8 PEM private key")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use corim::validate::decode_and_validate_at;
+
+    #[test]
+    fn runtime_claims_omit_unsupported_validity_windows() {
+        let claims = runtime_cwt_claims("did:x509:test".into());
+        assert!(claims.nbf.is_none());
+        assert!(claims.exp.is_none());
+    }
+
+    #[test]
+    fn mapping_carries_monotonic_generation() {
+        let generation = 7;
+        let payload = build_tcb_mapping(&[0xA5; 48], 3, generation).unwrap();
+        let (_, comids) = decode_and_validate_at(&payload, 0).unwrap();
+        assert_eq!(comids.len(), 1);
+        assert_eq!(comids[0].tag_identity.tag_version_or_default(), generation);
+    }
 }
