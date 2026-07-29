@@ -3,7 +3,6 @@
 # Cargo Junk
 target/
 *.bin
-!config/AzCVMEmu/corim/signer_anchor.bin
 *.o
 *.obj
 

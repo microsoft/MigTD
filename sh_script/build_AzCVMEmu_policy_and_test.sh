@@ -195,10 +195,7 @@ POLICY_DATA_RAW="$SOURCE_MATERIAL_DIR/policy_v2_raw.json"
 TD_IDENTITY_TEMPLATE="$SOURCE_MATERIAL_DIR/td_identity.json"
 TCB_MAPPING_TEMPLATE="$SOURCE_MATERIAL_DIR/tcb_mapping.json"
 COLLATERALS_FILE="$SOURCE_MATERIAL_DIR/collateral_azure_thim.json"
-CORIM_FIXTURE_DIR="$SOURCE_MATERIAL_DIR/corim"
-CORIM_FIXTURE="$CORIM_FIXTURE_DIR/tcb_mapping.cose"
-CORIM_SIGNER_ANCHOR_FIXTURE="$CORIM_FIXTURE_DIR/signer_anchor.bin"
-CORIM_MOCK_TDINFO_HASH="1ADC25055B5188A615FF0A2B4781C0E1F38D4369CA688C775EE321E142FBE4534C14EDE61D9C570967996F6C8E8F5F76"
+SIGNER_EKU_OID="${MIGTD_SIGNER_EKU_OID:-1.3.6.1.4.1.32473.1.1}"
 
 # Intermediate files
 REPORT_DATA_FILE="$TEMP_DIR/report_data.json"
@@ -275,7 +272,6 @@ generate_certificates() {
     local cert_validity_days="${3:-365}"
     local root_ca_subject="${4:-/CN=MigTD Root CA/O=Intel Corporation}"
     local leaf_subject="${5:-/CN=MigTD Policy Issuer/O=Intel Corporation}"
-    local signer_eku_oid="${MIGTD_SIGNER_EKU_OID:-1.3.6.1.4.1.32473.1.1}"
 
     # Validate key type first
     if [ "$key_type" != "P384" ]; then
@@ -362,7 +358,7 @@ generate_certificates() {
                 -days $cert_validity_days \
                 -$hash_algo \
                 -extensions v3_ca \
-                -extfile <(printf '[v3_ca]\nkeyUsage = digitalSignature\nextendedKeyUsage = %s\n' "$signer_eku_oid")
+                -extfile <(printf '[v3_ca]\nkeyUsage = digitalSignature\nextendedKeyUsage = %s\n' "$SIGNER_EKU_OID")
 
             cat "$output_dir/${family}_${suffix}.pem" "$output_dir/root_ca.pem" \
                 > "$output_dir/${family_chain_prefix}_${suffix}.pem"
@@ -571,14 +567,6 @@ for file in "$POLICY_DATA_RAW" "$TD_IDENTITY_TEMPLATE" "$TCB_MAPPING_SOURCE"; do
         exit 1
     fi
 done
-if [ "$GENERATE_CORIM_ONLY" = true ]; then
-    for file in "$CORIM_FIXTURE" "$CORIM_SIGNER_ANCHOR_FIXTURE"; do
-        if [ ! -f "$file" ]; then
-            echo -e "${RED}Error: Required CoRIM fixture not found: $file${NC}" >&2
-            exit 1
-        fi
-    done
-fi
 
 #
 # Step 0: Fetch fresh collaterals from Azure THIM (optional)
@@ -667,6 +655,14 @@ if ! cargo build --release -p migtd-hash; then
     exit 1
 fi
 
+if [ "$GENERATE_CORIM_ONLY" = true ]; then
+    echo "Building servtd-corim-generator..."
+    if ! cargo build --release -p servtd-corim-generator; then
+        echo -e "${RED}Error: Failed to build servtd-corim-generator${NC}" >&2
+        exit 1
+    fi
+fi
+
 # Verify tools exist
 # azcvm-extract-report may be emitted either to the local crate target/ or the
 # workspace target/ when CARGO_TARGET_DIR is set.
@@ -681,7 +677,11 @@ else
     exit 1
 fi
 
-for tool in json-signer servtd-collateral-generator migtd-policy-generator migtd-hash; do
+REQUIRED_TOOLS=(json-signer servtd-collateral-generator migtd-policy-generator migtd-hash)
+if [ "$GENERATE_CORIM_ONLY" = true ]; then
+    REQUIRED_TOOLS+=(servtd-corim-generator)
+fi
+for tool in "${REQUIRED_TOOLS[@]}"; do
     if [ ! -f "$TOOLS_DIR/$tool" ]; then
         echo -e "${RED}Error: Tool '$tool' not found at $TOOLS_DIR/$tool${NC}" >&2
         exit 1
@@ -830,15 +830,19 @@ echo -e "  tdinfo_hash = $TDINFO_HASH"
 echo
 
 #
-# Step 4b: Generate CoRIM-only runtime inputs for the canonical mock report
+# Step 5: Generate certificates and signing key
+#
+echo -e "${BLUE}=== Step 5: Generating Certificates ===${NC}"
+generate_certificates "$CERT_DIR" "P384" 365
+
+echo -e "${GREEN}✓ Certificates generated in: $CERT_DIR${NC}"
+echo
+
+#
+# Step 5a: Generate CoRIM-only runtime inputs from the mock report and signer
 #
 if [ "$GENERATE_CORIM_ONLY" = true ]; then
-    echo -e "${BLUE}=== Step 4b: Generating CoRIM-only Runtime Inputs ===${NC}"
-    if [ "$TDINFO_HASH" != "$CORIM_MOCK_TDINFO_HASH" ]; then
-        echo -e "${RED}Error: CoRIM fixture is for canonical mock tdinfo_hash $CORIM_MOCK_TDINFO_HASH, got $TDINFO_HASH${NC}" >&2
-        exit 1
-    fi
-
+    echo -e "${BLUE}=== Step 5a: Generating CoRIM-only Runtime Inputs ===${NC}"
     CORIM_POLICY_DATA_RAW="$TEMP_DIR/policy_v2_corim_raw.json"
     CORIM_POLICY_DATA_MERGED="$TEMP_DIR/policy_v2_corim_merged.json"
     jq -c '.policy += [{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]' \
@@ -853,22 +857,21 @@ if [ "$GENERATE_CORIM_ONLY" = true ]; then
         echo -e "${RED}Error: Generated CoRIM-only policy unexpectedly contains servtdCollateral${NC}" >&2
         exit 1
     fi
-    cp "$CORIM_FIXTURE" "$OUTPUT_CORIM"
-    cp "$CORIM_SIGNER_ANCHOR_FIXTURE" "$OUTPUT_CORIM_SIGNER_ANCHOR"
+
+    "$TOOLS_DIR/servtd-corim-generator" \
+        --tdinfo-hash "$TDINFO_HASH" \
+        --svn "$ISVSVN" \
+        --cert-chain "$CERT_DIR/mapping_issuer_chain_a.pem" \
+        --private-key "$MAPPING_PRIVATE_KEY_A" \
+        --signer-eku-oid "$SIGNER_EKU_OID" \
+        --output "$OUTPUT_CORIM" \
+        --anchor-output "$OUTPUT_CORIM_SIGNER_ANCHOR"
+
     echo -e "${GREEN}✓ CoRIM-only policy: $OUTPUT_CORIM_POLICY${NC}"
     echo -e "${GREEN}✓ Signed TCB-mapping CoRIM: $OUTPUT_CORIM${NC}"
     echo -e "${GREEN}✓ ServTD signer anchor: $OUTPUT_CORIM_SIGNER_ANCHOR${NC}"
     echo
 fi
-
-#
-# Step 5: Generate certificates and signing key
-#
-echo -e "${BLUE}=== Step 5: Generating Certificates ===${NC}"
-generate_certificates "$CERT_DIR" "P384" 365
-
-echo -e "${GREEN}✓ Certificates generated in: $CERT_DIR${NC}"
-echo
 
 #
 # Step 5b: Generate servtd signer CRLs (embedded per-variant into servtdCollateral)
