@@ -8,18 +8,23 @@ use log::debug;
 use migtd_hash::{
     apply_servtd_attr_masks, build_td_info_unmasked, calculate_servtd_hash,
     calculate_servtd_info_hash, calculate_tdinfo_hash, clone_td_info, update_tcb_mapping_v2,
-    SERVTD_TYPE_MIGTD,
+    verify_policy_only_enrollment_artifact, SERVTD_TYPE_MIGTD,
 };
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::exit,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use td_shim_tools::tee_info_hash::TdInfoStruct;
 
 const SERVTD_HASH_KEY: &str = "servtdHash";
 const SERVTD_INFO_HASH_KEY: &str = "servtdInfoHash";
+static EXTRACTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
@@ -96,6 +101,91 @@ fn update_tcb_mapping_file_v2(
     Ok(())
 }
 
+fn extract_policy_safely(input: &Path, output: &Path, policy: &[u8]) -> anyhow::Result<()> {
+    if paths_refer_to_same_file(input, output)? {
+        return Err(anyhow!(
+            "--extract-policy output must not be the input MigTD image"
+        ));
+    }
+    atomic_write(output, policy)
+}
+
+fn paths_refer_to_same_file(input: &Path, output: &Path) -> anyhow::Result<bool> {
+    let input_canonical = fs::canonicalize(input)
+        .with_context(|| format!("Failed to resolve input image {}", input.display()))?;
+    let output_canonical = if output.exists() {
+        fs::canonicalize(output)
+            .with_context(|| format!("Failed to resolve extraction output {}", output.display()))?
+    } else {
+        let parent = output_parent(output);
+        let parent = fs::canonicalize(parent).with_context(|| {
+            format!(
+                "Failed to resolve extraction output directory {}",
+                parent.display()
+            )
+        })?;
+        let name = output
+            .file_name()
+            .ok_or_else(|| anyhow!("Extraction output must name a file: {}", output.display()))?;
+        parent.join(name)
+    };
+    if input_canonical == output_canonical {
+        return Ok(true);
+    }
+
+    #[cfg(unix)]
+    if output.exists() {
+        let input_metadata = fs::metadata(&input_canonical)?;
+        let output_metadata = fs::metadata(&output_canonical)?;
+        return Ok(input_metadata.dev() == output_metadata.dev()
+            && input_metadata.ino() == output_metadata.ino());
+    }
+
+    Ok(false)
+}
+
+fn atomic_write(output: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let parent = output_parent(output);
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| anyhow!("Extraction output must name a file: {}", output.display()))?;
+    let sequence = EXTRACTION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(
+        ".{}.migtd-extract-{}-{sequence}",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .with_context(|| format!("Failed to create {}", temporary.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("Failed to write {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("Failed to sync {}", temporary.display()))?;
+        fs::rename(&temporary, output).with_context(|| {
+            format!(
+                "Failed to atomically replace extraction output {}",
+                output.display()
+            )
+        })?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn output_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 /// Legacy v1 writer: writes mrtd/rtmr0/rtmr1 into the TCB mapping file.
 fn update_tcb_mapping_file_v1(
     input_path: &Path,
@@ -166,6 +256,31 @@ struct Config {
     /// exclusive with `--from-report`.
     #[clap(short, long)]
     pub image: Option<String>,
+    /// Verify that `--image` is a policy-only, zero-anchor, zero-CoRIM
+    /// enrollment artifact. This mode does not calculate TD measurements
+    /// because the image is intentionally non-bootable until private
+    /// enrollment supplies the production signer anchor.
+    #[clap(
+        long,
+        requires = "image",
+        conflicts_with_all = [
+            "manifest",
+            "from_report",
+            "output_file",
+            "json",
+            "policy_v2",
+            "servtd_attr",
+            "calc_servtd_hash",
+            "output_td_info",
+            "output_tdinfo_hash",
+            "update_tcb_mapping"
+        ]
+    )]
+    pub verify_policy_only_enrollment_artifact: bool,
+    /// Extract the exact CFV policy bytes while verifying a policy-only
+    /// enrollment artifact.
+    #[clap(long, requires = "verify_policy_only_enrollment_artifact")]
+    pub extract_policy: Option<PathBuf>,
     /// Path of a `migtd_report_data.json` produced by `azcvm-extract-report`
     /// (camelCase fields: mrtd, rtmr0..3, attributes, xfam, mrConfigId,
     /// mrOwner, mrOwnerConfig — all hex). When set, the TDINFO_STRUCT is
@@ -223,6 +338,74 @@ struct Config {
     pub revoke_tdinfo_hash: Vec<String>,
 }
 
+#[cfg(test)]
+mod extraction_tests {
+    use super::{extract_policy_safely, output_parent, paths_refer_to_same_file};
+    use std::{fs, path::PathBuf};
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/migtd-hash-extraction-tests")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn extract_policy_rejects_input_path_without_truncating() {
+        let dir = test_dir("same-path");
+        let image = dir.join("migtd.igvm");
+        let original = b"not-an-actual-igvm";
+        fs::write(&image, original).unwrap();
+
+        assert!(extract_policy_safely(&image, &image, b"policy").is_err());
+        assert_eq!(fs::read(&image).unwrap(), original);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_policy_rejects_equivalent_symlink_and_hardlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = test_dir("equivalent-path");
+        let image = dir.join("migtd.igvm");
+        let symlink_path = dir.join("symlink.json");
+        let hardlink_path = dir.join("hardlink.json");
+        fs::write(&image, b"image").unwrap();
+        symlink(&image, &symlink_path).unwrap();
+        fs::hard_link(&image, &hardlink_path).unwrap();
+
+        assert!(paths_refer_to_same_file(&image, &symlink_path).unwrap());
+        assert!(paths_refer_to_same_file(&image, &hardlink_path).unwrap());
+        assert!(extract_policy_safely(&image, &symlink_path, b"policy").is_err());
+        assert_eq!(fs::read(&image).unwrap(), b"image");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn extract_policy_atomically_replaces_existing_output() {
+        let dir = test_dir("atomic-output");
+        let image = dir.join("migtd.igvm");
+        let output = dir.join("policy.json");
+        fs::write(&image, b"image").unwrap();
+        fs::write(&output, b"old-policy").unwrap();
+
+        extract_policy_safely(&image, &output, b"new-policy").unwrap();
+        assert_eq!(fs::read(output).unwrap(), b"new-policy");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bare_extraction_filename_resolves_in_current_directory() {
+        assert_eq!(
+            output_parent(std::path::Path::new("policy.json")),
+            std::path::Path::new(".")
+        );
+    }
+}
+
 fn main() {
     let config = Config::parse();
 
@@ -238,6 +421,54 @@ fn main() {
     }
 
     debug!("Starting migtd-hash tool");
+
+    if config.verify_policy_only_enrollment_artifact {
+        let image_path = config
+            .image
+            .as_deref()
+            .expect("--image is required by clap");
+        if let Some(output) = &config.extract_policy {
+            let same_file =
+                paths_refer_to_same_file(Path::new(image_path), output).unwrap_or_else(|e| {
+                    eprintln!("Invalid extraction output: {e}");
+                    exit(1);
+                });
+            if same_file {
+                eprintln!("Invalid extraction output: --extract-policy must not overwrite the input image");
+                exit(1);
+            }
+        }
+
+        let igvmformat = if image_path.ends_with(".igvm") {
+            true
+        } else if image_path.ends_with(".bin") {
+            false
+        } else {
+            eprintln!("--image must end in .igvm or .bin");
+            exit(1);
+        };
+        let image = File::open(image_path).unwrap_or_else(|e| {
+            eprintln!("Failed to open MigTD image: {}", e);
+            exit(1);
+        });
+        let policy =
+            verify_policy_only_enrollment_artifact(image, igvmformat).unwrap_or_else(|e| {
+                eprintln!("Enrollment artifact verification failed: {e}");
+                exit(1);
+            });
+        if let Some(output) = &config.extract_policy {
+            extract_policy_safely(Path::new(image_path), output, &policy).unwrap_or_else(|e| {
+                eprintln!("Failed to write extracted policy {}: {e}", output.display());
+                exit(1);
+            });
+            println!("Extracted policy: {}", output.display());
+        }
+        println!(
+            "Verified non-bootable policy-only enrollment artifact: entries=1, policy={} bytes, root-ca=absent, issuer-chain=absent, signer-anchor=absent, servtd-corim=absent",
+            policy.len()
+        );
+        return;
+    }
 
     let servtd_attr = config.servtd_attr.unwrap_or(0);
     debug!("ServTD attributes: {:#x}", servtd_attr);

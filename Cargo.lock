@@ -1444,6 +1444,8 @@ dependencies = [
  "crypto",
  "env_logger",
  "hex",
+ "igvm",
+ "igvm_defs",
  "log",
  "policy",
  "r-efi 3.2.0",

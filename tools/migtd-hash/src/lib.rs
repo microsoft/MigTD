@@ -4,6 +4,8 @@
 
 use anyhow::{anyhow, Error, Result};
 use crypto::{hash::digest_sha384, SHA384_DIGEST_SIZE};
+use igvm::{IgvmDirectiveHeader, IgvmFile};
+use igvm_defs::IgvmPageDataType;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,11 +19,20 @@ use td_shim_tools::tee_info_hash::{Manifest, TdInfoStruct};
 mod migtd_consts;
 use migtd_consts::{
     CONFIG_VOLUME_SIZE, MIGTD_POLICY_FFS_GUID, MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID,
-    MIGTD_ROOT_CA_FFS_GUID, MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID,
+    MIGTD_ROOT_CA_FFS_GUID, MIGTD_SERVTD_CORIM_FFS_GUID, MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID,
     TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
 };
 
 const MIGTD_IMAGE_SIZE: u64 = 0x100_0000;
+const FFS_FILE_HEADER_SIZE: usize = 24;
+const FFS_FILE_ALIGNMENT: usize = 8;
+const FFS_FILE_STATE_VALID: u8 = 0x07;
+const FFS_FIXED_CHECKSUM: u8 = 0xAA;
+const PAGE_SIZE: usize = 4096;
+// The public Azure IGVM layout maps the firmware, including its leading CFV,
+// here. Inferring this from the first PageData directive would let a decoy page
+// redirect verification away from the real CFV.
+const AZURE_IGVM_CONFIG_VOLUME_BASE: u64 = 0x0200_0000;
 
 pub const SERVTD_TYPE_MIGTD: u16 = 0;
 
@@ -77,13 +88,7 @@ pub fn build_td_info_unmasked(
     }
     td_info.build_rtmr_with_seperator(0);
 
-    let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
-    image.seek(SeekFrom::Start(0))?;
-    if igvmformat {
-        cfv = td_info.read_igvmcfvdata(&mut image);
-    } else {
-        image.read(&mut cfv)?;
-    }
+    let cfv = read_config_volume(&mut image, igvmformat)?;
 
     let rtmr1 = rtmr1(&cfv, &td_info.rtmr1, is_policy_v2)?;
     td_info.rtmr1.copy_from_slice(rtmr1.as_slice());
@@ -92,6 +97,352 @@ pub fn build_td_info_unmasked(
         .copy_from_slice(rtmr2(&cfv, is_ra_disabled, is_policy_v2)?.as_slice());
 
     Ok(td_info)
+}
+
+fn read_config_volume(image: &mut File, igvmformat: bool) -> Result<Vec<u8>, Error> {
+    image.seek(SeekFrom::Start(0))?;
+    if igvmformat {
+        let mut contents = Vec::new();
+        image.read_to_end(&mut contents)?;
+        let igvm = IgvmFile::new_from_binary(&contents, None)
+            .map_err(|e| anyhow!("failed to parse IGVM image: {e}"))?;
+        reject_parameter_directives(igvm.directives())?;
+        let pages = igvm.directives().iter().filter_map(|directive| {
+            if let IgvmDirectiveHeader::PageData {
+                gpa,
+                compatibility_mask,
+                flags,
+                data_type,
+                data,
+                ..
+            } = directive
+            {
+                Some(ConfigPage {
+                    gpa: *gpa,
+                    compatibility_mask: *compatibility_mask,
+                    is_2mb_page: flags.is_2mb_page(),
+                    unmeasured: flags.unmeasured(),
+                    shared: flags.shared(),
+                    reserved_flags: flags.reserved(),
+                    normal_data: *data_type == IgvmPageDataType::NORMAL,
+                    data,
+                })
+            } else {
+                None
+            }
+        });
+        assemble_config_volume_pages(pages)
+    } else {
+        let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
+        image.read_exact(&mut cfv)?;
+        Ok(cfv)
+    }
+}
+
+fn reject_parameter_directives(directives: &[IgvmDirectiveHeader]) -> Result<(), Error> {
+    if directives.iter().any(|directive| {
+        matches!(
+            directive,
+            IgvmDirectiveHeader::ParameterArea { .. } | IgvmDirectiveHeader::ParameterInsert(_)
+        )
+    }) {
+        return Err(anyhow!(
+            "strict enrollment artifacts must not contain IGVM parameter directives"
+        ));
+    }
+    Ok(())
+}
+
+struct ConfigPage<'a> {
+    gpa: u64,
+    compatibility_mask: u32,
+    is_2mb_page: bool,
+    unmeasured: bool,
+    shared: bool,
+    reserved_flags: u32,
+    normal_data: bool,
+    data: &'a [u8],
+}
+
+fn assemble_config_volume_pages<'a>(
+    pages: impl Iterator<Item = ConfigPage<'a>>,
+) -> Result<Vec<u8>, Error> {
+    let base = AZURE_IGVM_CONFIG_VOLUME_BASE;
+    let size = CONFIG_VOLUME_SIZE as u64;
+    let end = base
+        .checked_add(size)
+        .ok_or_else(|| anyhow!("configuration volume GPA range overflow"))?;
+    let page_count = CONFIG_VOLUME_SIZE / PAGE_SIZE;
+    let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
+    let mut seen = vec![false; page_count];
+
+    for page in pages {
+        let page_span = if page.is_2mb_page {
+            2 * 1024 * 1024
+        } else {
+            PAGE_SIZE
+        };
+        let page_end = page
+            .gpa
+            .checked_add(page_span as u64)
+            .ok_or_else(|| anyhow!("IGVM page GPA overflow"))?;
+        let overlaps_cfv = page.gpa < end && page_end > base;
+        if !overlaps_cfv {
+            continue;
+        }
+        if page.is_2mb_page
+            || page.compatibility_mask != 1
+            || !page.unmeasured
+            || page.shared
+            || page.reserved_flags != 0
+            || !page.normal_data
+        {
+            return Err(anyhow!(
+                "IGVM CFV page at GPA {:#x} has unsafe page metadata",
+                page.gpa
+            ));
+        }
+        if page.gpa < base || page_end > end || page.gpa % PAGE_SIZE as u64 != 0 {
+            return Err(anyhow!(
+                "IGVM contains a misaligned or overlapping CFV page at GPA {:#x}",
+                page.gpa
+            ));
+        }
+        if page.data.len() > PAGE_SIZE {
+            return Err(anyhow!(
+                "IGVM CFV page at GPA {:#x} exceeds {PAGE_SIZE} bytes",
+                page.gpa
+            ));
+        }
+        let index = ((page.gpa - base) / PAGE_SIZE as u64) as usize;
+        if seen[index] {
+            return Err(anyhow!(
+                "IGVM contains a duplicate CFV page at GPA {:#x}",
+                page.gpa
+            ));
+        }
+        seen[index] = true;
+        let offset = index * PAGE_SIZE;
+        cfv[offset..offset + page.data.len()].copy_from_slice(page.data);
+    }
+
+    Ok(cfv)
+}
+
+/// Verify that an image is a policy-only enrollment artifact and return the
+/// exact policy bytes enrolled in its CFV.
+///
+/// Such an artifact must contain a raw unsigned `policyData` wrapper and no
+/// issuer chain, signer anchor, or signed TCB-mapping CoRIM. It is intentionally
+/// non-bootable until a private enrollment step rebuilds the CFV.
+pub fn verify_policy_only_enrollment_artifact(
+    mut image: File,
+    igvmformat: bool,
+) -> Result<Vec<u8>, Error> {
+    let cfv = read_config_volume(&mut image, igvmformat)?;
+    let fv_header = fv::read_fv_header(&cfv)
+        .ok_or_else(|| anyhow!("enrollment artifact has an invalid firmware volume header"))?;
+    let entries = inventory_ffs_entries(&cfv, fv_header.header_length as usize)?;
+
+    let mut policy = None;
+    for entry in entries {
+        if entry.name == *MIGTD_POLICY_FFS_GUID.as_bytes() {
+            if entry.file_type != pi::fv::FV_FILETYPE_RAW || entry.attributes != 0 {
+                return Err(anyhow!(
+                    "migration policy entry has unsupported FFS type or attributes"
+                ));
+            }
+            policy = Some(entry.data);
+            continue;
+        }
+
+        if let Some(name) = forbidden_slot_name(&entry.name) {
+            return Err(anyhow!(
+                "policy-only enrollment artifact unexpectedly contains {name}"
+            ));
+        }
+
+        return Err(anyhow!(
+            "policy-only enrollment artifact contains an unknown FFS entry"
+        ));
+    }
+
+    let policy =
+        policy.ok_or_else(|| anyhow!("enrollment artifact contains no migration policy"))?;
+    validate_policy_only(policy)?;
+    Ok(policy.to_vec())
+}
+
+fn forbidden_policy_only_slots() -> [(&'static str, r_efi::efi::Guid); 4] {
+    [
+        ("root CA", MIGTD_ROOT_CA_FFS_GUID),
+        ("policy issuer chain", MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID),
+        ("signer anchor", MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID),
+        ("signed ServTD CoRIM", MIGTD_SERVTD_CORIM_FFS_GUID),
+    ]
+}
+
+fn forbidden_slot_name(name: &[u8; 16]) -> Option<&'static str> {
+    forbidden_policy_only_slots()
+        .into_iter()
+        .find_map(|(slot, guid)| (name == guid.as_bytes()).then_some(slot))
+}
+
+struct CfvEntry<'a> {
+    name: [u8; 16],
+    file_type: u8,
+    attributes: u8,
+    data: &'a [u8],
+}
+
+fn inventory_ffs_entries(cfv: &[u8], mut offset: usize) -> Result<Vec<CfvEntry<'_>>, Error> {
+    if offset > cfv.len() || offset % FFS_FILE_ALIGNMENT != 0 {
+        return Err(anyhow!(
+            "firmware volume has an invalid FFS start alignment"
+        ));
+    }
+
+    let mut entries = Vec::new();
+    let mut known_guids = BTreeSet::new();
+    while offset < cfv.len() {
+        let remaining = &cfv[offset..];
+        if remaining.iter().all(|byte| *byte == 0) {
+            break;
+        }
+        if remaining.len() < FFS_FILE_HEADER_SIZE {
+            return Err(anyhow!(
+                "firmware volume has non-padding trailing data or a truncated FFS header"
+            ));
+        }
+
+        let header = &remaining[..FFS_FILE_HEADER_SIZE];
+        let mut name = [0u8; 16];
+        name.copy_from_slice(&header[..16]);
+        let file_type = header[18];
+        let attributes = header[19];
+        if attributes & pi::fv::FFS_ATTRIB_LARGE_FILE != 0 {
+            return Err(anyhow!(
+                "firmware volume contains an impossible large-file FFS header"
+            ));
+        }
+        if header[17] != FFS_FIXED_CHECKSUM
+            || header[23] != FFS_FILE_STATE_VALID
+            || !valid_ffs_header_checksum(header)
+        {
+            return Err(anyhow!(
+                "firmware volume contains an invalid FFS header at offset {offset:#x}"
+            ));
+        }
+
+        let file_size = usize::from(header[20])
+            | (usize::from(header[21]) << 8)
+            | (usize::from(header[22]) << 16);
+        if file_size < FFS_FILE_HEADER_SIZE {
+            return Err(anyhow!(
+                "firmware volume contains an undersized FFS entry at offset {offset:#x}"
+            ));
+        }
+        if file_size > remaining.len() {
+            return Err(anyhow!(
+                "firmware volume contains a truncated FFS entry at offset {offset:#x}"
+            ));
+        }
+        let aligned_size = file_size
+            .checked_add(FFS_FILE_ALIGNMENT - 1)
+            .map(|size| size & !(FFS_FILE_ALIGNMENT - 1))
+            .ok_or_else(|| anyhow!("FFS entry alignment overflow at offset {offset:#x}"))?;
+        if aligned_size > remaining.len() {
+            return Err(anyhow!(
+                "firmware volume contains truncated FFS alignment padding at offset {offset:#x}"
+            ));
+        }
+        if remaining[file_size..aligned_size]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(anyhow!(
+                "firmware volume contains non-zero FFS alignment padding at offset {offset:#x}"
+            ));
+        }
+
+        if is_known_guid(&name) && !known_guids.insert(name) {
+            return Err(anyhow!(
+                "firmware volume contains a duplicate known FFS GUID"
+            ));
+        }
+        entries.push(CfvEntry {
+            name,
+            file_type,
+            attributes,
+            data: &remaining[FFS_FILE_HEADER_SIZE..file_size],
+        });
+        offset = offset
+            .checked_add(aligned_size)
+            .ok_or_else(|| anyhow!("FFS inventory offset overflow"))?;
+    }
+
+    Ok(entries)
+}
+
+fn is_known_guid(name: &[u8; 16]) -> bool {
+    name == MIGTD_POLICY_FFS_GUID.as_bytes() || forbidden_slot_name(name).is_some()
+}
+
+fn valid_ffs_header_checksum(header: &[u8]) -> bool {
+    header.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte))
+        == FFS_FILE_STATE_VALID.wrapping_add(FFS_FIXED_CHECKSUM)
+}
+
+fn validate_policy_only(policy: &[u8]) -> Result<(), Error> {
+    let document: Value = serde_json::from_slice(policy)
+        .map_err(|e| anyhow!("invalid enrollment policy JSON: {e}"))?;
+    let object = document
+        .as_object()
+        .ok_or_else(|| anyhow!("enrollment policy must be a JSON object"))?;
+    if object.len() != 1 || !object.contains_key("policyData") {
+        return Err(anyhow!(
+            "enrollment policy must contain only the unsigned policyData wrapper"
+        ));
+    }
+    let policy_data = object["policyData"]
+        .as_object()
+        .ok_or_else(|| anyhow!("enrollment policy policyData must be a JSON object"))?;
+    if policy_data.contains_key("servtdCollateral") {
+        return Err(anyhow!(
+            "enrollment policy must not contain servtdCollateral"
+        ));
+    }
+    validate_production_migtd_identity_rule(policy_data)?;
+    Ok(())
+}
+
+fn validate_production_migtd_identity_rule(
+    policy_data: &serde_json::Map<String, Value>,
+) -> Result<(), Error> {
+    let rules = policy_data
+        .get("policy")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("enrollment policyData.policy must be an array"))?;
+    let identity_rules: Vec<_> = rules
+        .iter()
+        .filter_map(|rule| rule.get("servtd")?.get("migtdIdentity"))
+        .collect();
+    if identity_rules.len() != 1 {
+        return Err(anyhow!(
+            "enrollment policy must contain exactly one servtd.migtdIdentity rule"
+        ));
+    }
+    let isvsvn = identity_rules[0]
+        .get("isvsvn")
+        .ok_or_else(|| anyhow!("production MigTD identity rule is missing isvsvn"))?;
+    if isvsvn.get("operation").and_then(Value::as_str) != Some("greater-or-equal")
+        || isvsvn.get("reference").and_then(Value::as_str) != Some("self")
+    {
+        return Err(anyhow!(
+            "production MigTD identity rule must require isvsvn greater-or-equal self"
+        ));
+    }
+    Ok(())
 }
 
 /// Field-by-field clone of a [`TdInfoStruct`] (which does not derive [`Clone`]).
@@ -434,17 +785,68 @@ fn calculate_digest(data: &[u8]) -> Result<Vec<u8>, Error> {
 mod tests {
     use super::migtd_consts::{
         CONFIG_VOLUME_SIZE, MIGTD_POLICY_FFS_GUID, MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID,
-        MIGTD_ROOT_CA_FFS_GUID, TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
+        MIGTD_ROOT_CA_FFS_GUID, MIGTD_SERVTD_CORIM_FFS_GUID, MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID,
+        TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
     };
-    use super::update_tcb_mapping_v2;
+    use super::{
+        assemble_config_volume_pages, forbidden_policy_only_slots, inventory_ffs_entries,
+        reject_parameter_directives, update_tcb_mapping_v2, validate_policy_only, ConfigPage,
+        AZURE_IGVM_CONFIG_VOLUME_BASE, FFS_FILE_HEADER_SIZE, PAGE_SIZE,
+    };
+    use igvm::IgvmDirectiveHeader;
     use r_efi::efi::Guid;
     use serde_json::Value;
     use td_layout::build_time::TD_SHIM_CONFIG_SIZE;
+    use td_shim_interface::td_uefi_pi::pi;
 
     const HASH_11: &str =
         "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
     const HASH_AA: &str =
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const VALID_POLICY: &[u8] = br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]}}"#;
+
+    fn ffs_file(guid: Guid, data: &[u8]) -> Vec<u8> {
+        let file_size = FFS_FILE_HEADER_SIZE + data.len();
+        let mut file = vec![0u8; (file_size + 7) & !7];
+        file[..16].copy_from_slice(guid.as_bytes());
+        file[17] = 0xAA;
+        file[18] = pi::fv::FV_FILETYPE_RAW;
+        file[19] = 0;
+        file[20] = file_size as u8;
+        file[21] = (file_size >> 8) as u8;
+        file[22] = (file_size >> 16) as u8;
+        file[23] = 0x07;
+        file[FFS_FILE_HEADER_SIZE..file_size].copy_from_slice(data);
+        let checksum = file[..FFS_FILE_HEADER_SIZE]
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !matches!(*index, 16 | 17 | 23))
+            .fold(0u8, |sum, (_, byte)| sum.wrapping_add(*byte));
+        file[16] = 0u8.wrapping_sub(checksum);
+        file
+    }
+
+    fn config_page(gpa: u64, data: &[u8]) -> ConfigPage<'_> {
+        ConfigPage {
+            gpa,
+            compatibility_mask: 1,
+            is_2mb_page: false,
+            unmeasured: true,
+            shared: false,
+            reserved_flags: 0,
+            normal_data: true,
+            data,
+        }
+    }
+
+    fn config_pages<'a>(storage: &'a [[u8; PAGE_SIZE]]) -> impl Iterator<Item = ConfigPage<'a>> {
+        storage.iter().enumerate().map(|(index, page)| {
+            config_page(
+                AZURE_IGVM_CONFIG_VOLUME_BASE + (index * PAGE_SIZE) as u64,
+                page,
+            )
+        })
+    }
 
     // Drift-guards: these constants are duplicated from the `migtd` crate so
     // this tool does not transitively pull in the SGX attestation static lib.
@@ -495,6 +897,171 @@ mod tests {
         assert_eq!(
             MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID.as_bytes(),
             expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn migtd_signer_anchor_ffs_guid_matches_upstream() {
+        let expected = Guid::from_fields(
+            0x2B9D5A84,
+            0x6F3C,
+            0x4E71,
+            0x8A,
+            0x2D,
+            &[0x0C, 0x7E, 0x1F, 0x4B, 0x6A, 0x93],
+        );
+        assert_eq!(
+            MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID.as_bytes(),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn migtd_servtd_corim_ffs_guid_matches_upstream() {
+        let expected = Guid::from_fields(
+            0x7E5B9C11,
+            0x2D4A,
+            0x4F6E,
+            0x9B,
+            0x3C,
+            &[0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F],
+        );
+        assert_eq!(MIGTD_SERVTD_CORIM_FFS_GUID.as_bytes(), expected.as_bytes());
+    }
+
+    #[test]
+    fn policy_only_schema_rejects_signature_and_servtd_collateral() {
+        assert!(validate_policy_only(VALID_POLICY).is_ok());
+        assert!(
+            validate_policy_only(
+                br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]},"signature":"deadbeef"}"#
+            )
+            .is_err()
+        );
+        assert!(
+            validate_policy_only(
+                br#"{"policyData":{"servtdCollateral":{},"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn policy_only_schema_requires_production_identity_rule() {
+        assert!(validate_policy_only(br#"{"policyData":{"policy":[]}}"#).is_err());
+        assert!(
+            validate_policy_only(
+                br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"equal","reference":1}}}}]}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn inventory_rejects_malformed_header_before_forbidden_entry() {
+        let mut malformed = ffs_file(MIGTD_POLICY_FFS_GUID, VALID_POLICY);
+        malformed[16] ^= 1;
+        malformed.extend(ffs_file(MIGTD_SERVTD_CORIM_FFS_GUID, b"forbidden"));
+        assert!(inventory_ffs_entries(&malformed, 0).is_err());
+    }
+
+    #[test]
+    fn inventory_rejects_duplicate_known_guid() {
+        let mut duplicate = ffs_file(MIGTD_POLICY_FFS_GUID, VALID_POLICY);
+        duplicate.extend(ffs_file(MIGTD_POLICY_FFS_GUID, VALID_POLICY));
+        assert!(inventory_ffs_entries(&duplicate, 0).is_err());
+    }
+
+    #[test]
+    fn inventory_rejects_truncated_entry() {
+        let mut truncated = ffs_file(MIGTD_POLICY_FFS_GUID, VALID_POLICY);
+        truncated[20] = 0xFF;
+        truncated[21] = 0xFF;
+        truncated[22] = 0x00;
+        let checksum = truncated[..FFS_FILE_HEADER_SIZE]
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !matches!(*index, 16 | 17 | 23))
+            .fold(0u8, |sum, (_, byte)| sum.wrapping_add(*byte));
+        truncated[16] = 0u8.wrapping_sub(checksum);
+        assert!(inventory_ffs_entries(&truncated, 0).is_err());
+    }
+
+    #[test]
+    fn inventory_rejects_non_padding_trailing_data() {
+        let mut garbage = ffs_file(MIGTD_POLICY_FFS_GUID, VALID_POLICY);
+        garbage.push(1);
+        assert!(inventory_ffs_entries(&garbage, 0).is_err());
+    }
+
+    #[test]
+    fn inventory_rejects_non_zero_alignment_padding() {
+        let mut malformed = ffs_file(MIGTD_POLICY_FFS_GUID, b"x");
+        *malformed.last_mut().unwrap() = 1;
+        assert!(inventory_ffs_entries(&malformed, 0).is_err());
+    }
+
+    #[test]
+    fn igvm_cfv_assembly_uses_gpa_not_page_order() {
+        let mut storage = vec![[0u8; PAGE_SIZE]; CONFIG_VOLUME_SIZE / PAGE_SIZE];
+        storage[0][0] = 0xA5;
+        let decoy = [0x5Au8; PAGE_SIZE];
+        let pages =
+            std::iter::once(config_page(0x1000, decoy.as_slice())).chain(config_pages(&storage));
+
+        let cfv = assemble_config_volume_pages(pages).unwrap();
+        assert_eq!(cfv[0], 0xA5);
+        assert_ne!(cfv[0], decoy[0]);
+    }
+
+    #[test]
+    fn igvm_cfv_assembly_rejects_duplicates_and_zero_fills_omitted_pages() {
+        let storage = vec![[0u8; PAGE_SIZE]; CONFIG_VOLUME_SIZE / PAGE_SIZE];
+        let base = AZURE_IGVM_CONFIG_VOLUME_BASE;
+        let duplicate =
+            config_pages(&storage).chain(std::iter::once(config_page(base, storage[0].as_slice())));
+        assert!(assemble_config_volume_pages(duplicate).is_err());
+
+        let cfv = assemble_config_volume_pages(config_pages(&storage).skip(1)).unwrap();
+        assert!(cfv[..PAGE_SIZE].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn igvm_cfv_assembly_rejects_unsafe_page_metadata() {
+        let data = [0u8; PAGE_SIZE];
+        let mut page = config_page(AZURE_IGVM_CONFIG_VOLUME_BASE, &data);
+        page.shared = true;
+        assert!(assemble_config_volume_pages(std::iter::once(page)).is_err());
+
+        let mut page = config_page(AZURE_IGVM_CONFIG_VOLUME_BASE, &data);
+        page.is_2mb_page = true;
+        assert!(assemble_config_volume_pages(std::iter::once(page)).is_err());
+
+        let mut page = config_page(AZURE_IGVM_CONFIG_VOLUME_BASE, &data);
+        page.compatibility_mask = 2;
+        assert!(assemble_config_volume_pages(std::iter::once(page)).is_err());
+    }
+
+    #[test]
+    fn igvm_cfv_rejects_parameter_directives() {
+        let directives = [IgvmDirectiveHeader::ParameterArea {
+            number_of_bytes: PAGE_SIZE as u64,
+            parameter_area_index: 0,
+            initial_data: Vec::new(),
+        }];
+        assert!(reject_parameter_directives(&directives).is_err());
+    }
+
+    #[test]
+    fn policy_only_artifact_forbids_all_non_policy_trust_inputs() {
+        assert_eq!(
+            forbidden_policy_only_slots().map(|(name, _)| name),
+            [
+                "root CA",
+                "policy issuer chain",
+                "signer anchor",
+                "signed ServTD CoRIM"
+            ]
         );
     }
 

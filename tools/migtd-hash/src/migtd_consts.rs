@@ -63,6 +63,17 @@ pub const MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID: Guid = Guid::from_fields(
     &[0x0C, 0x7E, 0x1F, 0x4B, 0x6A, 0x93],
 );
 
+/// FFS GUID of the signed ServTD TCB-mapping CoRIM.
+/// Mirrors `migtd::config::MIGTD_SERVTD_CORIM_FFS_GUID`.
+pub const MIGTD_SERVTD_CORIM_FFS_GUID: Guid = Guid::from_fields(
+    0x7E5B9C11,
+    0x2D4A,
+    0x4F6E,
+    0x9B,
+    0x3C,
+    &[0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F],
+);
+
 /// Marker event written into the event log when MigTD is built with the
 /// `test_disable_ra_and_accept_all` feature.
 /// Mirrors `migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT`.
