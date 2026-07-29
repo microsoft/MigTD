@@ -64,6 +64,14 @@ pub enum PolicyError {
     /// listed in the authoritative signer CRL (`servtdCrl`), or that CRL
     /// failed authentication. Fail-closed.
     SignerRevoked,
+    /// The signed servTD TCB mapping's monotonic `version` is below the
+    /// hardware-bound policy SVN floor, or below the trusted local mapping
+    /// generation during peer authentication.
+    ServtdTcbMappingRollback,
+    /// The signed servTD Identity's monotonic `version` is below the
+    /// hardware-bound policy SVN floor, or below the trusted local identity
+    /// generation during peer authentication.
+    ServtdIdentityRollback,
 }
 
 pub struct Report<'a> {
@@ -199,14 +207,11 @@ pub enum EventName {
     MigTdPolicy,
     SgxRootKey,
     MigTdPolicySigner,
-    /// Single RTMR2 extend for v2 policy: canonical bytes of `policyData`
-    /// with `servtdCollateral.servtdTcbMapping` removed
-    /// (see `doc/tcb_mapping_redesign.md`). Tag ID
-    /// `TAGGED_EVENT_ID_POLICY_DATA = 0x9`. Replaces the prior six per-field
-    /// extends; protects every `policyData` field (including
-    /// `forwardPolicy` / `backwardPolicy` and the issuer chains) by
-    /// construction, while keeping `servtdTcbMapping` updateable
-    /// post-IGVM-build.
+    /// Single RTMR2 extend for canonical `policyData`. JSON mapping/identity
+    /// artifacts and their issuer chains are redacted and protected by their
+    /// signatures, the RTMR1 signer anchor, and monotonic generation floors.
+    /// CoRIM-only policy has no `servtdCollateral` and is measured in full.
+    /// See `doc/tcb_mapping_design_proposal.md`.
     MigTdPolicyData,
     Unknown,
 }

@@ -773,6 +773,7 @@ POLICY_TCB_REF=$(jq -r '
   [.policy[] | .servtd.migtdIdentity.tcbDate.reference // empty] |
   map(select(. != "")) | max // empty
 ' "$POLICY_DATA_RAW" 2>/dev/null)
+POLICY_SVN=$(jq -er '.policySvn | numbers' "$POLICY_DATA_RAW")
 
 DATE_UPDATES=""
 if [ -n "$POLICY_TCB_REF" ]; then
@@ -789,7 +790,7 @@ if [ -n "$POLICY_TCB_REF" ]; then
     fi
 fi
 
-jq -c ".xfam = \"$XFAM\" | .attributes = \"$ATTRIBUTES\" | .mrConfigId = \"$MR_CONFIG_ID\" | \
+jq -c ".version = $POLICY_SVN | .xfam = \"$XFAM\" | .attributes = \"$ATTRIBUTES\" | .mrConfigId = \"$MR_CONFIG_ID\" | \
 .mrOwner = \"$MR_OWNER\" | .mrOwnerConfig = \"$MR_OWNER_CONFIG\" | .mrsigner = \"$MRSIGNER\" | \
 .isvProdId = $ISV_PROD_ID | .tcbLevels[0].tcb.isvsvn = $ISVSVN $DATE_UPDATES" \
 "$TD_IDENTITY_TEMPLATE" | tr -d '\n' > "$TD_IDENTITY_UPDATED"
@@ -823,6 +824,13 @@ done
     "${MAPPING_UPDATE_ARGS[@]}"
 # Uppercase to match the convention used by signed policies.
 TDINFO_HASH=$(tr 'a-z' 'A-Z' < "$TDINFO_HASH_FILE")
+
+# Advance the signed collateral generation without discarding cumulative
+# historical mappings retained by migtd-hash.
+TCB_MAPPING_VERSIONED="$TEMP_DIR/tcb_mapping_versioned.json"
+jq -c ".version = $POLICY_SVN" "$TCB_MAPPING_UPDATED" \
+    | tr -d '\n' > "$TCB_MAPPING_VERSIONED"
+mv "$TCB_MAPPING_VERSIONED" "$TCB_MAPPING_UPDATED"
 
 echo -e "${GREEN}✓ TCB Mapping updated: $TCB_MAPPING_UPDATED${NC}"
 echo -e "  history source = $TCB_MAPPING_SOURCE"

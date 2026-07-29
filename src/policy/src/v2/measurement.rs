@@ -11,14 +11,15 @@
 //! ## RTMR2 measurement scheme
 //!
 //! RTMR2 (`mr_index = 0x3`) is extended **once** with the canonical JSON bytes
-//! of `policyData` with `servtdCollateral.servtdTcbMapping` **and**
-//! `servtdCollateral.servtdTcbMappingIssuerChain` removed.
+//! of `policyData`. When JSON `servtdCollateral` is present, four fields are
+//! removed: `servtdTcbMapping`, `servtdTcbMappingIssuerChain`, the optional
+//! `servtdIdentity`, and `servtdIdentityIssuerChain`.
 //!
 //! | # | Field | Helper | Tag ID | EventName |
 //! |---|-------|--------|--------|-----------|
-//! | 1 | `policyData` (redacted: `servtdTcbMapping` + `servtdTcbMappingIssuerChain` omitted) | `extract_canonical_policy_data_bytes` | `0x9` | `MigTdPolicyData` |
+//! | 1 | `policyData` (JSON collateral redactions described below; CoRIM-only policy measured in full) | `extract_canonical_policy_data_bytes` | `0x9` | `MigTdPolicyData` |
 //!
-//! Two fields are excluded, for two different reasons:
+//! The JSON collateral fields are excluded for these reasons:
 //! * `servtdCollateral.servtdTcbMapping` — must remain updateable after the
 //!   IGVM is published (re-signed by the issuer without re-releasing the
 //!   image); it also carries the circular `tdinfo_hash`.
@@ -38,7 +39,17 @@
 //! Identity must remain re-issuable by the signer (e.g. to revoke/downgrade an
 //! SVN) without re-releasing the image, and its issuer chain is bound into
 //! **RTMR1** (the signer anchor) instead. See
-//! `doc/corim_attestation_design.md` §3.2.
+//! `doc/tcb_mapping_design_proposal.md`.
+//!
+//! A CoRIM-only policy omits `servtdCollateral`; no redaction is needed, so
+//! its complete canonical `policyData` object is measured.
+//!
+//! Because MigTD has no trusted wall clock, the redacted artifacts use their
+//! signed monotonic `version` (CoRIM: CoMID `tag-version`) as an issuance
+//! generation. Each generation must be at least the measured `policySvn`,
+//! whose value is also checked against TDINFO.MROWNERCONFIG. Peer JSON
+//! collateral is compared against the corresponding local JSON generation;
+//! CoRIM `tag-version` is not compared with the independent JSON namespace.
 //!
 //! ## Canonicalization
 //!
@@ -202,9 +213,11 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
     Ok(policy_data)
 }
 
-/// Canonical JSON bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
-/// **and** `servtdCollateral.servtdTcbMappingIssuerChain` removed, INCLUDING
-/// the outer `{` / `}`.
+/// Canonical JSON bytes of `policyData`, INCLUDING the outer `{` / `}`.
+///
+/// For JSON collateral, the signed mapping, optional identity, and their
+/// issuer chains are removed. A CoRIM-only policy omits `servtdCollateral`
+/// entirely and is measured without redaction.
 ///
 /// This is the single buffer extended into RTMR2 by the runtime and by
 /// `migtd-hash` (tag `TAGGED_EVENT_ID_POLICY_DATA = 0x9`, event name
@@ -214,7 +227,7 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 /// the canonical object bytes, so the measurement automatically protects future
 /// field additions without manual whitelist maintenance.
 ///
-/// Two fields are redacted:
+/// The JSON collateral redactions are:
 /// * `servtdCollateral.servtdTcbMapping` (**strict** — its absence is an error)
 ///   because the release pipeline must re-issue (re-sign) the TCB mapping with
 ///   updated `svnMappings[]` entries without rebuilding the IGVM image, and it
@@ -227,6 +240,10 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 ///   `servtdCollateral.servtdIdentityIssuerChain` (**non-strict** — removed if
 ///   present) because the optional TD Identity must remain re-issuable without
 ///   re-releasing the image, and its issuer chain is bound into RTMR1 instead.
+///   Its signed `version` is anti-rollback protected by the measured
+///   `policySvn` floor and peer-generation comparison.
+/// * The redacted TCB mapping's signed `version` (or CoMID `tag-version`) uses
+///   the same no-clock anti-rollback rule.
 ///
 /// Every other field — `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
 /// `backwardPolicy`, `collaterals`, `servtdCollateral.majorVersion`, and
@@ -234,19 +251,12 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 ///
 /// ## Strict redaction (schema-drift defense)
 ///
-/// The redaction is **structurally strict**: it requires
-/// `servtdCollateral` to be present as a JSON object, AND
-/// `servtdTcbMapping` to be one of its direct children. Any input that
-/// violates either condition (missing `servtdCollateral`, non-object
-/// `servtdCollateral`, or missing `servtdTcbMapping`) is rejected with
-/// `PolicyError::InvalidPolicy`. A silent no-op on a malformed shape
-/// would let a future schema change (e.g. moving `servtdTcbMapping`
-/// under a new wrapper, making `servtdCollateral` optional, or
-/// type-confusing it to null/string/array) silently land the mapping
-/// bytes — or zero redaction at all — in the RTMR2 extend,
-/// re-introducing the circular dependency this scheme exists to break.
-/// The runtime extender already panics on extraction failure, so the
-/// stricter error path is fail-closed.
+/// When `servtdCollateral` exists, redaction is **structurally strict**: it
+/// must be an object with a direct `servtdTcbMapping` child. A malformed
+/// object or missing mapping is rejected with `PolicyError::InvalidPolicy`
+/// rather than silently measuring mapping bytes and re-introducing the
+/// circular dependency. Absence of `servtdCollateral` is valid only as the
+/// CoRIM-only shape; the complete `policyData` object is measured as-is.
 pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
     let mut policy_data = parse_policy_data(policy_input)?;
 

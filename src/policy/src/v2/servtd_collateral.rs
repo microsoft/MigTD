@@ -31,7 +31,7 @@ pub struct ServtdCollateral<'a> {
     /// JSON-only and optional (there is no CoRIM form). When present it lets
     /// migration policy use `tcbDate` / `tcbStatus` bars; when absent, policy
     /// is driven by the ISV SVN alone. See
-    /// `doc/corim_attestation_design.md` §3.2.
+    /// `doc/tcb_mapping_design_proposal.md`.
     #[serde(borrow, default, skip_serializing_if = "Option::is_none")]
     pub servtd_identity: Option<RawServtdIdentity<'a>>,
     /// Legacy location for the optional PEM CRL covering the servTD signer
@@ -79,11 +79,15 @@ impl<'a> RawServtdIdentity<'a> {
 /// `mrOwnerConfig`, MRTD/RTMRs) and the SGX-enclave `mrsigner` / `isvProdId`
 /// fields are dropped. It reduces to an envelope plus an
 /// `isvsvn -> (tcb_date, tcb_status)` table. See
-/// `doc/corim_attestation_design.md` §3.2.
+/// `doc/tcb_mapping_design_proposal.md`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TdIdentity {
     pub id: String,
+    /// Monotonic issuance generation. MigTD requires this to be at least the
+    /// measured policy SVN and never older than the local peer-comparison
+    /// baseline. It is deliberately independent of `issueDate` /
+    /// `nextUpdate`, because firmware has no trusted wall clock.
     pub version: u32,
     pub issue_date: String,
     pub next_update: String,
@@ -151,6 +155,10 @@ impl<'a> RawServtdTcbMapping<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct TdTcbMapping {
     pub id: String,
+    /// Monotonic issuance generation. MigTD requires this to be at least the
+    /// measured policy SVN and never older than the local peer-comparison
+    /// baseline. It is deliberately independent of `issueDate` /
+    /// `nextUpdate`, because firmware has no trusted wall clock.
     pub version: u32,
     pub issue_date: String,
     pub next_update: String,

@@ -152,6 +152,10 @@ emit_real_policy_pair() { # name
   local original_stem rebind_stem
   local original_policy="$BUILD_TMP_DIR/$name-policy-original.json"
   local rebind_policy_data="$BUILD_TMP_DIR/$name-policy-rebind-data.json"
+  local rebind_mapping_data="$BUILD_TMP_DIR/$name-mapping-rebind-data.json"
+  local rebind_mapping="$BUILD_TMP_DIR/$name-mapping-rebind.json"
+  local rebind_identity_data="$BUILD_TMP_DIR/$name-identity-rebind-data.json"
+  local rebind_identity="$BUILD_TMP_DIR/$name-identity-rebind.json"
   local original_svn rebind_svn actual_rebind_svn
 
   cp "$POLICY" "$original_policy"
@@ -163,11 +167,47 @@ emit_real_policy_pair() { # name
   emit "$name"
   cp "$original_policy" "$OUT_DIR/$original_stem.policy.json"
 
-  # Preserve the complete merged policyData object and change only policySvn,
-  # then sign it with the same key as the original image.
+  # policySvn is the measured anti-rollback floor for the independently signed
+  # mapping and identity. Raise their signed generations with it before
+  # re-signing the outer compatibility wrapper.
   jq -c --argjson svn "$rebind_svn" \
-    '.policyData | .policySvn = $svn' \
-    "$original_policy" | tr -d '\n' > "$rebind_policy_data"
+    '.policyData.servtdCollateral.servtdTcbMapping.tdTcbMapping | .version = $svn' \
+    "$original_policy" | tr -d '\n' > "$rebind_mapping_data"
+  "$TOOLS_DIR/json-signer" \
+    --sign \
+    --name tdTcbMapping \
+    --private-key "$CERT_DIR/policy_signing_pkcs8.key" \
+    --input "$rebind_mapping_data" \
+    --output "$rebind_mapping"
+
+  if jq -e '.policyData.servtdCollateral.servtdIdentity != null' \
+      "$original_policy" >/dev/null; then
+    jq -c --argjson svn "$rebind_svn" \
+      '.policyData.servtdCollateral.servtdIdentity.tdIdentity | .version = $svn' \
+      "$original_policy" | tr -d '\n' > "$rebind_identity_data"
+    "$TOOLS_DIR/json-signer" \
+      --sign \
+      --name tdIdentity \
+      --private-key "$CERT_DIR/policy_signing_pkcs8.key" \
+      --input "$rebind_identity_data" \
+      --output "$rebind_identity"
+    jq -c --argjson svn "$rebind_svn" \
+      --slurpfile mapping "$rebind_mapping" \
+      --slurpfile identity "$rebind_identity" \
+      '.policyData
+       | .policySvn = $svn
+       | .servtdCollateral.servtdTcbMapping = $mapping[0]
+       | .servtdCollateral.servtdIdentity = $identity[0]' \
+      "$original_policy" | tr -d '\n' > "$rebind_policy_data"
+  else
+    jq -c --argjson svn "$rebind_svn" \
+      --slurpfile mapping "$rebind_mapping" \
+      '.policyData
+       | .policySvn = $svn
+       | .servtdCollateral.servtdTcbMapping = $mapping[0]' \
+      "$original_policy" | tr -d '\n' > "$rebind_policy_data"
+  fi
+
   "$TOOLS_DIR/json-signer" \
     --sign \
     --name policyData \
@@ -176,14 +216,31 @@ emit_real_policy_pair() { # name
     --output "$POLICY"
 
   if ! diff -u \
-      <(jq -S '.policyData | del(.policySvn)' "$original_policy") \
-      <(jq -S '.policyData | del(.policySvn)' "$POLICY"); then
-    echo "Bumped policy for $name differs from the original beyond policySvn." >&2
+      <(jq -S '.policyData
+               | del(.policySvn,
+                     .servtdCollateral.servtdIdentity,
+                     .servtdCollateral.servtdTcbMapping)' "$original_policy") \
+      <(jq -S '.policyData
+               | del(.policySvn,
+                     .servtdCollateral.servtdIdentity,
+                     .servtdCollateral.servtdTcbMapping)' "$POLICY"); then
+    echo "Bumped policy for $name differs beyond policySvn and signed generations." >&2
     return 1
   fi
   actual_rebind_svn="$(jq -er '.policyData.policySvn | numbers' "$POLICY")"
   if [[ "$actual_rebind_svn" -ne "$rebind_svn" ]]; then
     echo "Bumped policy for $name has policySvn=$actual_rebind_svn, expected $rebind_svn." >&2
+    return 1
+  fi
+  if [[ "$(jq -er '.policyData.servtdCollateral.servtdTcbMapping.tdTcbMapping.version' "$POLICY")" \
+        -ne "$rebind_svn" ]]; then
+    echo "Bumped policy for $name has a stale TCB mapping generation." >&2
+    return 1
+  fi
+  if jq -e '.policyData.servtdCollateral.servtdIdentity != null' "$POLICY" >/dev/null && \
+     [[ "$(jq -er '.policyData.servtdCollateral.servtdIdentity.tdIdentity.version' "$POLICY")" \
+        -ne "$rebind_svn" ]]; then
+    echo "Bumped policy for $name has a stale TD Identity generation." >&2
     return 1
   fi
 
@@ -205,7 +262,7 @@ emit_real_policy_pair() { # name
   enroll_policy
   emit "${name}_rebind"
   cp "$POLICY" "$OUT_DIR/$rebind_stem.policy.json"
-  echo "  policy pair $original_stem: policySvn $original_svn -> $rebind_svn (same signer)"
+  echo "  policy pair $original_stem: policy/collateral generation $original_svn -> $rebind_svn (same signer)"
 }
 
 resolve_powertest_dir() {

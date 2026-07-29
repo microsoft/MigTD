@@ -145,12 +145,14 @@ and the runtime trust check ask one identical question.
 | | Today | Proposed |
 |---|-------|----------|
 | **RTMR1 extend input** | `SHA384(raw issuer chain PEM bytes)` | `SHA384(A)` where `A` is the signer anchor below |
-| **CFV slot `MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID`** | full signing cert chain (unchanged) | full signing cert chain (**unchanged**) |
+| **CFV enrollment** | full signing cert chain in `MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID` | either that PEM chain or a precomputed 48-byte `A` in `MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID` |
 | **What RTMR1 is sensitive to** | every byte of the chain (incl. leaf key) | root CA fingerprint + required leaf EKU only |
 
-The CFV still ships the **full** chain (peer validation and policy-signer signature
-verification still need it); only **what is hashed into RTMR1** changes — a small,
-stable anchor derived from the chain rather than the chain's raw bytes.
+JSON collateral enrollment retains the **full** chain because policy signature
+verification uses it. CoRIM-only enrollment may instead carry the precomputed
+48-byte anchor; the signed CoRIM carries its own `x5chain`. The direct anchor
+takes precedence when both slots exist. Both forms produce the same RTMR1
+measurement.
 
 ## RTMR1 signer-anchor formula
 
@@ -238,13 +240,12 @@ for all regions. Cross-region migration passes because peer validation also keys
 
 ## Boot & offline measurement flow
 
-- **Boot (MigTD core):** load the chain from CFV → parse the root certificate and the
-  leaf's Extended Key Usage → compute `R`, `A` → extend RTMR1 with `H(A)` and
-  emit one event-log entry. The full chain remains available for signature verification
-  and peer validation.
-- **Offline (`migtd-hash` `rtmr1()`):** compute the identical `A` from the same CFV
-  chain so the reproduced `tdinfo_hash` matches the running TD. This replaces the current
-  "extend over raw chain bytes" path.
+- **Boot (MigTD core):** prefer the 48-byte anchor CFV slot. Otherwise load
+  the PEM chain, parse its root and leaf EKU, and derive `A`. Extend RTMR1
+  with `H(A)` and emit one event-log entry.
+- **Offline (`migtd-hash` `rtmr1()`):** resolve either the direct anchor or
+  PEM-derived anchor identically so the reproduced `tdinfo_hash` matches the
+  running TD.
 
 # Security considerations — signing-key compromise
 
@@ -381,4 +382,4 @@ RTMR2 extend (like `servtdTcbMapping`), leaving `servtd_crl_num` as the sole ant
 | Offline RTMR1 reproduction | `tools/migtd-hash/src/lib.rs` (`rtmr1`) |
 | Peer trust model (root DER + leaf Subject today; **updated** to root + leaf EKU) | `src/crypto/src/lib.rs:290` (`validate_peer_cert_chain`) |
 | Leaf-public-key hash (changes on rotation; not used by anchor) | `src/crypto/src/lib.rs:105` (`get_policy_signer_key_hash`) |
-| CFV slot holding the chain | `MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID` (`src/migtd/src/config.rs`) |
+| CFV signer-anchor inputs | `MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID` (preferred) or `MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID` (`src/migtd/src/config.rs`) |

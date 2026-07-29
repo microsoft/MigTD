@@ -24,7 +24,7 @@
 //! The hash -> svn lookup is driven by the CES triples. There is no TD
 //! Identity document: the SVN is the endorsement, and the MigTD `tcb_date` /
 //! `tcb_status` translation moved to policy-authoring time (see
-//! `doc/corim_attestation_design.md` §7).
+//! `doc/tcb_mapping_design_proposal.md`).
 //!
 //! # `no_std`
 //!
@@ -92,6 +92,10 @@ pub struct ServtdCorim {
     /// Verified leaf-first COSE `x5chain`, retained so callers can apply the
     /// locally authoritative servTD CRL after signature/anchor verification.
     signer_chain: Option<Vec<Vec<u8>>>,
+    /// Oldest CoMID `tag-version` in this signed mapping document. Every tag
+    /// can authorize a release, so the minimum is the security generation for
+    /// anti-rollback comparison.
+    generation: u64,
 }
 
 impl ServtdCorim {
@@ -102,11 +106,17 @@ impl ServtdCorim {
     /// Signature verification of the surrounding `COSE_Sign1` envelope is the
     /// caller's responsibility; this input is the inner payload bytes.
     pub fn decode(tcb_mapping_cbor: &[u8], now_epoch_secs: i64) -> Result<Self, PolicyError> {
-        let (_c1, tcb_mapping) = decode_and_validate_at(tcb_mapping_cbor, now_epoch_secs)
+        let (_corim, tcb_mapping) = decode_and_validate_at(tcb_mapping_cbor, now_epoch_secs)
             .map_err(|_| PolicyError::InvalidServtdTcbMapping)?;
+        let generation = tcb_mapping
+            .iter()
+            .map(|comid| comid.tag_identity.tag_version_or_default())
+            .min()
+            .ok_or(PolicyError::InvalidServtdTcbMapping)?;
         Ok(Self {
             tcb_mapping,
             signer_chain: None,
+            generation,
         })
     }
 
@@ -175,6 +185,17 @@ impl ServtdCorim {
     /// diagnostics.
     pub fn comid_count(&self) -> usize {
         self.tcb_mapping.len()
+    }
+
+    /// Monotonic generation carried by the CoMID `tag-version`. The minimum
+    /// across tags is used because any tag can contribute an authorization.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_generation_for_test(&mut self, generation: u64) {
+        self.generation = generation;
     }
 
     /// Resolve the MigTD ISV SVN for the MigTD whose masked `TDINFO_STRUCT`
@@ -411,8 +432,9 @@ mod test {
 
     /// Build a TCB Mapping CoRIM mirroring `TcbMappingCorim::add_release`:
     /// a reference-triple plus a CES triple per `(hash, svn)`.
-    fn build_tcb_mapping(entries: &[(Vec<u8>, u16)]) -> Vec<u8> {
-        let mut comid = ComidBuilder::new(TagIdChoice::Text("migtd-tcb-mapping".into()));
+    fn build_tcb_mapping(entries: &[(Vec<u8>, u16)], generation: u64) -> Vec<u8> {
+        let mut comid = ComidBuilder::new(TagIdChoice::Text("migtd-tcb-mapping".into()))
+            .set_tag_version(generation);
         for (hash, svn) in entries {
             comid = comid.add_reference_triple(ref_triple(hash));
             comid = comid.add_conditional_endorsement_series(ces_triple(hash, *svn));
@@ -431,9 +453,10 @@ mod test {
 
     #[test]
     fn hash_lookup_resolves_svn() {
-        let tcb = build_tcb_mapping(&[(hash(0xAA), 5), (hash(0xBB), 7)]);
+        let tcb = build_tcb_mapping(&[(hash(0xAA), 5), (hash(0xBB), 7)], 1);
         let provider = ServtdCorim::decode(&tcb, 0).expect("decode");
         assert_eq!(provider.comid_count(), 1);
+        assert_eq!(provider.generation(), 1);
 
         let hit = provider.lookup_by_tdinfo_hash(&hash(0xAA)).expect("match");
         assert_eq!(hit.isvsvn, 5);
@@ -444,14 +467,14 @@ mod test {
 
     #[test]
     fn unknown_hash_misses() {
-        let tcb = build_tcb_mapping(&[(hash(0xAA), 5)]);
+        let tcb = build_tcb_mapping(&[(hash(0xAA), 5)], 1);
         let provider = ServtdCorim::decode(&tcb, 0).expect("decode");
         assert!(provider.lookup_by_tdinfo_hash(&hash(0xCC)).is_none());
     }
 
     #[test]
     fn wrong_length_hash_misses() {
-        let tcb = build_tcb_mapping(&[(hash(0xAA), 5)]);
+        let tcb = build_tcb_mapping(&[(hash(0xAA), 5)], 1);
         let provider = ServtdCorim::decode(&tcb, 0).expect("decode");
         assert!(provider.lookup_by_tdinfo_hash(&[0xAA; 32]).is_none());
     }
