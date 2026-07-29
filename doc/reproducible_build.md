@@ -213,6 +213,22 @@ The downstream release flow must use this sequence:
 4. Verify the anchor-stage and final images have identical MRTD and RTMR0-3.
    Only the CoRIM is wholly outside the runtime measurement model.
 
+`sh_script/Azure/enroll_igvm.sh` is the canonical byte-level enrollment
+wrapper:
+
+```bash
+sh_script/Azure/enroll_igvm.sh anchor \
+  migtd.igvm migtd.policy_v2.json signer-anchor.bin anchor-stage.igvm
+sh_script/Azure/enroll_igvm.sh final \
+  migtd.igvm migtd.policy_v2.json signer-anchor.bin \
+  tcb-mapping.cose final.igvm
+```
+
+`test_corim_enrollment_flow.sh` executes this complete transition with an
+ephemeral test signer, records both measurement reports, invokes the
+authoritative `check_tdinfo_hash_equality.sh` gate, and proves a regression
+that accidentally measures the signed mapping fails closed.
+
 Do not describe anchor enrollment as unmeasured: changing the anchor changes
 RTMR1. The measurement-invariant transition begins only after the production
 anchor is staged.
