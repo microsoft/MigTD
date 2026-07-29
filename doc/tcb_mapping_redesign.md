@@ -1,6 +1,13 @@
 TCB Mapping Design for One-Hash Endorsement
 ===================================================
 
+> **Status:** The proposal is implemented. The authoritative current contract
+> is summarized here and in
+> [tcb_mapping_design_proposal.md](./tcb_mapping_design_proposal.md).
+> Historical problem analysis and rejected intermediate designs are retained
+> below, but statements in those sections about measuring the signed identity
+> or issuer chains are superseded.
+
 # Problem Statement
 
 Policy v2 bundles `{policy, collaterals, servtdCollateral (signed TCB mapping + signed identity)}` into one signed blob that is measured into RTMR2. This creates a **circular dependency**: binding RTMR2 into `svnMappings` requires RTMR2 to be known before the TCB mapping is generated, yet RTMR2 is computed over policy content that already contains that TCB mapping.
@@ -19,10 +26,15 @@ Change what is measured so the mapping key becomes a stable, pre-signing functio
 | Register | Today | Proposed |
 |----------|-------|----------|
 | **RTMR1** | Hash of the policy-issuer cert chain (PEM) | **Signer anchor** `A = SHA384(tag \|\| 0x00 \|\| SHA384(DER(root)) \|\| 0x00 \|\| DER(leaf signer EKU OID))` |
-| **RTMR2** | Whole signed policy blob (includes the TCB mapping) | **Single canonical-bytes extend** of `policyData` with `servtdCollateral.servtdTcbMapping` redacted |
+| **RTMR2** | Whole signed policy blob (includes the TCB mapping) | **Single canonical-bytes extend** of `policyData`; JSON enrollment redacts the signed mapping, optional identity, and both issuer chains, while CoRIM-only enrollment measures all of `policyData` |
 | **`svnMappings` key** | `[MRTD, RTMR0, RTMR1]` subset | Full `tdinfo_hash` (= `init_servtd_info_hash` = `SHA384(TDINFO)` for `attr=0`) |
 
-`servtdTcbMapping` is the **only** field redacted from the RTMR2 extend, because it is the field that carries `tdinfo_hash`; excluding it removes the cycle while every other `policyData` field stays bound by construction. `svnMappings[].tdMeasurements.tdinfo_hash` is populated *after* measurement.
+The independently signed JSON mapping and optional identity remain
+re-issuable without changing RTMR2. Their signatures and issuer chains are
+bound to the RTMR1 signer anchor, and their monotonic generations are checked
+against the measured `policySvn` floor. A CoRIM-only policy has no
+`servtdCollateral`, so its complete canonical `policyData` is measured.
+`svnMappings[].tdMeasurements.tdinfo_hash` is populated *after* measurement.
 
 # Benefits
 
@@ -37,9 +49,12 @@ Change what is measured so the mapping key becomes a stable, pre-signing functio
 - **Future Mig-NRX support:** SERVTD_EXT.{INIT,CUR}_INFO_HASH will measure the policy only so we redefine the hash key in svnMappings as the hash of the policy only.
 
 
-# Additional details
+# Historical design exploration (superseded where noted above)
 
-## Diagrams and structures for current implementation
+The following diagrams document the pre-redesign state and intermediate
+reasoning. They are not the byte-level contract for the implemented design.
+
+## Diagrams and structures for the pre-redesign implementation
 
 **Current TCBMapping without full measurement of MigTD and policy in svnMappings**
 

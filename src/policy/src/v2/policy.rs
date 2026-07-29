@@ -416,9 +416,10 @@ pub fn check_policy_integrity(
     policy: &[u8],
     events: &BTreeMap<EventName, CcEvent>,
 ) -> Result<(), PolicyError> {
-    // RTMR2 is extended once with the canonical bytes of `policyData` with
-    // `servtdCollateral.servtdTcbMapping` removed. See
-    // `doc/tcb_mapping_redesign.md` for the rationale. The verifier
+    // RTMR2 is extended once with canonical `policyData`. JSON collateral
+    // redacts the signed mapping, optional identity, and issuer chains;
+    // CoRIM-only policy is measured in full. See
+    // `doc/tcb_mapping_design_proposal.md` for the rationale. The verifier
     // recomputes those exact bytes via the same helper used by the runtime
     // extender (`get_policy_and_measure`) and `migtd-hash` (offline RTMR2
     // simulator), then asserts the event-log entry's recorded digest matches.
