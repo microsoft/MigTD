@@ -102,8 +102,7 @@ pub fn build_td_info_unmasked(
 fn read_config_volume(image: &mut File, igvmformat: bool) -> Result<Vec<u8>, Error> {
     image.seek(SeekFrom::Start(0))?;
     if igvmformat {
-        let mut contents = Vec::new();
-        image.read_to_end(&mut contents)?;
+        let contents = read_with_limit(image, MIGTD_IMAGE_SIZE)?;
         let igvm = IgvmFile::new_from_binary(&contents, None)
             .map_err(|e| anyhow!("failed to parse IGVM image: {e}"))?;
         reject_parameter_directives(igvm.directives())?;
@@ -137,6 +136,17 @@ fn read_config_volume(image: &mut File, igvmformat: bool) -> Result<Vec<u8>, Err
         image.read_exact(&mut cfv)?;
         Ok(cfv)
     }
+}
+
+fn read_with_limit(reader: impl Read, limit: u64) -> Result<Vec<u8>, Error> {
+    let mut contents = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut contents)?;
+    if contents.len() as u64 > limit {
+        return Err(anyhow!("IGVM image exceeds {limit} bytes"));
+    }
+    Ok(contents)
 }
 
 fn reject_parameter_directives(directives: &[IgvmDirectiveHeader]) -> Result<(), Error> {
@@ -790,12 +800,13 @@ mod tests {
     };
     use super::{
         assemble_config_volume_pages, forbidden_policy_only_slots, inventory_ffs_entries,
-        reject_parameter_directives, update_tcb_mapping_v2, validate_policy_only, ConfigPage,
-        AZURE_IGVM_CONFIG_VOLUME_BASE, FFS_FILE_HEADER_SIZE, PAGE_SIZE,
+        read_with_limit, reject_parameter_directives, update_tcb_mapping_v2, validate_policy_only,
+        ConfigPage, AZURE_IGVM_CONFIG_VOLUME_BASE, FFS_FILE_HEADER_SIZE, PAGE_SIZE,
     };
     use igvm::IgvmDirectiveHeader;
     use r_efi::efi::Guid;
     use serde_json::Value;
+    use std::io::Cursor;
     use td_layout::build_time::TD_SHIM_CONFIG_SIZE;
     use td_shim_interface::td_uefi_pi::pi;
 
@@ -846,6 +857,15 @@ mod tests {
                 page,
             )
         })
+    }
+
+    #[test]
+    fn igvm_read_rejects_input_over_limit() {
+        assert_eq!(
+            read_with_limit(Cursor::new([0xA5; 4]), 4).unwrap(),
+            [0xA5; 4]
+        );
+        assert!(read_with_limit(Cursor::new([0xA5; 5]), 4).is_err());
     }
 
     // Drift-guards: these constants are duplicated from the `migtd` crate so
