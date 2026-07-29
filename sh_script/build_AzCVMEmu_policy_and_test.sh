@@ -857,6 +857,8 @@ if [ "$GENERATE_CORIM_ONLY" = true ]; then
         echo -e "${RED}Error: Generated CoRIM-only policy unexpectedly contains servtdCollateral${NC}" >&2
         exit 1
     fi
+    POLICY_SVN=$(jq -er '.policyData.policySvn | select(type == "number")' \
+        "$OUTPUT_CORIM_POLICY")
 
     "$TOOLS_DIR/servtd-corim-generator" \
         --tdinfo-hash "$TDINFO_HASH" \
