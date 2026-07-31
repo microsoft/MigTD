@@ -26,6 +26,8 @@ on:
   pull_request:
     paths:
       - "sh_script/Azure/**"
+      - "config/Azure/policy_data_raw.json"
+      - "config/collateral_production_fmspc.json"
       - ".github/workflows/reproducible-igvm.yml"
       - "xtask/**"
       - "Cargo.toml"
@@ -75,6 +77,9 @@ jobs:
 
       - name: Test linux-sgx pruning safety
         run: bash src/attestation/test-prune-unused-linux-sgx.sh
+
+      - name: Test policy-only enrollment artifact contract
+        run: bash sh_script/Azure/test_policy_only_enrollment_contract.sh
 
       - name: Build Azure IGVM in the pinned container (run 1)
         run: ./sh_script/Azure/docker_build_igvm.sh -t build-igvm -o "$RUNNER_TEMP/out1"
