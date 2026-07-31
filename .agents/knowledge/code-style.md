@@ -8,7 +8,7 @@ timestamp: 2026-07-10T19:26:55+00:00
 
 # Code Style Preferences
 
-> Split from [AGENT_NOTES.md](/AGENT_NOTES.md) §6.
+> Condensed in the root [agent guide](../../AGENTS.md).
 
 - **Minimize diff.** When refactoring or merging conflicts, **keep existing
   parameter and field names** instead of inventing new ones. Cosmetic

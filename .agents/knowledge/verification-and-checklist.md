@@ -8,7 +8,7 @@ timestamp: 2026-07-10T19:26:55+00:00
 
 # Setup, Verification Gauntlet & Pre-done Checklist
 
-> Split from [AGENT_NOTES.md](/AGENT_NOTES.md) §3, §4, §10.
+> Condensed in the root [agent guide](../../AGENTS.md).
 
 ## Mandatory setup after fresh checkout / submodule update / `git clean`
 
