@@ -47,6 +47,11 @@ struct V2Command {
     #[arg(long, value_name = "FILE")]
     servtd_collateral: Option<PathBuf>,
 
+    /// Locally-authoritative PEM CRL for servTD signer chains. This can be
+    /// supplied without --servtd-collateral for CoRIM-only policies.
+    #[arg(long, value_name = "FILE")]
+    servtd_crl: Option<PathBuf>,
+
     /// Output file path
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
@@ -86,6 +91,7 @@ async fn main() {
                 &cmd.policy_data,
                 collateral_path,
                 cmd.servtd_collateral.as_deref(),
+                cmd.servtd_crl.as_deref(),
             )
             .unwrap_or_else(|e| {
                 eprintln!("Failed to generate v2 policy data: {}", e);
