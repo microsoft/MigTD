@@ -1245,6 +1245,63 @@ mod test {
         assert!(date_bar.evaluate(&value, &relative).is_ok());
     }
 
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn azure_corim_policy_uses_svn_only_servtd_rule() {
+        use crate::v2::hex_string_to_bytes;
+
+        let policy: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../../config/Azure/policy_data_raw.json"
+        ))
+        .unwrap();
+        let servtd = policy["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|entry| entry.get("servtd"))
+            .unwrap()
+            .clone();
+        let servtd: ServtdPolicy = serde_json::from_value(servtd).unwrap();
+
+        let corim = ServtdCorim::decode(
+            include_bytes!("../../test/policy_v2/corim/tcb_mapping.cbor"),
+            0,
+        )
+        .unwrap();
+        let endorsed_hash = hex_string_to_bytes(
+            "347c6170a91341351937962e08a7695703e7b87984b1c69216372c380302ac420\
+             d42381e4585007057b20b2579286384",
+        )
+        .unwrap();
+        let lookup = corim.lookup_by_tdinfo_hash(&endorsed_hash).unwrap();
+        assert!(lookup.tcb_date.is_none());
+        assert!(lookup.tcb_status.is_none());
+
+        let same_peer = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(lookup.isvsvn),
+            migtd_tcb_date: lookup.tcb_date,
+            migtd_tcb_status: lookup.tcb_status,
+            ..Default::default()
+        };
+        let same = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(lookup.isvsvn),
+            ..Default::default()
+        };
+        assert!(servtd.evaluate(&same_peer, &same).is_ok());
+
+        let newer_peer = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(lookup.isvsvn + 1),
+            ..Default::default()
+        };
+        assert!(servtd.evaluate(&newer_peer, &same).is_ok());
+
+        let newer_local = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(lookup.isvsvn + 1),
+            ..Default::default()
+        };
+        assert!(servtd.evaluate(&same_peer, &newer_local).is_err());
+    }
+
     /// The outer policy-blob signature has been removed from the trust model.
     /// A policy with **no** outer `signature` field must still deserialize and
     /// verify — integrity is established by the RTMR2 measurement, checked
