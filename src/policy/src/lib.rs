@@ -61,8 +61,8 @@ pub enum PolicyError {
     /// measured root-of-trust.
     SignerAnchorMismatch,
     /// A certificate in the servtd signer chain (TCB mapping or identity) is
-    /// listed in the delivered signer CRL (`collaterals.servtdCrl`), or that
-    /// CRL failed authentication. Fail-closed.
+    /// listed in the authoritative signer CRL (`servtdCrl`), or that CRL
+    /// failed authentication. Fail-closed.
     SignerRevoked,
 }
 
