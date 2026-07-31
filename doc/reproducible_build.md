@@ -196,9 +196,9 @@ construction.
 
 `docker_build_igvm.sh` publishes the exact policy as
 `migtd.policy_v2.json` beside `migtd.igvm`. Consumers must preserve this
-sidecar: `td-shim-enroll` rebuilds the complete CFV, so each enrollment pass
-must resupply these byte-identical policy bytes rather than assuming the prior
-CFV entry survives.
+sidecar: `migtd-hash` rebuilds the Azure-relocated CFV, so each enrollment
+pass must resupply these byte-identical policy bytes rather than assuming the
+prior CFV entry survives.
 
 ### Private enrollment transition
 

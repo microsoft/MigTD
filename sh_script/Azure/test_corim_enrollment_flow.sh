@@ -116,24 +116,21 @@ for field in mrtd rtmr0 rtmr1 rtmr2 rtmr3; do
     }
 done
 
-base64 -w0 "$OUTPUT_DIR/tcb-mapping.cose" > "$WORK_DIR/corim.base64"
-jq --rawfile mapping "$WORK_DIR/corim.base64" \
-    '.policyData.accidentallyMeasuredServtdTcbMapping = $mapping' \
-    "$POLICY" > "$WORK_DIR/measured-mapping-policy.json"
-"$ENROLL" final "$RAW" "$WORK_DIR/measured-mapping-policy.json" \
-    "$OUTPUT_DIR/signer-anchor.bin" "$OUTPUT_DIR/tcb-mapping.cose" \
-    "$WORK_DIR/measured-mapping-final.igvm"
+head -c 48 /dev/zero > "$WORK_DIR/mismatched-anchor.bin"
+"$ENROLL" final "$RAW" "$POLICY" \
+    "$WORK_DIR/mismatched-anchor.bin" "$OUTPUT_DIR/tcb-mapping.cose" \
+    "$WORK_DIR/mismatched-anchor-final.igvm"
 
 negative_rc=0
 "$HASH_GATE" \
     --pre-final-hash "$OUTPUT_DIR/anchor-stage.tdinfo_hash" \
-    --image "$WORK_DIR/measured-mapping-final.igvm" \
+    --image "$WORK_DIR/mismatched-anchor-final.igvm" \
     --manifest "$MANIFEST" \
     --migtd-hash "$MIGTD_HASH" \
     --audit-output "$OUTPUT_DIR/tdinfo-hash-gate-negative.json" \
     || negative_rc=$?
 [ "$negative_rc" -eq 1 ] || {
-    echo "Measured-mapping regression returned $negative_rc; expected mismatch exit 1." >&2
+    echo "Signer-anchor mismatch returned $negative_rc; expected mismatch exit 1." >&2
     exit 1
 }
 
