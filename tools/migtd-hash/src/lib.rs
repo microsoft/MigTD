@@ -4,8 +4,8 @@
 
 use anyhow::{anyhow, Error, Result};
 use crypto::{hash::digest_sha384, SHA384_DIGEST_SIZE};
-use igvm::{IgvmDirectiveHeader, IgvmFile};
-use igvm_defs::IgvmPageDataType;
+use igvm::{IgvmDirectiveHeader, IgvmFile, IgvmRevision};
+use igvm_defs::{IgvmPageDataType, IGVM_FORMAT_VERSION_1};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -28,6 +28,7 @@ const FFS_FILE_HEADER_SIZE: usize = 24;
 const FFS_FILE_ALIGNMENT: usize = 8;
 const FFS_FILE_STATE_VALID: u8 = 0x07;
 const FFS_FIXED_CHECKSUM: u8 = 0xAA;
+const FV_LENGTH_OFFSET: usize = 32;
 const PAGE_SIZE: usize = 4096;
 // The public Azure IGVM layout maps the firmware, including its leading CFV,
 // here. Inferring this from the first PageData directive would let a decoy page
@@ -103,10 +104,22 @@ fn read_config_volume(image: &mut File, igvmformat: bool) -> Result<Vec<u8>, Err
     image.seek(SeekFrom::Start(0))?;
     if igvmformat {
         let contents = read_with_limit(image, MIGTD_IMAGE_SIZE)?;
-        let igvm = IgvmFile::new_from_binary(&contents, None)
-            .map_err(|e| anyhow!("failed to parse IGVM image: {e}"))?;
-        reject_parameter_directives(igvm.directives())?;
-        let pages = igvm.directives().iter().filter_map(|directive| {
+        read_config_volume_from_igvm(&contents)
+    } else {
+        let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
+        image.read_exact(&mut cfv)?;
+        Ok(cfv)
+    }
+}
+
+fn read_config_volume_from_igvm(contents: &[u8]) -> Result<Vec<u8>, Error> {
+    let igvm = IgvmFile::new_from_binary(contents, None)
+        .map_err(|e| anyhow!("failed to parse IGVM image: {e}"))?;
+    reject_parameter_directives(igvm.directives())?;
+    let pages: Vec<_> = igvm
+        .directives()
+        .iter()
+        .filter_map(|directive| {
             if let IgvmDirectiveHeader::PageData {
                 gpa,
                 compatibility_mask,
@@ -129,13 +142,26 @@ fn read_config_volume(image: &mut File, igvmformat: bool) -> Result<Vec<u8>, Err
             } else {
                 None
             }
-        });
-        assemble_config_volume_pages(pages)
-    } else {
-        let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
-        image.read_exact(&mut cfv)?;
-        Ok(cfv)
+        })
+        .collect();
+
+    let first_page = assemble_config_volume_pages(pages.iter().copied(), PAGE_SIZE)?;
+    let fv_length = first_page
+        .get(FV_LENGTH_OFFSET..FV_LENGTH_OFFSET + size_of::<u64>())
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| anyhow!("configuration volume has a truncated firmware volume header"))?;
+    if fv_length < PAGE_SIZE as u64
+        || fv_length > MIGTD_IMAGE_SIZE
+        || fv_length % PAGE_SIZE as u64 != 0
+    {
+        return Err(anyhow!(
+            "configuration volume has invalid firmware volume length {fv_length}"
+        ));
     }
+    let fv_length = usize::try_from(fv_length)
+        .map_err(|_| anyhow!("configuration volume length does not fit in memory"))?;
+    assemble_config_volume_pages(pages.iter().copied(), fv_length)
 }
 
 fn read_with_limit(reader: impl Read, limit: u64) -> Result<Vec<u8>, Error> {
@@ -163,6 +189,7 @@ fn reject_parameter_directives(directives: &[IgvmDirectiveHeader]) -> Result<(),
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct ConfigPage<'a> {
     gpa: u64,
     compatibility_mask: u32,
@@ -176,14 +203,20 @@ struct ConfigPage<'a> {
 
 fn assemble_config_volume_pages<'a>(
     pages: impl Iterator<Item = ConfigPage<'a>>,
+    config_volume_size: usize,
 ) -> Result<Vec<u8>, Error> {
+    if config_volume_size == 0 || config_volume_size % PAGE_SIZE != 0 {
+        return Err(anyhow!(
+            "configuration volume size must be a non-zero multiple of {PAGE_SIZE}"
+        ));
+    }
     let base = AZURE_IGVM_CONFIG_VOLUME_BASE;
-    let size = CONFIG_VOLUME_SIZE as u64;
+    let size = config_volume_size as u64;
     let end = base
         .checked_add(size)
         .ok_or_else(|| anyhow!("configuration volume GPA range overflow"))?;
-    let page_count = CONFIG_VOLUME_SIZE / PAGE_SIZE;
-    let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
+    let page_count = config_volume_size / PAGE_SIZE;
+    let mut cfv = vec![0u8; config_volume_size];
     let mut seen = vec![false; page_count];
 
     for page in pages {
@@ -250,6 +283,10 @@ pub fn verify_policy_only_enrollment_artifact(
     igvmformat: bool,
 ) -> Result<Vec<u8>, Error> {
     let cfv = read_config_volume(&mut image, igvmformat)?;
+    verify_policy_only_config_volume(&cfv)
+}
+
+fn verify_policy_only_config_volume(cfv: &[u8]) -> Result<Vec<u8>, Error> {
     let fv_header = fv::read_fv_header(&cfv)
         .ok_or_else(|| anyhow!("enrollment artifact has an invalid firmware volume header"))?;
     let entries = inventory_ffs_entries(&cfv, fv_header.header_length as usize)?;
@@ -281,6 +318,172 @@ pub fn verify_policy_only_enrollment_artifact(
         policy.ok_or_else(|| anyhow!("enrollment artifact contains no migration policy"))?;
     validate_policy_only(policy)?;
     Ok(policy.to_vec())
+}
+
+/// Replace the policy-only CFV in an Azure IGVM with the private enrollment
+/// inputs while preserving every non-CFV directive.
+pub fn enroll_azure_igvm(
+    image: &[u8],
+    policy: &[u8],
+    signer_anchor: &[u8],
+    servtd_corim: Option<&[u8]>,
+) -> Result<Vec<u8>, Error> {
+    if image.len() as u64 > MIGTD_IMAGE_SIZE {
+        return Err(anyhow!("IGVM image exceeds {MIGTD_IMAGE_SIZE} bytes"));
+    }
+    if signer_anchor.len() != SHA384_DIGEST_SIZE {
+        return Err(anyhow!(
+            "signer anchor must be exactly {SHA384_DIGEST_SIZE} bytes"
+        ));
+    }
+    if policy.is_empty() {
+        return Err(anyhow!("migration policy must not be empty"));
+    }
+    if servtd_corim.is_some_and(|corim| corim.is_empty()) {
+        return Err(anyhow!("signed ServTD CoRIM must not be empty"));
+    }
+
+    let original_cfv = read_config_volume_from_igvm(image)?;
+    let embedded_policy = verify_policy_only_config_volume(&original_cfv)?;
+    if embedded_policy != policy {
+        return Err(anyhow!(
+            "provided policy does not match the policy embedded in the input IGVM"
+        ));
+    }
+    let fv_header = fv::read_fv_header(&original_cfv)
+        .ok_or_else(|| anyhow!("enrollment artifact has an invalid firmware volume header"))?;
+    let header_length = fv_header.header_length as usize;
+    let mut cfv = original_cfv[..header_length].to_vec();
+    cfv.extend(build_raw_ffs_file(MIGTD_POLICY_FFS_GUID, policy)?);
+    cfv.extend(build_raw_ffs_file(
+        MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID,
+        signer_anchor,
+    )?);
+    if let Some(corim) = servtd_corim {
+        cfv.extend(build_raw_ffs_file(MIGTD_SERVTD_CORIM_FFS_GUID, corim)?);
+    }
+    let populated_length = cfv.len();
+    if populated_length > original_cfv.len() {
+        return Err(anyhow!(
+            "enrolled configuration volume exceeds {} bytes",
+            original_cfv.len()
+        ));
+    }
+    cfv.resize(original_cfv.len(), 0);
+
+    rewrite_azure_config_volume(image, &cfv, populated_length)
+}
+
+fn build_raw_ffs_file(guid: r_efi::efi::Guid, data: &[u8]) -> Result<Vec<u8>, Error> {
+    let file_size = FFS_FILE_HEADER_SIZE
+        .checked_add(data.len())
+        .ok_or_else(|| anyhow!("FFS file size overflow"))?;
+    if file_size > 0x00ff_ffff {
+        return Err(anyhow!("FFS file exceeds the 24-bit size limit"));
+    }
+    let aligned_size = file_size
+        .checked_add(FFS_FILE_ALIGNMENT - 1)
+        .ok_or_else(|| anyhow!("aligned FFS file size overflow"))?
+        & !(FFS_FILE_ALIGNMENT - 1);
+    let mut file = vec![0u8; aligned_size];
+    file[..16].copy_from_slice(guid.as_bytes());
+    file[17] = FFS_FIXED_CHECKSUM;
+    file[18] = pi::fv::FV_FILETYPE_RAW;
+    file[20] = file_size as u8;
+    file[21] = (file_size >> 8) as u8;
+    file[22] = (file_size >> 16) as u8;
+    file[23] = FFS_FILE_STATE_VALID;
+    file[FFS_FILE_HEADER_SIZE..file_size].copy_from_slice(data);
+    let checksum = file[..FFS_FILE_HEADER_SIZE]
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !matches!(*index, 16 | 17 | 23))
+        .fold(0u8, |sum, (_, byte)| sum.wrapping_add(*byte));
+    file[16] = 0u8.wrapping_sub(checksum);
+    Ok(file)
+}
+
+fn rewrite_azure_config_volume(
+    image: &[u8],
+    cfv: &[u8],
+    populated_length: usize,
+) -> Result<Vec<u8>, Error> {
+    if cfv.is_empty() || cfv.len() % PAGE_SIZE != 0 || populated_length > cfv.len() {
+        return Err(anyhow!("invalid replacement configuration volume length"));
+    }
+    let format_version = image
+        .get(4..8)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| anyhow!("IGVM image has a truncated fixed header"))?;
+    if format_version != IGVM_FORMAT_VERSION_1 {
+        return Err(anyhow!(
+            "Azure enrollment currently supports only IGVM format version 1"
+        ));
+    }
+    let igvm = IgvmFile::new_from_binary(image, None)
+        .map_err(|e| anyhow!("failed to parse IGVM image: {e}"))?;
+    reject_parameter_directives(igvm.directives())?;
+
+    let base = AZURE_IGVM_CONFIG_VOLUME_BASE;
+    let end = base
+        .checked_add(cfv.len() as u64)
+        .ok_or_else(|| anyhow!("configuration volume GPA range overflow"))?;
+    let required_pages = populated_length.div_ceil(PAGE_SIZE);
+    let mut replaced = vec![false; required_pages];
+    let directives = igvm
+        .directives()
+        .iter()
+        .cloned()
+        .map(|directive| match directive {
+            IgvmDirectiveHeader::PageData {
+                gpa,
+                compatibility_mask,
+                flags,
+                data_type,
+                data: _,
+            } if gpa >= base && gpa < end => {
+                let index = ((gpa - base) / PAGE_SIZE as u64) as usize;
+                if index < required_pages {
+                    replaced[index] = true;
+                }
+                let offset = index * PAGE_SIZE;
+                let page = &cfv[offset..offset + PAGE_SIZE];
+                let data = if page.iter().all(|byte| *byte == 0) {
+                    Vec::new()
+                } else {
+                    page.to_vec()
+                };
+                IgvmDirectiveHeader::PageData {
+                    gpa,
+                    compatibility_mask,
+                    flags,
+                    data_type,
+                    data,
+                }
+            }
+            other => other,
+        })
+        .collect();
+
+    if let Some(index) = replaced.iter().position(|page| !page) {
+        return Err(anyhow!(
+            "IGVM has no CFV PageData directive for required page {index}"
+        ));
+    }
+
+    let enrolled = IgvmFile::new(
+        IgvmRevision::V1,
+        igvm.platforms().to_vec(),
+        igvm.initializations().to_vec(),
+        directives,
+    )
+    .map_err(|e| anyhow!("failed to rebuild enrolled IGVM: {e}"))?;
+    let mut output = Vec::new();
+    enrolled
+        .serialize(&mut output)
+        .map_err(|e| anyhow!("failed to serialize enrolled IGVM: {e}"))?;
+    Ok(output)
 }
 
 fn forbidden_policy_only_slots() -> [(&'static str, r_efi::efi::Guid); 4] {
@@ -800,15 +1003,22 @@ mod tests {
     };
     use super::{
         assemble_config_volume_pages, forbidden_policy_only_slots, inventory_ffs_entries,
-        read_with_limit, reject_parameter_directives, update_tcb_mapping_v2, validate_policy_only,
-        ConfigPage, AZURE_IGVM_CONFIG_VOLUME_BASE, FFS_FILE_HEADER_SIZE, PAGE_SIZE,
+        read_config_volume_from_igvm, read_with_limit, reject_parameter_directives,
+        rewrite_azure_config_volume, update_tcb_mapping_v2, validate_policy_only, ConfigPage,
+        AZURE_IGVM_CONFIG_VOLUME_BASE, FFS_FILE_HEADER_SIZE, PAGE_SIZE,
     };
-    use igvm::IgvmDirectiveHeader;
+    use igvm::{IgvmDirectiveHeader, IgvmFile, IgvmPlatformHeader, IgvmRevision};
+    use igvm_defs::{
+        IgvmPageDataFlags, IgvmPageDataType, IgvmPlatformType, IGVM_VHS_SUPPORTED_PLATFORM,
+    };
     use r_efi::efi::Guid;
     use serde_json::Value;
     use std::io::Cursor;
+    use std::mem::size_of;
     use td_layout::build_time::TD_SHIM_CONFIG_SIZE;
-    use td_shim_interface::td_uefi_pi::pi;
+    use td_shim_interface::td_uefi_pi::pi::fv::{
+        FirmwareVolumeHeader, FIRMWARE_FILE_SYSTEM3_GUID, FVH_REVISION, FVH_SIGNATURE,
+    };
 
     const HASH_11: &str =
         "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
@@ -817,24 +1027,7 @@ mod tests {
     const VALID_POLICY: &[u8] = br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]}}"#;
 
     fn ffs_file(guid: Guid, data: &[u8]) -> Vec<u8> {
-        let file_size = FFS_FILE_HEADER_SIZE + data.len();
-        let mut file = vec![0u8; (file_size + 7) & !7];
-        file[..16].copy_from_slice(guid.as_bytes());
-        file[17] = 0xAA;
-        file[18] = pi::fv::FV_FILETYPE_RAW;
-        file[19] = 0;
-        file[20] = file_size as u8;
-        file[21] = (file_size >> 8) as u8;
-        file[22] = (file_size >> 16) as u8;
-        file[23] = 0x07;
-        file[FFS_FILE_HEADER_SIZE..file_size].copy_from_slice(data);
-        let checksum = file[..FFS_FILE_HEADER_SIZE]
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| !matches!(*index, 16 | 17 | 23))
-            .fold(0u8, |sum, (_, byte)| sum.wrapping_add(*byte));
-        file[16] = 0u8.wrapping_sub(checksum);
-        file
+        super::build_raw_ffs_file(guid, data).unwrap()
     }
 
     fn config_page(gpa: u64, data: &[u8]) -> ConfigPage<'_> {
@@ -857,6 +1050,25 @@ mod tests {
                 page,
             )
         })
+    }
+
+    fn test_config_volume(size: usize) -> (Vec<u8>, usize) {
+        let mut header = FirmwareVolumeHeader::default();
+        header
+            .file_system_guid
+            .copy_from_slice(FIRMWARE_FILE_SYSTEM3_GUID.as_bytes());
+        header.fv_length = size as u64;
+        header.signature = FVH_SIGNATURE;
+        header.header_length = size_of::<FirmwareVolumeHeader>() as u16;
+        header.revision = FVH_REVISION;
+        header.update_checksum();
+
+        let policy = ffs_file(MIGTD_POLICY_FFS_GUID, VALID_POLICY);
+        let populated_length = size_of::<FirmwareVolumeHeader>() + policy.len();
+        let mut cfv = vec![0u8; size];
+        cfv[..size_of::<FirmwareVolumeHeader>()].copy_from_slice(header.as_bytes());
+        cfv[size_of::<FirmwareVolumeHeader>()..populated_length].copy_from_slice(&policy);
+        (cfv, populated_length)
     }
 
     #[test]
@@ -1029,9 +1241,50 @@ mod tests {
         let pages =
             std::iter::once(config_page(0x1000, decoy.as_slice())).chain(config_pages(&storage));
 
-        let cfv = assemble_config_volume_pages(pages).unwrap();
+        let cfv = assemble_config_volume_pages(pages, CONFIG_VOLUME_SIZE).unwrap();
         assert_eq!(cfv[0], 0xA5);
         assert_ne!(cfv[0], decoy[0]);
+    }
+
+    #[test]
+    fn azure_enrollment_rewrites_relocated_cfv_pages() {
+        let mut flags = IgvmPageDataFlags::new();
+        flags.set_unmeasured(true);
+        let platform = IgvmPlatformHeader::SupportedPlatform(IGVM_VHS_SUPPORTED_PLATFORM {
+            compatibility_mask: 1,
+            highest_vtl: 0,
+            platform_type: IgvmPlatformType::TDX,
+            platform_version: 1,
+            shared_gpa_boundary: 0,
+        });
+        let source = IgvmFile::new(
+            IgvmRevision::V1,
+            vec![platform],
+            vec![],
+            vec![IgvmDirectiveHeader::PageData {
+                gpa: AZURE_IGVM_CONFIG_VOLUME_BASE,
+                compatibility_mask: 1,
+                flags,
+                data_type: IgvmPageDataType::NORMAL,
+                data: vec![0x11; PAGE_SIZE],
+            }],
+        )
+        .unwrap();
+        let mut source_bytes = Vec::new();
+        source.serialize(&mut source_bytes).unwrap();
+
+        let (replacement, populated_length) = test_config_volume(2 * PAGE_SIZE);
+        assert_ne!(replacement.len(), CONFIG_VOLUME_SIZE);
+        let enrolled =
+            rewrite_azure_config_volume(&source_bytes, &replacement, populated_length).unwrap();
+        assert_ne!(source_bytes, enrolled);
+        let cfv = read_config_volume_from_igvm(&enrolled).unwrap();
+        assert_eq!(cfv, replacement);
+
+        let mut v2 = source_bytes;
+        v2[4..8].copy_from_slice(&2u32.to_le_bytes());
+        let error = rewrite_azure_config_volume(&v2, &replacement, populated_length).unwrap_err();
+        assert!(error.to_string().contains("format version 1"));
     }
 
     #[test]
@@ -1040,9 +1293,10 @@ mod tests {
         let base = AZURE_IGVM_CONFIG_VOLUME_BASE;
         let duplicate =
             config_pages(&storage).chain(std::iter::once(config_page(base, storage[0].as_slice())));
-        assert!(assemble_config_volume_pages(duplicate).is_err());
+        assert!(assemble_config_volume_pages(duplicate, CONFIG_VOLUME_SIZE).is_err());
 
-        let cfv = assemble_config_volume_pages(config_pages(&storage).skip(1)).unwrap();
+        let cfv = assemble_config_volume_pages(config_pages(&storage).skip(1), CONFIG_VOLUME_SIZE)
+            .unwrap();
         assert!(cfv[..PAGE_SIZE].iter().all(|byte| *byte == 0));
     }
 
@@ -1051,15 +1305,15 @@ mod tests {
         let data = [0u8; PAGE_SIZE];
         let mut page = config_page(AZURE_IGVM_CONFIG_VOLUME_BASE, &data);
         page.shared = true;
-        assert!(assemble_config_volume_pages(std::iter::once(page)).is_err());
+        assert!(assemble_config_volume_pages(std::iter::once(page), CONFIG_VOLUME_SIZE).is_err());
 
         let mut page = config_page(AZURE_IGVM_CONFIG_VOLUME_BASE, &data);
         page.is_2mb_page = true;
-        assert!(assemble_config_volume_pages(std::iter::once(page)).is_err());
+        assert!(assemble_config_volume_pages(std::iter::once(page), CONFIG_VOLUME_SIZE).is_err());
 
         let mut page = config_page(AZURE_IGVM_CONFIG_VOLUME_BASE, &data);
         page.compatibility_mask = 2;
-        assert!(assemble_config_volume_pages(std::iter::once(page)).is_err());
+        assert!(assemble_config_volume_pages(std::iter::once(page), CONFIG_VOLUME_SIZE).is_err());
     }
 
     #[test]

@@ -75,6 +75,11 @@ jobs:
         # actual IGVM build (clang/rust/nasm) happens inside the container.
         run: bash sh_script/preparation.sh
 
+      - name: Install host enrollment-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm nasm
+
       - name: Test linux-sgx pruning safety
         run: bash src/attestation/test-prune-unused-linux-sgx.sh
 

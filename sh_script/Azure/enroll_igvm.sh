@@ -17,10 +17,7 @@ MODE="$1"
 shift
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
-TD_SHIM_DIR="$REPO_ROOT/deps/td-shim"
-POLICY_GUID="0BE92DC3-6221-4C98-87C1-8EEFFD70DE5A"
-ANCHOR_GUID="2B9D5A84-6F3C-4E71-8A2D-0C7E1F4B6A93"
-CORIM_GUID="7E5B9C11-2D4A-4F6E-9B3C-1A2B3C4D5E6F"
+MIGTD_HASH="$REPO_ROOT/target/release/migtd-hash"
 
 case "$MODE" in
     anchor)
@@ -29,7 +26,7 @@ case "$MODE" in
         POLICY="$(realpath "$2")"
         ANCHOR="$(realpath "$3")"
         OUTPUT="$(realpath -m "$4")"
-        FILE_ARGS=(-f "$POLICY_GUID" "$POLICY" "$ANCHOR_GUID" "$ANCHOR")
+        ENROLL_ARGS=()
         ;;
     final)
         [ "$#" -eq 5 ] || { usage; exit 2; }
@@ -38,8 +35,7 @@ case "$MODE" in
         ANCHOR="$(realpath "$3")"
         CORIM="$(realpath "$4")"
         OUTPUT="$(realpath -m "$5")"
-        FILE_ARGS=(-f "$POLICY_GUID" "$POLICY" "$ANCHOR_GUID" "$ANCHOR" \
-            "$CORIM_GUID" "$CORIM")
+        ENROLL_ARGS=(--enroll-servtd-corim "$CORIM")
         ;;
     *)
         usage
@@ -47,7 +43,7 @@ case "$MODE" in
         ;;
 esac
 
-for input in "$INPUT" "$POLICY" "$ANCHOR"; do
+for input in "$INPUT" "$POLICY" "$ANCHOR" "$MIGTD_HASH"; do
     [ -s "$input" ] || { echo "Required enrollment input is missing: $input" >&2; exit 1; }
 done
 if [ "$MODE" = "final" ]; then
@@ -63,11 +59,20 @@ fi
 }
 
 mkdir -p "$(dirname "$OUTPUT")"
-(
-    cd "$TD_SHIM_DIR"
-    export CC=clang AR=llvm-ar
-    cargo run --locked -p td-shim-tools --bin td-shim-enroll \
-        --features=enroller -- \
-        "$INPUT" "${FILE_ARGS[@]}" -o "$OUTPUT"
-)
+EXTRACTED_POLICY="$(mktemp)"
+trap 'rm -f "$EXTRACTED_POLICY"' EXIT
+"$MIGTD_HASH" \
+    --image "$INPUT" \
+    --verify-policy-only-enrollment-artifact \
+    --extract-policy "$EXTRACTED_POLICY" >/dev/null
+cmp -s "$POLICY" "$EXTRACTED_POLICY" || {
+    echo "Policy sidecar does not match the policy embedded in $INPUT." >&2
+    exit 1
+}
+"$MIGTD_HASH" \
+    --image "$INPUT" \
+    --enroll-policy "$POLICY" \
+    --enroll-signer-anchor "$ANCHOR" \
+    "${ENROLL_ARGS[@]}" \
+    --output-image "$OUTPUT"
 [ -s "$OUTPUT" ] || { echo "Enrollment did not create $OUTPUT" >&2; exit 1; }

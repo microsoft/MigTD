@@ -7,15 +7,15 @@ use clap::Parser;
 use log::debug;
 use migtd_hash::{
     apply_servtd_attr_masks, build_td_info_unmasked, calculate_servtd_hash,
-    calculate_servtd_info_hash, calculate_tdinfo_hash, clone_td_info, update_tcb_mapping_v2,
-    verify_policy_only_enrollment_artifact, SERVTD_TYPE_MIGTD,
+    calculate_servtd_info_hash, calculate_tdinfo_hash, clone_td_info, enroll_azure_igvm,
+    update_tcb_mapping_v2, verify_policy_only_enrollment_artifact, SERVTD_TYPE_MIGTD,
 };
 use serde_json::{json, Value};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::exit,
     sync::atomic::{AtomicU64, Ordering},
@@ -24,6 +24,8 @@ use td_shim_tools::tee_info_hash::TdInfoStruct;
 
 const SERVTD_HASH_KEY: &str = "servtdHash";
 const SERVTD_INFO_HASH_KEY: &str = "servtdInfoHash";
+const MIGTD_IMAGE_SIZE: u64 = 0x100_0000;
+const MAX_ENROLLMENT_SLOT_SIZE: u64 = 1024 * 1024;
 static EXTRACTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -180,6 +182,23 @@ fn atomic_write(output: &Path, contents: &[u8]) -> anyhow::Result<()> {
     result
 }
 
+fn read_file_with_limit(path: &Path, limit: u64) -> anyhow::Result<Vec<u8>> {
+    let mut contents = Vec::new();
+    File::open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut contents)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    if contents.len() as u64 > limit {
+        return Err(anyhow!(
+            "{} exceeds the {}-byte input limit",
+            path.display(),
+            limit
+        ));
+    }
+    Ok(contents)
+}
+
 fn output_parent(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -281,6 +300,18 @@ struct Config {
     /// enrollment artifact.
     #[clap(long, requires = "verify_policy_only_enrollment_artifact")]
     pub extract_policy: Option<PathBuf>,
+    /// Exact policy sidecar to enroll into an Azure policy-only IGVM.
+    #[clap(long, requires_all = ["image", "enroll_signer_anchor", "output_image"])]
+    pub enroll_policy: Option<PathBuf>,
+    /// 48-byte RTMR1 signer anchor to enroll with `--enroll-policy`.
+    #[clap(long, requires = "enroll_policy")]
+    pub enroll_signer_anchor: Option<PathBuf>,
+    /// Signed ServTD TCB-mapping CoRIM to add during final enrollment.
+    #[clap(long, requires = "enroll_policy")]
+    pub enroll_servtd_corim: Option<PathBuf>,
+    /// Output Azure IGVM for private enrollment mode.
+    #[clap(long, requires = "enroll_policy")]
+    pub output_image: Option<PathBuf>,
     /// Path of a `migtd_report_data.json` produced by `azcvm-extract-report`
     /// (camelCase fields: mrtd, rtmr0..3, attributes, xfam, mrConfigId,
     /// mrOwner, mrOwnerConfig — all hex). When set, the TDINFO_STRUCT is
@@ -340,7 +371,9 @@ struct Config {
 
 #[cfg(test)]
 mod extraction_tests {
-    use super::{extract_policy_safely, output_parent, paths_refer_to_same_file};
+    use super::{
+        extract_policy_safely, output_parent, paths_refer_to_same_file, read_file_with_limit,
+    };
     use std::{fs, path::PathBuf};
 
     fn test_dir(name: &str) -> PathBuf {
@@ -404,6 +437,16 @@ mod extraction_tests {
             std::path::Path::new(".")
         );
     }
+
+    #[test]
+    fn bounded_input_read_rejects_oversized_file() {
+        let dir = test_dir("bounded-read");
+        let input = dir.join("input.bin");
+        fs::write(&input, [0xA5; 5]).unwrap();
+        assert_eq!(read_file_with_limit(&input, 5).unwrap(), [0xA5; 5]);
+        assert!(read_file_with_limit(&input, 4).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 fn main() {
@@ -421,6 +464,66 @@ fn main() {
     }
 
     debug!("Starting migtd-hash tool");
+
+    if let Some(policy_path) = &config.enroll_policy {
+        let image_path = config
+            .image
+            .as_deref()
+            .expect("--image is required by clap");
+        let anchor_path = config
+            .enroll_signer_anchor
+            .as_deref()
+            .expect("--enroll-signer-anchor is required by clap");
+        let output = config
+            .output_image
+            .as_deref()
+            .expect("--output-image is required by clap");
+        if !image_path.ends_with(".igvm") {
+            eprintln!("Azure enrollment requires an --image ending in .igvm");
+            exit(1);
+        }
+        if paths_refer_to_same_file(Path::new(image_path), output).unwrap_or_else(|e| {
+            eprintln!("Invalid enrollment output: {e}");
+            exit(1);
+        }) {
+            eprintln!(
+                "Invalid enrollment output: --output-image must not overwrite the input image"
+            );
+            exit(1);
+        }
+
+        let image =
+            read_file_with_limit(Path::new(image_path), MIGTD_IMAGE_SIZE).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                exit(1);
+            });
+        let policy =
+            read_file_with_limit(policy_path, MAX_ENROLLMENT_SLOT_SIZE).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                exit(1);
+            });
+        let signer_anchor = read_file_with_limit(anchor_path, 48).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            exit(1);
+        });
+        let servtd_corim = config.enroll_servtd_corim.as_deref().map(|path| {
+            read_file_with_limit(path, MAX_ENROLLMENT_SLOT_SIZE).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                exit(1);
+            })
+        });
+        let enrolled = enroll_azure_igvm(&image, &policy, &signer_anchor, servtd_corim.as_deref())
+            .unwrap_or_else(|e| {
+                eprintln!("Azure IGVM enrollment failed: {e}");
+                exit(1);
+            });
+        atomic_write(output, &enrolled).unwrap_or_else(|e| {
+            eprintln!("Failed to write enrolled IGVM {}: {e}", output.display());
+            exit(1);
+        });
+        println!("Enrolled Azure IGVM: {}", output.display());
+        return;
+    }
 
     if config.verify_policy_only_enrollment_artifact {
         let image_path = config
