@@ -60,6 +60,10 @@ cargo build -p migtd-policy-generator
   -o policy_v2.json
 ```
 
+For CoRIM-only enrollment, omit `--servtd-collateral` and pass
+`--servtd-crl /path/to/servtd_signer_crl.pem`; the CRL is stored as measured
+top-level `servtdCrl` and applies to the separately enrolled CoRIM `x5chain`.
+
 Sign the policy:
 
 ```sh
