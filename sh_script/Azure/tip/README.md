@@ -39,7 +39,10 @@ to warnings automatically, so no manual `CFLAGS` override is needed.
 ./sh_script/Azure/tip/build_tip_package.sh \
     --out out/tip-package \
     --fetch-collaterals \
-    --os-root /path/to/os.2020
+    --tcb-mapping /path/to/previous-release/tcb_mapping.json \
+    --os-root /path/to/os.2020 \
+    --hcstest-dir /path/to/prebuilt/HCSTest \
+    --secfw-file /path/to/secfw_test_GenuineIntel.dll
 ```
 
 This creates a source-complete package without requiring Linux access to
@@ -50,6 +53,8 @@ fully enriched package in one step.
 
 Use `--skip-dependencies` for an image-and-test-script-only package when
 PowerTest and HCSTest v2 are already installed on the TiP host.
+Omit `--tcb-mapping` only for a first release; later releases must provide the
+authority-maintained mapping whose historical real hashes remain supported.
 
 Produces in `out/tip-package/`:
 
@@ -91,15 +96,17 @@ host IGVMAgent GetQuote path. Their sibling `.hash` files are still direct
 `SERVTD_INFO_HASH` values calculated from each final emitted IGVM.
 
 Each real-policy variant is emitted as an original/rebind pair. The rebind
-policy is derived from the fully merged original `policyData` and changes only
-`policySvn`, incrementing it by one before signing with the same policy key.
+policy increments `policySvn` with the same policy key, measures the resulting
+image, then adds that image's hash to the same cumulative TCB mapping before
+the final signing pass. The authenticated rebind-source policy therefore maps
+both the original init hash and its current hash.
 The real-quote pair uses a two-phase measure-then-bind build so its ServTD TCB
-mapping contains the final image's real MRTD/RTMR0/RTMR1. The mock-quote pair
-keeps the static mock measurements; migration and rebinding both derive MigTD
-TCB metadata from the mock quote rather than the live TDREPORT.
+mapping contains the final image's real `tdinfo_hash`. The mock-quote pair
+follows the same authority-history reset and adds the actual original/rebind
+image hashes needed for ServTdExt lookup. Phase-1 synthetic mappings are never
+promoted into the final signed mapping.
 The builder calculates each image's final runtime TD Info Hash independently.
-If a pair ever produces equal hashes, the rebind test handles that case with
-its synthetic second mapping key.
+If a pair produces equal hashes, one shared mapping entry is sufficient.
 
 The key-rotation variants keep `policySvn` unchanged so rebind is authorized
 in both directions. Their outer policy certificate uses a new key, but chains
