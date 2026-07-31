@@ -4,11 +4,11 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 //! Firmware Volume emulation
-//! Provides file-based emulation for policy and root CA files in migtd
+//! Provides file-based emulation for MigTD configuration-volume files
 
 use crate::td_uefi_pi::pi::fv::FV_FILETYPE_RAW;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use r_efi::efi::Guid;
 
 // Static buffers to store emulated files
@@ -25,7 +25,20 @@ static mut POLICY_ISSUER_CHAIN_BUFFER: [u8; 8192] = [0; 8192]; // 8KB for policy
 static mut POLICY_ISSUER_CHAIN_SIZE: usize = 0;
 static POLICY_ISSUER_CHAIN_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Known GUIDs for policy and root CA files in migtd
+static mut SERVTD_SIGNER_ANCHOR_BUFFER: [u8; 48] = [0; 48];
+static mut SERVTD_SIGNER_ANCHOR_SIZE: usize = 0;
+static SERVTD_SIGNER_ANCHOR_STATE: AtomicU8 = AtomicU8::new(FILE_UNINITIALIZED);
+
+const SERVTD_CORIM_BUFFER_SIZE: usize = 1024 * 1024;
+static mut SERVTD_CORIM_BUFFER: [u8; SERVTD_CORIM_BUFFER_SIZE] = [0; SERVTD_CORIM_BUFFER_SIZE];
+static mut SERVTD_CORIM_SIZE: usize = 0;
+static SERVTD_CORIM_STATE: AtomicU8 = AtomicU8::new(FILE_UNINITIALIZED);
+
+const FILE_UNINITIALIZED: u8 = 0;
+const FILE_INITIALIZING: u8 = 1;
+const FILE_READY: u8 = 2;
+
+/// Known GUIDs for configuration-volume files in MigTD
 const MIGTD_POLICY_FFS_GUID: Guid = Guid::from_fields(
     0x0BE92DC3,
     0x6221,
@@ -54,6 +67,26 @@ pub const MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID: Guid = Guid::from_fields(
     &[0xD3, 0xEA, 0xB3, 0x9F, 0x8A, 0xEB],
 );
 
+// {2B9D5A84-6F3C-4E71-8A2D-0C7E1F4B6A93}
+pub const MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID: Guid = Guid::from_fields(
+    0x2B9D5A84,
+    0x6F3C,
+    0x4E71,
+    0x8A,
+    0x2D,
+    &[0x0C, 0x7E, 0x1F, 0x4B, 0x6A, 0x93],
+);
+
+// {7E5B9C11-2D4A-4F6E-9B3C-1A2B3C4D5E6F}
+pub const MIGTD_SERVTD_CORIM_FFS_GUID: Guid = Guid::from_fields(
+    0x7E5B9C11,
+    0x2D4A,
+    0x4F6E,
+    0x9B,
+    0x3C,
+    &[0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F],
+);
+
 /// Set policy data for emulation
 pub fn set_policy_data(data: &[u8]) -> bool {
     unsafe {
@@ -63,7 +96,7 @@ pub fn set_policy_data(data: &[u8]) -> bool {
         }
 
         let policy_size_ptr = ptr::addr_of_mut!(POLICY_SIZE);
-        (*policy_buffer_ptr)[..data.len()].copy_from_slice(data);
+        (&mut (*policy_buffer_ptr))[..data.len()].copy_from_slice(data);
         *policy_size_ptr = data.len();
     }
     POLICY_INITIALIZED.store(true, Ordering::SeqCst);
@@ -79,7 +112,7 @@ pub fn set_root_ca_data(data: &[u8]) -> bool {
         }
 
         let root_ca_size_ptr = ptr::addr_of_mut!(ROOT_CA_SIZE);
-        (*root_ca_buffer_ptr)[..data.len()].copy_from_slice(data);
+        (&mut (*root_ca_buffer_ptr))[..data.len()].copy_from_slice(data);
         *root_ca_size_ptr = data.len();
     }
     ROOT_CA_INITIALIZED.store(true, Ordering::SeqCst);
@@ -95,10 +128,64 @@ pub fn set_policy_issuer_chain_data(data: &[u8]) -> bool {
         }
 
         let chain_size_ptr = ptr::addr_of_mut!(POLICY_ISSUER_CHAIN_SIZE);
-        (*chain_buffer_ptr)[..data.len()].copy_from_slice(data);
+        (&mut (*chain_buffer_ptr))[..data.len()].copy_from_slice(data);
         *chain_size_ptr = data.len();
     }
     POLICY_ISSUER_CHAIN_INITIALIZED.store(true, Ordering::SeqCst);
+    true
+}
+
+/// Set the 48-byte ServTD signer anchor for emulation
+pub fn set_servtd_signer_anchor_data(data: &[u8]) -> bool {
+    if data.len() != 48 {
+        return false;
+    }
+    if SERVTD_SIGNER_ANCHOR_STATE
+        .compare_exchange(
+            FILE_UNINITIALIZED,
+            FILE_INITIALIZING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    unsafe {
+        let anchor_buffer_ptr = ptr::addr_of_mut!(SERVTD_SIGNER_ANCHOR_BUFFER);
+        let anchor_size_ptr = ptr::addr_of_mut!(SERVTD_SIGNER_ANCHOR_SIZE);
+        (*anchor_buffer_ptr).copy_from_slice(data);
+        *anchor_size_ptr = data.len();
+    }
+    SERVTD_SIGNER_ANCHOR_STATE.store(FILE_READY, Ordering::Release);
+    true
+}
+
+/// Set the signed ServTD CoRIM for emulation
+pub fn set_servtd_corim_data(data: &[u8]) -> bool {
+    if data.is_empty() || data.len() > SERVTD_CORIM_BUFFER_SIZE {
+        return false;
+    }
+    if SERVTD_CORIM_STATE
+        .compare_exchange(
+            FILE_UNINITIALIZED,
+            FILE_INITIALIZING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    unsafe {
+        let corim_buffer_ptr = ptr::addr_of_mut!(SERVTD_CORIM_BUFFER);
+        let corim_size_ptr = ptr::addr_of_mut!(SERVTD_CORIM_SIZE);
+        (&mut (*corim_buffer_ptr))[..data.len()].copy_from_slice(data);
+        *corim_size_ptr = data.len();
+    }
+    SERVTD_CORIM_STATE.store(FILE_READY, Ordering::Release);
     true
 }
 
@@ -155,12 +242,40 @@ pub fn load_policy_issuer_chain_from_file(path: &str) -> bool {
     false
 }
 
-/// Get a file from firmware volume - emulated version supporting policy and root CA files
+/// Load the ServTD signer anchor from a file path
+pub fn load_servtd_signer_anchor_from_file(path: &str) -> bool {
+    unsafe {
+        let file_reader_ptr = ptr::addr_of!(FILE_READER);
+        if let Some(reader) = *file_reader_ptr {
+            if let Some(data) = reader(path) {
+                return set_servtd_signer_anchor_data(&data);
+            }
+        }
+    }
+    false
+}
+
+/// Load the signed ServTD CoRIM from a file path
+pub fn load_servtd_corim_from_file(path: &str) -> bool {
+    unsafe {
+        let file_reader_ptr = ptr::addr_of!(FILE_READER);
+        if let Some(reader) = *file_reader_ptr {
+            if let Some(data) = reader(path) {
+                return set_servtd_corim_data(&data);
+            }
+        }
+    }
+    false
+}
+
+/// Get a file from the emulated firmware volume
 ///
 /// This implementation supports common files needed by migtd:
 /// - Policy files (using MIGTD_POLICY_FFS_GUID)
 /// - Root CA files (using MIGTD_ROOT_CA_FFS_GUID)
 /// - Policy issuer chain files (using MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID)
+/// - ServTD signer anchor (using MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID)
+/// - Signed ServTD CoRIM (using MIGTD_SERVTD_CORIM_FFS_GUID)
 ///
 /// Other files will return None
 pub fn get_file_from_fv(
@@ -177,19 +292,37 @@ pub fn get_file_from_fv(
         unsafe {
             let policy_buffer_ptr = ptr::addr_of!(POLICY_BUFFER);
             let policy_size_ptr = ptr::addr_of!(POLICY_SIZE);
-            Some(&(*policy_buffer_ptr)[..*policy_size_ptr])
+            Some(&(&(*policy_buffer_ptr))[..*policy_size_ptr])
         }
     } else if file_name == MIGTD_ROOT_CA_FFS_GUID && ROOT_CA_INITIALIZED.load(Ordering::SeqCst) {
         unsafe {
             let root_ca_buffer_ptr = ptr::addr_of!(ROOT_CA_BUFFER);
             let root_ca_size_ptr = ptr::addr_of!(ROOT_CA_SIZE);
-            Some(&(*root_ca_buffer_ptr)[..*root_ca_size_ptr])
+            Some(&(&(*root_ca_buffer_ptr))[..*root_ca_size_ptr])
         }
-    } else if file_name == MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID && POLICY_ISSUER_CHAIN_INITIALIZED.load(Ordering::SeqCst) {
+    } else if file_name == MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID
+        && POLICY_ISSUER_CHAIN_INITIALIZED.load(Ordering::SeqCst)
+    {
         unsafe {
             let chain_buffer_ptr = ptr::addr_of!(POLICY_ISSUER_CHAIN_BUFFER);
             let chain_size_ptr = ptr::addr_of!(POLICY_ISSUER_CHAIN_SIZE);
-            Some(&(*chain_buffer_ptr)[..*chain_size_ptr])
+            Some(&(&(*chain_buffer_ptr))[..*chain_size_ptr])
+        }
+    } else if file_name == MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID
+        && SERVTD_SIGNER_ANCHOR_STATE.load(Ordering::Acquire) == FILE_READY
+    {
+        unsafe {
+            let anchor_buffer_ptr = ptr::addr_of!(SERVTD_SIGNER_ANCHOR_BUFFER);
+            let anchor_size_ptr = ptr::addr_of!(SERVTD_SIGNER_ANCHOR_SIZE);
+            Some(&(&(*anchor_buffer_ptr))[..*anchor_size_ptr])
+        }
+    } else if file_name == MIGTD_SERVTD_CORIM_FFS_GUID
+        && SERVTD_CORIM_STATE.load(Ordering::Acquire) == FILE_READY
+    {
+        unsafe {
+            let corim_buffer_ptr = ptr::addr_of!(SERVTD_CORIM_BUFFER);
+            let corim_size_ptr = ptr::addr_of!(SERVTD_CORIM_SIZE);
+            Some(&(&(*corim_buffer_ptr))[..*corim_size_ptr])
         }
     } else {
         None
