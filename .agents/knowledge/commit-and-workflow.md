@@ -8,7 +8,7 @@ timestamp: 2026-07-10T19:26:55+00:00
 
 # Commit Hygiene, Remotes & Workflow Patterns
 
-> Split from [AGENT_NOTES.md](/AGENT_NOTES.md) §1, §2, §7, §8.
+> Condensed in the root [agent guide](../../AGENTS.md).
 
 ## Commit hygiene
 
