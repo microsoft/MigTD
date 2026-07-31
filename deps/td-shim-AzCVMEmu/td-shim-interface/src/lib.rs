@@ -41,12 +41,16 @@ pub mod td_uefi_pi;
 
 // Re-export key functions for convenience
 pub use td_uefi_pi::fv::{
-    load_policy_from_file, load_root_ca_from_file, set_policy_data, set_root_ca_data,
+    load_policy_from_file, load_root_ca_from_file, load_servtd_corim_from_file,
+    load_servtd_signer_anchor_from_file, set_policy_data, set_root_ca_data,
+    set_servtd_corim_data, set_servtd_signer_anchor_data,
 };
 
 #[cfg(feature = "policy_v2")]
 pub use td_uefi_pi::fv::load_policy_issuer_chain_from_file;
 
 #[cfg(feature = "policy_v2")]
-pub use file_ops::init_file_based_emulation_with_policy_chain;
+pub use file_ops::{
+    init_file_based_emulation_with_corim, init_file_based_emulation_with_policy_chain,
+};
 pub use file_ops::init_file_based_emulation_with_real_files;
