@@ -152,3 +152,63 @@ and verify MRTD without replicating the exact `/root/MigTD` path, on any
 machine/CI checkout dir; and to drop the hard dependency on the container. Only
 #1 is needed for that — the rest is hardening.
 
+## Public policy-only enrollment artifact
+
+The public Docker/Make build intentionally produces an **enrollment artifact**,
+not a deployable MigTD:
+
+```bash
+make -C sh_script/Azure build-igvm
+```
+
+This target deterministically derives
+`target/release/migtd.policy_v2.json` from the public
+`config/Azure/policy_data_raw.json` production Azure source and the tracked
+public quote collateral in `config/collateral_production_fmspc.json`:
+
+```bash
+jq -cS --slurpfile collaterals config/collateral_production_fmspc.json \
+  '{policyData:(. + {collaterals:$collaterals[0]})}' \
+  config/Azure/policy_data_raw.json
+```
+
+That source is the unsigned Azure policy input used by
+`sh_script/Azure/build_azure_mock_test.sh`. The public target validates it is
+bare policy data (not a signed wrapper), adds the complete production quote
+collateral, contains no `servtdCollateral` or `servtdCrl`, and
+contains exactly one production identity rule:
+`servtd.migtdIdentity.isvsvn = {operation: "greater-or-equal", reference:
+"self"}`. A missing or structurally different rule fails the build.
+
+The image is built with `cargo image
+--non-bootable-enrollment-artifact`. This mode enrolls the policy but rejects
+root CA, issuer-chain, signer-anchor, and signed CoRIM inputs. The public output
+therefore contains:
+
+- deterministic MigTD code with `servtd_corim` support;
+- the complete unsigned policy bytes, including public quote collateral;
+- **no** root CA;
+- **no** policy issuer chain;
+- **no** signer anchor; and
+- **no** signed TCB-mapping CoRIM.
+
+With no RTMR1 signer-anchor source, firmware policy initialization fails
+closed. The image is explicitly non-bootable until private enrollment.
+
+`docker_build_igvm.sh` publishes the exact policy as
+`migtd.policy_v2.json` beside `migtd.igvm`. Consumers must preserve this sidecar because private enrollment must use the
+same policy bytes that were published with the reproducible image.
+
+### Private release boundary
+
+Private enrollment and final Azure signing are deliberately outside the public
+reproducible build:
+
+1. The public build publishes `migtd.igvm`, `migtd.policy_v2.json`, and their
+   SHA-256 files.
+2. A controlled private release pipeline enrolls the exact policy sidecar and
+   production trust material.
+3. The privately enrolled image is then finalized and Azure-signed.
+
+The public target accepts no private key, production certificate chain, signed
+collateral, or final Azure signature, and it does not invoke signing tools.
