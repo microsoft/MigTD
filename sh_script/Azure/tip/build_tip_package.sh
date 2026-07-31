@@ -33,6 +33,7 @@
 #                                              [--hcstest-dir DIR]
 #                                              [--vmgstool-file FILE]
 #                                              [--secfw-file FILE]
+#                                              [--tcb-mapping FILE]
 #                                              [--skip-dependencies]
 # ==============================================================================
 set -euo pipefail
@@ -55,6 +56,7 @@ HCSTEST_DIR=""
 TDX_TEST_SOURCE_DIR=""
 VMGSTOOL_FILE=""
 SECFW_FILE=""
+AUTHORITY_TCB_MAPPING="$PROJECT_ROOT/config/templates/tcb_mapping_seed.json"
 INCLUDE_DEPENDENCIES=true
 
 while [[ $# -gt 0 ]]; do
@@ -68,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --hcstest-dir) HCSTEST_DIR="$2"; shift 2;;
     --vmgstool-file) VMGSTOOL_FILE="$2"; shift 2;;
     --secfw-file) SECFW_FILE="$2"; shift 2;;
+    --tcb-mapping) AUTHORITY_TCB_MAPPING="$2"; shift 2;;
     --skip-dependencies) INCLUDE_DEPENDENCIES=false; shift;;
     -h|--help) sed -n '2,35p' "$0"; exit 0;;
     *) echo "Unknown arg: $1" >&2; exit 2;;
@@ -79,14 +82,21 @@ if [[ -n "$OS_ROOT" ]]; then
   HCSTEST_SOURCE_DIR="$OS_ROOT/src/onecore/vm/compute/test/hcstest/powershellV2"
   TDX_TEST_SOURCE_DIR="$OS_ROOT/src/onecore/vm/test/migration/tdx"
 fi
+[[ "$AUTHORITY_TCB_MAPPING" = /* ]] || AUTHORITY_TCB_MAPPING="$PROJECT_ROOT/$AUTHORITY_TCB_MAPPING"
+if [[ ! -f "$AUTHORITY_TCB_MAPPING" ]]; then
+  echo "Authority TCB mapping not found: $AUTHORITY_TCB_MAPPING" >&2
+  exit 1
+fi
 
 MOCK="sh_script/Azure/build_azure_mock_test.sh"
 MANIFEST="config/Azure/servtd_info.json"
-POLICY="config/Azure/policy_v2_signed.json"
-CHAIN="config/Azure/policy_issuer_chain.pem"
 IMG="target/debug/migtd.igvm"
 TOOLS_DIR="target/release"
 BUILD_TMP_DIR="$(mktemp -d)"
+POLICY_DIR="$BUILD_TMP_DIR/policy"
+POLICY="$POLICY_DIR/policy_v2_signed.json"
+CHAIN="$POLICY_DIR/policy_issuer_chain.pem"
+MAPPING_HISTORY="$BUILD_TMP_DIR/tcb-mapping-history.json"
 FINAL_OUT_DIR="$(realpath -m "$OUT_DIR")"
 MIGTD_PACKAGE_DIR="$(dirname "$FINAL_OUT_DIR")/migtd_package"
 MIGTD_PACKAGE_ZIP="$MIGTD_PACKAGE_DIR.zip"
@@ -122,7 +132,13 @@ SPDM_DEBUG_DIR=".agents/skills/migtd-spdm-transport-debug/scripts"
 RESOLVED_POWERTEST_DIR=""
 RESOLVED_HCSTEST_SOURCE_DIR=""
 
-gen_policy()  { chmod +x "$MOCK"; "./$MOCK" --skip-test "${FETCH_ARGS[@]}" "$@"; }
+gen_policy()  {
+  chmod +x "$MOCK"
+  "./$MOCK" --skip-test --output-dir "$POLICY_DIR" \
+    --tcb-mapping "$MAPPING_HISTORY" "${FETCH_ARGS[@]}" "$@"
+}
+reset_mapping_history() { cp "$AUTHORITY_TCB_MAPPING" "$MAPPING_HISTORY"; }
+promote_mapping() { cp "$POLICY_DIR/tcb_mapping.json" "$MAPPING_HISTORY"; }
 build_image() { cargo image --policy-v2 --debug --image-format igvm --no-default-features \
                   --features "$2" --log-level "$LOG_LEVEL" \
                   --policy-issuer-chain "$CHAIN" --policy "$POLICY" --output "$IMG"; }
@@ -207,6 +223,21 @@ emit_real_policy_pair() { # name
     return 1
   fi
 
+  # Enroll once to materialize the rebind image's new RTMR2/tdinfo_hash. The
+  # TCB mapping itself is excluded from RTMR2, so adding that hash and
+  # re-signing the policy does not change the resulting image hash.
+  enroll_policy
+  gen_policy \
+    --cert-dir "$CERT_DIR" \
+    --measured-image "$IMG" \
+    --measured-manifest "$MANIFEST" \
+    --policy-svn "$rebind_svn"
+  promote_mapping
+  actual_rebind_svn="$(jq -er '.policyData.policySvn | numbers' "$POLICY")"
+  if [[ "$actual_rebind_svn" -ne "$rebind_svn" ]]; then
+    echo "Regenerated policy for $name has policySvn=$actual_rebind_svn, expected $rebind_svn." >&2
+    return 1
+  fi
   enroll_policy
   emit "${name}_rebind"
   cp "$POLICY" "$OUT_DIR/$rebind_stem.policy.json"
@@ -418,6 +449,13 @@ else
   echo "Host dependency bundling disabled (--skip-dependencies)."
 fi
 mkdir -p "$OUT_DIR"
+find "$OUT_DIR" -maxdepth 1 -type f \
+  \( -name 'test-migtd*.igvm' -o \
+     -name 'test-migtd*.igvm.hash' -o \
+     -name 'test-migtd*.policy.json' \) \
+  -delete
+mkdir -p "$POLICY_DIR"
+reset_mapping_history
 ./sh_script/preparation.sh
 cargo build -p migtd-hash --release
 HASH_BIN="target/release/migtd-hash"
@@ -425,6 +463,9 @@ HASH_BIN="target/release/migtd-hash"
 IFS=',' read -ra LIST <<< "$VARIANTS"
 for v in "${LIST[@]}"; do
   echo "--- $v ---"
+  # Variants are independent release lineages. Two-phase builds promote only
+  # their final real-hash mapping; phase-1 mock mappings remain transient.
+  reset_mapping_history
   case "$v" in
     accept-all)   gen_policy --allow-all; build_image "$v" "$FEATURES_REAL_QUOTE"; emit accept-all;;
     reject-all)   gen_policy --reject;    build_image "$v" "$FEATURES_REAL_QUOTE"; emit reject-all;;
@@ -436,11 +477,12 @@ for v in "${LIST[@]}"; do
       # Phase 1: dummy policy (mock measurements), real cert chain (persisted).
       gen_policy --cert-dir "$CERT_DIR"
       build_image "$v" "$FEATURES_REAL_QUOTE"
-      # Phase 2: measure the REAL MRTD/RTMR0/RTMR1 of the just-built image and
-      # bind them into tcb_mapping.json (instead of the mock-report values),
+      # Phase 2: measure the real tdinfo_hash of the just-built image and add it
+      # to the cumulative tcb_mapping.json (instead of the mock-report hash),
       # then re-sign the policy against it, reusing the SAME cert dir so the
       # issuer chain (and RTMR1) stays identical to what was just measured.
       gen_policy --cert-dir "$CERT_DIR" --measured-image "$IMG" --measured-manifest "$MANIFEST"
+      promote_mapping
       # Re-enroll the newly-signed policy + issuer chain into the already-
       # built image's CFV in place (no rebuild needed).
       enroll_policy
@@ -477,6 +519,11 @@ for v in "${LIST[@]}"; do
       mkdir -p "$CERT_DIR"
       gen_policy --cert-dir "$CERT_DIR"
       build_image "$v" "$FEATURES_MOCK_QUOTE"
+      gen_policy --cert-dir "$CERT_DIR" \
+        --measured-image "$IMG" \
+        --measured-manifest "$MANIFEST"
+      promote_mapping
+      enroll_policy
       emit_real_policy_pair mock_quote
       ;;
     real_mock_quote_key_rotation)
