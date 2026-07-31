@@ -4,7 +4,7 @@ okf_version: "0.1"
 
 # .agents — MigTD institutional knowledge
 
-* [Agent Notes](AGENT_NOTES.md) - **Read first.** Slim entry point: session-start/end ritual, links into everything below.
+* [Agent guide](../AGENTS.md) - **Read first.** Core rules, session ritual, and links into everything below.
 * [Knowledge index](knowledge/index.md) - All topical reference/playbook files (workflow, domain facts, build/release/test).
 
 # Skills

@@ -8,13 +8,10 @@ timestamp: 2026-07-26T00:14:16+00:00
 
 # Engineering Decisions Log
 
-> Split from [AGENT_NOTES.md](/AGENT_NOTES.md) §11. This is a **decision
-> log**, not a design doc — as opposed to [Domain Facts](domain-facts.md) and
-> [Anti-patterns](anti-patterns.md), which record standing facts/rules, this
-> file records one-off decisions. Keep entries to a sentence or two, cite the
-> commit/SHA that acted on the decision. Append new entries at the bottom;
-> see [AGENT_NOTES.md](/AGENT_NOTES.md) §"Reflect and update" for the update
-> ritual that applies to this whole knowledge base.
+> This is a **decision log**, not a design doc. [Domain
+> Facts](domain-facts.md) and [Anti-patterns](anti-patterns.md) hold standing
+> rules. Keep entries short. Cite the implementing commit. Append new entries.
+> Follow the root [agent guide](../../AGENTS.md) update ritual.
 
 - **Dropped the peer-leaf-certificate-expiration check**
   (`crypto::validate_peer_leaf_expiration`, previously enforced in

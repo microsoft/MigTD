@@ -8,9 +8,8 @@ timestamp: 2026-07-10T19:26:55+00:00
 
 # Anti-patterns — Things To NOT Do
 
-> Split from [AGENT_NOTES.md](/AGENT_NOTES.md) §9. Collected from past
-> pushback; see [Domain Facts](domain-facts.md) and
-> [Code Style](code-style.md) for the reasoning behind several of these.
+> Condensed in the root [agent guide](../../AGENTS.md). See
+> [Domain Facts](domain-facts.md) and [Code Style](code-style.md).
 
 - ❌ Forget the DCO `Signed-off-by` trailer.
 - ❌ Bundle unrelated changes into one commit.
