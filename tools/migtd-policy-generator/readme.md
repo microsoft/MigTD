@@ -31,3 +31,8 @@ popd
   ```
   ./target/debug/migtd-policy-generator v2 --policy-data /path/to/policy_data.json --collaterals config/collateral_pre_production_fmspc.json --servtd-collateral /path/to/servtd_collateral.json -o policy_data_full.json
   ```
+
+- Package CoRIM-only policy data with the authoritative signer CRL:
+  ```
+  ./target/debug/migtd-policy-generator v2 --policy-data /path/to/policy_data.json --collaterals config/collateral_pre_production_fmspc.json --servtd-crl /path/to/servtd_crl.pem -o policy_data_full.json
+  ```
