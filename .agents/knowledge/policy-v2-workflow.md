@@ -48,8 +48,9 @@ At boot, MigTD:
    `A = SHA384(tag || H(rootDER) || leafEkuOidDER)` from a PEM chain or the
    direct anchor slot and extends `SHA384(A)` into RTMR1.
 2. Extends canonical `policyData` into RTMR2 after redacting the JSON TCB
-   mapping, its issuer chain, and optional TD Identity + issuer chain. A
-   CoRIM-only policy has no `servtdCollateral` and is measured as-is.
+   mapping and its issuer chain. Signed TD Identity and its issuer chain remain
+   measured. A CoRIM-only policy has no `servtdCollateral` and is measured
+   as-is.
 3. Verifies JSON/CoRIM signatures and binds their signer root+EKU to `A`.
 
 ## Updating mappings and rotating signer leaves
@@ -64,11 +65,13 @@ At boot, MigTD:
 - That comparison is against the **source peer's verified mapping**, not the
   destination's local mapping. This preserves reverse migration because an
   older destination does not need to predict future source releases.
-- Re-issuing a JSON mapping, CoRIM, or optional TD Identity is measurement
-  neutral because those bytes are outside RTMR2.
-- Rotating leaf or intermediate keys is measurement neutral only when the root
-  and signer-anchor EKU are unchanged; the new chain must still validate
-  and pass signer revocation checks.
+- Re-issuing a JSON mapping or CoRIM is measurement neutral because those bytes
+  are outside RTMR2.
+- Re-issuing JSON TD Identity, including rotating its leaf/intermediate chain,
+  changes RTMR2 and requires a new `tdinfo_hash` endorsement.
+- Rotating an unmeasured mapping or outer-policy signer leaf/intermediate is
+  measurement neutral only when the root and signer-anchor EKU are unchanged;
+  the new chain must still validate and pass signer revocation checks.
 - When a CoRIM is enrolled it is the sole TCB lookup authority. Do not expect
   JSON fallback on a CoRIM miss.
 - After enrollment, recompute the image hash with `migtd-hash` and require it

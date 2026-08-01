@@ -27,7 +27,7 @@ attestation" question is covered in the One-Hash doc.*
 | **MRTD** | td-shim BFV pages **+** MigTD payload pages **+** GPA layout of every region | IGVM loader (host) / TDX module | TD launch, **before any TD code runs** | `TDH.MEM.PAGE.ADD` (all pages) + `TDH.MR.EXTEND` (pages without `unmeasured` flag); sealed by `TDH.MR.FINALIZE` |
 | **RTMR0** | `EV_SEPARATOR` = `SHA384(0x00000000)` extended once from zero | td-shim | Inside `boot_builtin_payload`, just before jumping to MigTD entry | `tdcall_extend_rtmr(rtmr_index=0)` |
 | **RTMR1** | `EV_SEPARATOR`, then the digest of signer anchor `A` (root fingerprint + enrolled signer-purpose EKU) | td-shim (separator) → MigTD (anchor) | td-shim runtime, then MigTD `do_measurements()` | `tdcall_extend_rtmr(rtmr_index=1)` |
-| **RTMR2** | **One extend**: canonical `policyData` with the JSON TCB mapping, its issuer chain, and optional TD Identity + issuer chain redacted; a CoRIM-only policy has no `servtdCollateral` to redact | MigTD | MigTD `do_measurements()`, before any migration handling | `tdcall_extend_rtmr(rtmr_index=2)` |
+| **RTMR2** | **One extend**: canonical `policyData` with the JSON TCB mapping and its issuer chain redacted, while signed TD Identity and its issuer chain remain measured; a CoRIM-only policy has no `servtdCollateral` to redact | MigTD | MigTD `do_measurements()`, before any migration handling | `tdcall_extend_rtmr(rtmr_index=2)` |
 | **RTMR3** | Unused (always zero) in production builds | — | — | — |
 
 Test/debug variant: when `test_disable_ra_and_accept_all` is on,
@@ -241,16 +241,16 @@ the extractor removes:
 
 - `servtdCollateral.servtdTcbMapping` (strictly required when
   `servtdCollateral` is present),
-- `servtdTcbMappingIssuerChain`,
-- optional `servtdIdentity`, and
-- optional `servtdIdentityIssuerChain`.
+- `servtdTcbMappingIssuerChain`.
 
-The mapping and optional identity can therefore be re-issued without changing
-`tdinfo_hash`; their signer chains are separately bound to the RTMR1 anchor.
-Every other `policyData` field remains measured, including migration rules,
-platform collaterals, `policySvn`, servTD collateral version fields, and
-`servtdCrl`. A CoRIM-only policy omits `servtdCollateral`, so its entire
-`policyData` object is measured as-is.
+The mapping can therefore be re-issued without changing `tdinfo_hash`; its
+signer chain is separately bound to the RTMR1 anchor. The signed
+`servtdIdentity` and `servtdIdentityIssuerChain` remain measured, so changing
+either requires a new image hash endorsement. Every other `policyData` field
+also remains measured, including migration rules, platform collaterals,
+`policySvn`, servTD collateral version fields, and `servtdCrl`. A CoRIM-only
+policy omits `servtdCollateral`, so its entire `policyData` object is measured
+as-is.
 
 | # | Bytes hashed | Tag ID constant | EventName |
 |---|--------------|-----------------|-----------|
