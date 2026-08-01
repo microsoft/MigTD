@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2011-2021 Intel Corporation. All rights reserved.
 #
-# all targets in this Makefile are for building IGVM images for testing only.
+# Targets build either the public enrollment artifact or IGVM test images.
 #
 # For a pinned, reproducible build of these targets inside Docker (recommended
 # for release artifacts), use the wrapper:
@@ -9,10 +9,13 @@
 #     ./docker_build_igvm.sh --help     # options (target, --clone, output dir)
 
 IGVM_FILE ?= target/release/migtd.igvm
+IGVM_POLICY_SOURCE ?= config/Azure/policy_data_raw.json
+IGVM_POLICY_SIDECAR ?= target/release/migtd.policy_v2.json
+IGVM_POLICY_EXTRACTED ?= target/release/migtd.policy_v2.extracted.json
 LOG_LEVEL ?= trace
 # Common features for IGVM images
 IGVM_FEATURES_BASE ?= vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation
-IGVM_FEATURES_GET_QUOTE = $(IGVM_FEATURES_BASE),igvm-attest
+IGVM_FEATURES_GET_QUOTE = $(IGVM_FEATURES_BASE),igvm-attest,servtd_corim
 IGVM_FEATURES_MOCK_QUOTE = $(IGVM_FEATURES_BASE),use-mock-quote
 IGVM_FEATURES_GET_QUOTE_TEST = $(IGVM_FEATURES_GET_QUOTE),test-get-quote
 IGVM_MANIFEST ?= config/Azure/servtd_info.json
@@ -21,7 +24,7 @@ IGVM_MANIFEST ?= config/Azure/servtd_info.json
 .PHONY: generate-hash-accept generate-hash-get-quote
 .PHONY: generate-policy-accept build-igvm-accept build-igvm-accept-all
 .PHONY: generate-policy-reject build-igvm-reject build-igvm-reject-all test-reject
-.PHONY: build-igvm build-igvm-all build-igvm-v2-mock
+.PHONY: generate-enrollment-policy build-igvm build-igvm-all build-igvm-v2-mock
 .PHONY: build-igvm-get-quote build-igvm-get-quote-all
 .PHONY: build-igvm-mock-quote generate-policy-mock-quote
 .PHONY: build-igvm-mock-quote-allow-all generate-policy-mock-quote-allow-all
@@ -30,7 +33,7 @@ IGVM_MANIFEST ?= config/Azure/servtd_info.json
 
 help:
 	@echo "Available targets:"
-	@echo "  build-igvm-all                  - Build IGVM"
+	@echo "  build-igvm-all                  - Build non-bootable policy-only enrollment IGVM"
 	@echo "  build-igvm-accept-all           - Build IGVM with allow-all v2 policy using mock quote data"
 	@echo "  build-igvm-reject-all           - Build IGVM with bad-FMSPC v2 policy (migration will be rejected)"
 	@echo "  build-igvm-get-quote-all        - Build IGVM with v2 policy to test the getquote during initialization.(no successful migration expected)"
@@ -57,7 +60,7 @@ pre-build:
 	chmod +x ../../sh_script/preparation.sh
 	cd ../../ && ./sh_script/preparation.sh
 
-# --- Hash generation (shared) ---
+# --- Hash generation for fully enrolled images (shared) ---
 
 generate-hash:
 	cd ../../ &&  cargo run -p migtd-hash -- --image $(IGVM_FILE) --manifest $(IGVM_MANIFEST) --policy-v2
@@ -73,16 +76,29 @@ generate-hash-get-quote: generate-hash-v2
 
 generate-hash-v2-verbose: generate-hash-verbose
 
-# --- Default (same as get-quote, kept for pipeline) ---
+# --- Public policy-only enrollment artifact ---
+#
+# This deterministic base contains code plus the raw unsigned policy only.
+# It intentionally contains no signer anchor, issuer chain, or signed CoRIM,
+# and therefore cannot boot. Private enrollment must rebuild the CFV with the
+# production anchor and resupply byte-identical policy bytes from the sidecar.
 
-build-igvm:
+generate-enrollment-policy:
+	cd ../../ && mkdir -p $(dir $(IGVM_POLICY_SIDECAR)) && \
+	 jq -ce 'if type != "object" or has("policyData") or has("signature") or has("servtdCollateral") or (.policy | type != "array") or ([.policy[] | select(.servtd? != null)] | length != 1) or ([.policy[] | select(.servtd? != null)][0].servtd | keys != ["migtdIdentity"]) or ([.policy[] | select(.servtd? != null)][0].servtd.migtdIdentity.isvsvn != {"operation":"greater-or-equal","reference":"self"}) then error("expected raw Azure production policy with servtd.migtdIdentity.isvsvn >= self") else {policyData:.} end' \
+	 $(IGVM_POLICY_SOURCE) > $(IGVM_POLICY_SIDECAR)
+
+build-igvm: generate-enrollment-policy
 	cd ../../ && cargo image --no-default-features --features $(IGVM_FEATURES_GET_QUOTE) --log-level $(LOG_LEVEL) \
 	 --image-format igvm --output $(IGVM_FILE) --debug \
-	 --policy-v2 --policy config/templates/policy_v2_signed.json \
-	 --policy-issuer-chain config/templates/policy_issuer_chain.pem \
-	 --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
+	 --policy-v2 --policy $(IGVM_POLICY_SIDECAR) \
+	 --non-bootable-enrollment-artifact
+	cd ../../ && cargo run -p migtd-hash -- \
+	 --image $(IGVM_FILE) --verify-policy-only-enrollment-artifact \
+	 --extract-policy $(IGVM_POLICY_EXTRACTED)
+	cd ../../ && cmp $(IGVM_POLICY_SIDECAR) $(IGVM_POLICY_EXTRACTED) && rm $(IGVM_POLICY_EXTRACTED)
 
-build-igvm-all: pre-build build-igvm generate-hash-v2
+build-igvm-all: pre-build build-igvm
 
 # --- Shared v2 mock-quote IGVM build (used by accept, reject, mock-quote targets) ---
 

@@ -1455,6 +1455,8 @@ dependencies = [
  "crypto",
  "env_logger",
  "hex",
+ "igvm",
+ "igvm_defs",
  "log",
  "policy",
  "r-efi 3.2.0",
@@ -2228,6 +2230,20 @@ dependencies = [
  "json-signer",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "servtd-corim-generator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "corim",
+ "hex",
+ "policy",
+ "ring",
+ "sha2 0.10.8",
 ]
 
 [[package]]

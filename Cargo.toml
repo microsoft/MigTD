@@ -17,6 +17,7 @@ members = [
     "tools/migtd-collateral-generator",
     "tools/migtd-policy-generator",
     "tools/servtd-collateral-generator",
+    "tools/servtd-corim-generator",
     "tools/json-signer",
     "tools/migtd-policy-verifier",
     "xtask",
@@ -53,4 +54,3 @@ strip = true
 [patch.crates-io]
 ring = { path = "deps/td-shim/library/ring" }
 sys_time = { path = "src/std-support/sys_time" }
-

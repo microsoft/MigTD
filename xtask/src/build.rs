@@ -79,8 +79,14 @@ pub(crate) struct BuildArgs {
     /// Use migration policy v2
     #[clap(long)]
     policy_v2: bool,
-    /// Issuer chain of migration policy v2. Provide this OR `--signer-anchor`
-    /// (at least one is required when `policy_v2` is set).
+    /// Produce a policy-only enrollment artifact with no signer anchor or
+    /// signed CoRIM. The resulting image is intentionally non-bootable until
+    /// a private enrollment step rebuilds the CFV with a production anchor.
+    /// That step must resupply the exact same policy bytes.
+    #[clap(long)]
+    non_bootable_enrollment_artifact: bool,
+    /// Issuer chain of migration policy v2. Provide exactly one of this or
+    /// `--signer-anchor` for normal `policy_v2` builds.
     #[clap(long)]
     policy_issuer_chain: Option<PathBuf>,
     /// Path of the 48-byte RTMR1 signer anchor to enroll (CoRIM-only form),
@@ -154,20 +160,60 @@ impl BuildArgs {
 
     fn check_arguments(&self) -> Result<()> {
         if self.policy_v2 {
-            if self.policy.is_none() {
+            let policy = self.policy.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("policy_v2 is enabled but no policy file is provided")
+            })?;
+
+            if self.non_bootable_enrollment_artifact {
+                if self.has_feature("test_disable_ra_and_accept_all") {
+                    return Err(anyhow::anyhow!(
+                        "--non-bootable-enrollment-artifact rejects test_disable_ra_and_accept_all"
+                    ));
+                }
+                if self.root_ca.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "--non-bootable-enrollment-artifact rejects --root-ca"
+                    ));
+                }
+                if self.policy_issuer_chain.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "--non-bootable-enrollment-artifact rejects --policy-issuer-chain"
+                    ));
+                }
+                if self.signer_anchor.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "--non-bootable-enrollment-artifact rejects --signer-anchor"
+                    ));
+                }
+                if self.servtd_corim.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "--non-bootable-enrollment-artifact rejects --servtd-corim"
+                    ));
+                }
+                validate_policy_only_enrollment_policy(policy)?;
+            } else if self.policy_issuer_chain.is_some() == self.signer_anchor.is_some() {
                 return Err(anyhow::anyhow!(
-                    "policy_v2 is enabled but no policy file is provided"
+                    "policy_v2 requires exactly one of --policy-issuer-chain or --signer-anchor"
                 ));
             }
-            if self.policy_issuer_chain.is_none() && self.signer_anchor.is_none() {
-                return Err(anyhow::anyhow!(
-                    "policy_v2 is enabled but neither --policy-issuer-chain nor --signer-anchor was provided"
-                ));
-            }
-        } else if self.servtd_corim.is_some() {
-            return Err(anyhow::anyhow!("--servtd-corim requires --policy-v2"));
+        } else if self.non_bootable_enrollment_artifact
+            || self.policy_issuer_chain.is_some()
+            || self.signer_anchor.is_some()
+            || self.servtd_corim.is_some()
+        {
+            return Err(anyhow::anyhow!(
+                "--non-bootable-enrollment-artifact, --policy-issuer-chain, --signer-anchor, and --servtd-corim require --policy-v2"
+            ));
         }
         Ok(())
+    }
+
+    fn has_feature(&self, feature: &str) -> bool {
+        self.features.as_deref().is_some_and(|features| {
+            features
+                .split(',')
+                .any(|selected| selected.trim() == feature)
+        })
     }
 
     fn build_shim(&self) -> Result<(PathBuf, PathBuf)> {
@@ -299,7 +345,7 @@ impl BuildArgs {
             self.policy()?.to_str().unwrap(),
         ]);
 
-        let cmd = if self.policy_v2 {
+        let cmd = if self.policy_v2 && !self.non_bootable_enrollment_artifact {
             // Enroll the RTMR1 signer anchor: prefer the 48-byte anchor slot
             // (CoRIM-only form) when `--signer-anchor` is given, else the
             // legacy policy issuer chain PEM.
@@ -315,6 +361,8 @@ impl BuildArgs {
                     self.policy_issuer_chain()?.to_str().unwrap(),
                 ])
             }
+        } else if self.policy_v2 {
+            cmd
         } else {
             cmd.args(&[
                 "CA437832-4C51-4322-B13D-A21BD0C8FFF6",
@@ -393,7 +441,7 @@ impl BuildArgs {
             features.push_str(",policy_v2");
         }
 
-        if self.servtd_corim.is_some() {
+        if self.servtd_corim.is_some() || self.non_bootable_enrollment_artifact {
             features.push_str(",servtd_corim");
         }
 
@@ -549,5 +597,195 @@ impl BuildArgs {
     fn image_layout(&self) -> Result<PathBuf> {
         let path = self.image_layout.as_ref().unwrap_or(&DEFAULT_IMAGE_LAYOUT);
         fs::canonicalize(path).map_err(|e| e.into())
+    }
+}
+
+fn validate_policy_only_enrollment_policy(path: &Path) -> Result<()> {
+    let policy = fs::read(path)
+        .map_err(|e| anyhow::anyhow!("failed to read enrollment policy {}: {e}", path.display()))?;
+    validate_policy_only_enrollment_policy_bytes(&policy)
+}
+
+fn validate_policy_only_enrollment_policy_bytes(policy: &[u8]) -> Result<()> {
+    let document: serde_json::Value = serde_json::from_slice(policy)
+        .map_err(|e| anyhow::anyhow!("enrollment policy is not valid JSON: {e}"))?;
+    let object = document
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("enrollment policy must be a JSON object"))?;
+    if object.len() != 1 || !object.contains_key("policyData") {
+        return Err(anyhow::anyhow!(
+            "enrollment policy must contain only the unsigned policyData wrapper"
+        ));
+    }
+
+    let policy_data = object["policyData"]
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("enrollment policy policyData must be a JSON object"))?;
+    if policy_data.contains_key("servtdCollateral") {
+        return Err(anyhow::anyhow!(
+            "enrollment policy must not contain servtdCollateral"
+        ));
+    }
+    let rules = policy_data
+        .get("policy")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("enrollment policyData.policy must be an array"))?;
+    let identity_rules: Vec<_> = rules
+        .iter()
+        .filter_map(|rule| rule.get("servtd")?.get("migtdIdentity"))
+        .collect();
+    if identity_rules.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "enrollment policy must contain exactly one servtd.migtdIdentity rule"
+        ));
+    }
+    let isvsvn = identity_rules[0]
+        .get("isvsvn")
+        .ok_or_else(|| anyhow::anyhow!("production MigTD identity rule is missing isvsvn"))?;
+    if isvsvn.get("operation").and_then(serde_json::Value::as_str) != Some("greater-or-equal")
+        || isvsvn.get("reference").and_then(serde_json::Value::as_str) != Some("self")
+    {
+        return Err(anyhow::anyhow!(
+            "production MigTD identity rule must require isvsvn greater-or-equal self"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args() -> BuildArgs {
+        BuildArgs {
+            debug: false,
+            no_default_features: false,
+            features: None,
+            platform: None,
+            metadata: None,
+            root_ca: None,
+            policy: Some(PROJECT_ROOT.join("config/templates/policy_v2_signed.json")),
+            output: None,
+            image_format: None,
+            shim_layout: None,
+            image_layout: None,
+            log_level: None,
+            mmio_config: None,
+            policy_v2: true,
+            non_bootable_enrollment_artifact: false,
+            policy_issuer_chain: None,
+            signer_anchor: None,
+            servtd_corim: None,
+        }
+    }
+
+    #[test]
+    fn normal_policy_v2_requires_exactly_one_anchor_source() {
+        let mut neither = args();
+        assert!(neither.check_arguments().is_err());
+
+        neither.policy_issuer_chain = Some(PathBuf::from("issuer.pem"));
+        assert!(neither.check_arguments().is_ok());
+
+        let mut anchor = args();
+        anchor.signer_anchor = Some(PathBuf::from("anchor.bin"));
+        assert!(anchor.check_arguments().is_ok());
+
+        anchor.policy_issuer_chain = Some(PathBuf::from("issuer.pem"));
+        assert!(anchor.check_arguments().is_err());
+    }
+
+    #[test]
+    fn enrollment_artifact_accepts_policy_without_anchor() {
+        let mut enrollment = args();
+        enrollment.non_bootable_enrollment_artifact = true;
+        enrollment.policy = Some(PROJECT_ROOT.join("target/test-policy-only-enrollment.json"));
+
+        fs::create_dir_all(PROJECT_ROOT.join("target")).unwrap();
+        fs::write(
+            enrollment.policy.as_ref().unwrap(),
+            br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]}}"#,
+        )
+        .unwrap();
+        let result = enrollment.check_arguments();
+        fs::remove_file(enrollment.policy.as_ref().unwrap()).unwrap();
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enrollment_artifact_enables_corim_runtime() {
+        let mut enrollment = args();
+        enrollment.non_bootable_enrollment_artifact = true;
+
+        assert!(enrollment
+            .features()
+            .split(',')
+            .any(|feature| feature == "servtd_corim"));
+    }
+
+    #[test]
+    fn enrollment_artifact_rejects_contaminating_inputs() {
+        let policy = PROJECT_ROOT.join("target/test-policy-only-contamination.json");
+        fs::create_dir_all(PROJECT_ROOT.join("target")).unwrap();
+        fs::write(
+            &policy,
+            br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]}}"#,
+        )
+        .unwrap();
+
+        for configure in [
+            |args: &mut BuildArgs| args.root_ca = Some(PathBuf::from("root.cer")),
+            |args: &mut BuildArgs| args.policy_issuer_chain = Some(PathBuf::from("issuer.pem")),
+            |args: &mut BuildArgs| args.signer_anchor = Some(PathBuf::from("anchor.bin")),
+            |args: &mut BuildArgs| args.servtd_corim = Some(PathBuf::from("mapping.cose")),
+        ] {
+            let mut enrollment = args();
+            enrollment.non_bootable_enrollment_artifact = true;
+            enrollment.policy = Some(policy.clone());
+            configure(&mut enrollment);
+            assert!(enrollment.check_arguments().is_err());
+        }
+
+        fs::remove_file(policy).unwrap();
+    }
+
+    #[test]
+    fn enrollment_artifact_rejects_accept_all_firmware() {
+        let policy = PROJECT_ROOT.join("target/test-policy-only-accept-all.json");
+        fs::create_dir_all(PROJECT_ROOT.join("target")).unwrap();
+        fs::write(
+            &policy,
+            br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]}}"#,
+        )
+        .unwrap();
+
+        let mut enrollment = args();
+        enrollment.non_bootable_enrollment_artifact = true;
+        enrollment.policy = Some(policy.clone());
+        enrollment.features = Some("vmcall-raw,test_disable_ra_and_accept_all".into());
+        assert!(enrollment.check_arguments().is_err());
+
+        fs::remove_file(policy).unwrap();
+    }
+
+    #[test]
+    fn enrollment_policy_rejects_signature_and_servtd_collateral() {
+        assert!(validate_policy_only_enrollment_policy_bytes(
+            br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]},"signature":"deadbeef"}"#
+        )
+        .is_err());
+        assert!(validate_policy_only_enrollment_policy_bytes(
+            br#"{"policyData":{"servtdCollateral":{},"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":"self"}}}}]}}"#
+        )
+        .is_err());
+        assert!(
+            validate_policy_only_enrollment_policy_bytes(br#"{"policyData":{"policy":[]}}"#)
+                .is_err()
+        );
+        assert!(validate_policy_only_enrollment_policy_bytes(
+            br#"{"policyData":{"policy":[{"servtd":{"migtdIdentity":{"isvsvn":{"operation":"equal","reference":1}}}}]}}"#
+        )
+        .is_err());
     }
 }
