@@ -73,9 +73,9 @@ A previous review pass produced a "fix" (`bc99fa4`) that removed the `+1`, passe
 
 - **MANDATORY first step after fresh checkout / submodule update**: run `bash sh_script/preparation.sh`. This:
   1. Invokes `deps/td-shim/sh_script/preparation.sh` (td-shim's own prep).
-  2. Applies the spdm-rs ring patches (`0003-introduce-EphemeralPrivateKey-serialization.patch` and `0004-Introduce-digest-de-serialization.patch` from `deps/spdm-rs/external/patches/ring/`) to `deps/td-shim/library/ring`. These patches add serialization methods that `spdmlib` requires; without them, `cargo build --features spdm_attestation` fails with missing-symbol errors (`EphemeralPrivateKey::to_bytes`, `digest::serialize`).
+  2. Applies the spdm-rs ring patches (`0003-introduce-EphemeralPrivateKey-serialization.patch` and `0004-Introduce-digest-de-serialization.patch` from `deps/spdm-rs/external/patches/ring/`) to `deps/td-shim/library/ring`. MigTD's workspace-level `[patch.crates-io]` selects this ring copy, not spdm-rs's copy. The patches add `EphemeralPrivateKey::export_private_key_bytes`/`from_private_key_bytes` and `digest::Context::to_bytes`/`from_bytes`, which spdmlib needs to preserve intermediate SPDM context.
   3. Runs `deps/spdm-rs/sh_script/pre-build.sh`.
-  CI does this automatically via `.github/actions/setup-build-environment` (default `run-preparation: true`). Locally you MUST run it manually after any `git clean -fdx`, `git submodule update`, or fresh clone. Failing to run it produces build errors that look like a real baseline regression but are not.
+  CI does this automatically via `.github/actions/setup-build-environment` (default `run-preparation: true`). Locally you MUST run it manually after any `git clean -fdx`, `git submodule update`, or fresh clone. Failing to run it produces build errors that look like a real baseline regression but are not. See [`doc/dependency_preparation.md`](../../../doc/dependency_preparation.md) for the dependency-resolution rationale.
 - **Build profiles vary**. Always confirm scope before flagging code as buggy. Default in-scope set used during the audit:
   - `vmcall-raw, stack-guard, main, vmcall-interrupt, oneshot-apic, spdm_attestation, igvm-attest, policy_v2`
   - `policy_v2` pulls in `policy/policy_v2` + `attestation/attest-lib-ext`.
