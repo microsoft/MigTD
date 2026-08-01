@@ -750,35 +750,6 @@ mod v2 {
         Ok(())
     }
 
-    /// Per GHCI 1.5: Verify initMigtdData.MROWNERCONFIG <= own policy SVN.
-    ///
-    /// NOTE: the `MROWNER == own policy-signer key hash` binding has been
-    /// **deprecated** (see [`verify_own_tdinfo`]); only the MROWNERCONFIG
-    /// (policy SVN floor) binding is enforced.
-    pub fn verify_init_migtd_data_policy_binding(
-        init_td_info: &[u8; crate::migration::TD_INFO_SIZE],
-    ) -> Result<(), PolicyError> {
-        use crate::migration::td_info_mrownerconfig;
-
-        let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
-        let my_policy_svn = policy.policy_data.get_policy_svn();
-
-        // Check MROWNERCONFIG (init policy_svn) <= my policy_svn
-        let init_mrownerconfig = td_info_mrownerconfig(init_td_info);
-        let mut init_svn_bytes = [0u8; 4];
-        init_svn_bytes.copy_from_slice(&init_mrownerconfig[..4]);
-        let init_policy_svn = u32::from_le_bytes(init_svn_bytes);
-        // Remaining 44 bytes should be zero
-        if init_mrownerconfig[4..] != [0u8; SHA384_DIGEST_SIZE - 4] {
-            return Err(PolicyError::InvalidParameter);
-        }
-        if init_policy_svn > my_policy_svn {
-            return Err(PolicyError::SvnMismatch);
-        }
-
-        Ok(())
-    }
-
     /// Destination-side migration helper: authenticate the source MigTD and
     /// require its initial mapped SVN to be no newer than its current mapped
     /// SVN. The legacy init-TDINFO argument is ignored for wire compatibility.
