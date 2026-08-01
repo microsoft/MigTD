@@ -224,6 +224,11 @@ sh_script/Azure/enroll_igvm.sh final \
   tcb-mapping.cose final.igvm
 ```
 
+`test_corim_enrollment_flow.sh` executes this complete transition with an
+ephemeral test signer, records both measurement reports, invokes the
+authoritative `check_tdinfo_hash_equality.sh` gate, and proves a regression
+that accidentally measures the signed mapping fails closed.
+
 Do not describe anchor enrollment as unmeasured: changing the anchor changes
 RTMR1. The measurement-invariant transition begins only after the production
 anchor is staged.

@@ -17,10 +17,11 @@ MANIFEST="$REPO_ROOT/config/Azure/servtd_info.json"
 MIGTD_HASH="$REPO_ROOT/target/release/migtd-hash"
 CORIM_GENERATOR="$REPO_ROOT/target/release/servtd-corim-generator"
 ENROLL="$SCRIPT_DIR/enroll_igvm.sh"
+HASH_GATE="$REPO_ROOT/sh_script/check_tdinfo_hash_equality.sh"
 SIGNER_EKU_OID="1.3.6.1.4.1.32473.1.1"
 
 for input in "$RAW" "$POLICY" "$MANIFEST" "$MIGTD_HASH" "$CORIM_GENERATOR" \
-    "$ENROLL"; do
+    "$ENROLL" "$HASH_GATE"; do
     [ -s "$input" ] || { echo "Required input is missing: $input" >&2; exit 1; }
 done
 command -v jq >/dev/null 2>&1 || { echo "jq is required." >&2; exit 1; }
@@ -96,7 +97,15 @@ cmp "$OUTPUT_DIR/signer-anchor.bin" "$WORK_DIR/final-anchor.bin"
     --manifest "$MANIFEST" \
     --image "$OUTPUT_DIR/final.igvm" \
     --policy-v2 \
-    --output-td-info "$OUTPUT_DIR/final.measurements.json"
+    --output-td-info "$OUTPUT_DIR/final.measurements.json" \
+    --output-tdinfo-hash "$OUTPUT_DIR/final.tdinfo_hash"
+
+"$HASH_GATE" \
+    --pre-final-hash "$OUTPUT_DIR/anchor-stage.tdinfo_hash" \
+    --image "$OUTPUT_DIR/final.igvm" \
+    --manifest "$MANIFEST" \
+    --migtd-hash "$MIGTD_HASH" \
+    --audit-output "$OUTPUT_DIR/tdinfo-hash-gate.json"
 
 for field in mrtd rtmr0 rtmr1 rtmr2 rtmr3; do
     anchor_value="$(jq -er ".$field" "$OUTPUT_DIR/anchor-stage.measurements.json")"
@@ -106,5 +115,26 @@ for field in mrtd rtmr0 rtmr1 rtmr2 rtmr3; do
         exit 1
     }
 done
+
+base64 -w0 "$OUTPUT_DIR/tcb-mapping.cose" > "$WORK_DIR/corim.base64"
+jq --rawfile mapping "$WORK_DIR/corim.base64" \
+    '.policyData.accidentallyMeasuredServtdTcbMapping = $mapping' \
+    "$POLICY" > "$WORK_DIR/measured-mapping-policy.json"
+"$ENROLL" final "$RAW" "$WORK_DIR/measured-mapping-policy.json" \
+    "$OUTPUT_DIR/signer-anchor.bin" "$OUTPUT_DIR/tcb-mapping.cose" \
+    "$WORK_DIR/measured-mapping-final.igvm"
+
+negative_rc=0
+"$HASH_GATE" \
+    --pre-final-hash "$OUTPUT_DIR/anchor-stage.tdinfo_hash" \
+    --image "$WORK_DIR/measured-mapping-final.igvm" \
+    --manifest "$MANIFEST" \
+    --migtd-hash "$MIGTD_HASH" \
+    --audit-output "$OUTPUT_DIR/tdinfo-hash-gate-negative.json" \
+    || negative_rc=$?
+[ "$negative_rc" -eq 1 ] || {
+    echo "Measured-mapping regression returned $negative_rc; expected mismatch exit 1." >&2
+    exit 1
+}
 
 echo "PASS: anchor-stage and final CoRIM image have identical tdinfo_hash."

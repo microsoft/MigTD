@@ -223,6 +223,13 @@ if stage_should_run main; then
             done
         done
     done
+
+    # Separate main.yml job: exercise the release hash gate and its mismatch
+    # negative using the same script as GitHub Actions.
+    step tdinfo-hash-gate__build cargo build --release -p migtd-hash
+    step tdinfo-hash-gate__test cargo test -p migtd-hash
+    step tdinfo-hash-gate bash sh_script/test_tdinfo_hash_equality_gate.sh \
+        "$LOG_DIR/tdinfo-hash-gate-artifacts"
 fi
 
 # ============================================================ STAGE: emu
