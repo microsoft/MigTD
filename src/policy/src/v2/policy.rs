@@ -506,8 +506,9 @@ impl<'a> RawPolicyData<'a> {
                     return Err(PolicyError::SignerAnchorMismatch);
                 }
 
-                // The optional TD Identity issuer chain is redacted from RTMR2
-                // too, so bind it to the same RTMR1 signer anchor when present.
+                // The optional TD Identity and issuer chain are measured into
+                // RTMR2. Also require the chain to share the RTMR1 signer
+                // anchor so mapping and identity stay in one trust domain.
                 if let Some(identity_chain) =
                     servtd_collateral.servtd_identity_issuer_chain.as_deref()
                 {
