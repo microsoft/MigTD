@@ -558,9 +558,9 @@ mod test {
 
     /// Cross-implementation parity: `tdinfo_hash` computed from the
     /// canonical 10 fields here MUST equal `SHA384(unmasked_TDINFO_512)` used
-    /// by `migtd-hash`, `mig-td-tools tdinfo-hash`, and the bash mock-test
-    /// scripts. If they ever drift, runtime policy lookup silently fails for
-    /// all valid TDs.
+    /// by `migtd-hash`, the TCB-mapping CoRIM production tools, and the bash
+    /// mock-test scripts. If they ever drift, runtime policy lookup silently
+    /// fails for all valid TDs.
     #[test]
     fn tdinfo_hash_matches_direct_sha384_formula() {
         use crypto::hash::digest_sha384;
