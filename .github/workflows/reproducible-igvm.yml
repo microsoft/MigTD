@@ -70,10 +70,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Prepare sources (ring/spdm patches; git-only)
-        # docker_build_igvm.sh local mode builds an already-prepared tree; the
-        # actual IGVM build (clang/rust/nasm) happens inside the container.
-        run: bash sh_script/preparation.sh
+      - name: Setup host enrollment validation environment
+        uses: ./.github/actions/setup-build-environment
+        with:
+          install-jq: 'true'
 
       - name: Test linux-sgx pruning safety
         run: bash src/attestation/test-prune-unused-linux-sgx.sh
