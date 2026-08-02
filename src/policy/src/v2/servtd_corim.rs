@@ -50,7 +50,7 @@ use corim::{
         comid::ComidTag,
         environment::EnvironmentMap,
         measurement::{MeasurementMap, SvnChoice},
-        signed::{decode_signed_corim, CoseAlgorithm},
+        signed::{decode_signed_corim, CoseAlgorithm, CwtClaims},
         triples::ConditionalEndorsementSeriesTriple,
     },
     validate::decode_and_validate_at,
@@ -216,6 +216,10 @@ fn verify_and_extract_payload(
     let envelope =
         decode_signed_corim(cose).map_err(|_| PolicyError::SignatureVerificationFailed)?;
 
+    if has_cwt_time_claims(envelope.protected.cwt_claims.as_ref()) {
+        return Err(PolicyError::SignatureVerificationFailed);
+    }
+
     // Only ECDSA-P384/SHA-384 is supported by the crypto crate. Accept both
     // the deprecated polymorphic ES384 (-35, what the producer emits today)
     // and its fully-specified RFC 9864 replacement ESP384 (-51).
@@ -261,6 +265,10 @@ fn verify_and_extract_payload(
         .ok_or(PolicyError::SignatureVerificationFailed)?;
     let signer_chain = certs.iter().map(|cert| cert.to_vec()).collect();
     Ok((payload, signer_chain))
+}
+
+fn has_cwt_time_claims(claims: Option<&CwtClaims>) -> bool {
+    matches!(claims, Some(claims) if claims.nbf.is_some() || claims.exp.is_some())
 }
 
 // ---- Environment matching --------------------------------------------------
@@ -336,6 +344,7 @@ mod test {
             corim::CorimId,
             environment::{ClassMap, EnvironmentMap},
             measurement::{Digest, MeasurementValuesMap},
+            signed::SignedCorimBuilder,
             triples::{CesCondition, ConditionalSeriesRecord, ReferenceTriple},
         },
     };
@@ -475,6 +484,28 @@ mod test {
         assert_eq!(hit.isvsvn, 1);
 
         assert!(provider.lookup_by_tdinfo_hash(&[0xCC; 48]).is_none());
+    }
+
+    #[test]
+    fn rejects_cwt_nbf_and_exp_claims() {
+        assert!(!has_cwt_time_claims(Some(&CwtClaims::new("test-signer"))));
+        assert!(has_cwt_time_claims(Some(
+            &CwtClaims::new("test-signer").with_nbf(1)
+        )));
+        assert!(has_cwt_time_claims(Some(
+            &CwtClaims::new("test-signer").with_exp(-1)
+        )));
+
+        let payload = build_tcb_mapping(&[(hash(0xAA), 5)]);
+        let claims = CwtClaims::new("test-signer").with_nbf(1).with_exp(-1);
+        let cose = SignedCorimBuilder::new(CoseAlgorithm::Es384, payload)
+            .set_cwt_claims(claims)
+            .build_with_signature(vec![0; 96])
+            .expect("build signed CoRIM");
+        assert!(matches!(
+            verify_and_extract_payload(&cose, &[0; SHA384_DIGEST_SIZE]),
+            Err(PolicyError::SignatureVerificationFailed)
+        ));
     }
 
     /// End-to-end with a real signed `COSE_Sign1` pipeline sample: verify the
