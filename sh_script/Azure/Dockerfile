@@ -7,9 +7,8 @@
 # The base image is pinned by digest to the SAME ubuntu release used by
 # container/Dockerfile. This is deliberate: the IGVM payload statically links
 # the `ring` crate whose C sources are compiled by the image's clang/llvm, so
-# the exact compiler build (frozen by the digest) is what makes the resulting
-# IGVM bit-for-bit reproducible. See readme.md "Reproducible Build" and
-# doc/reproducible_build.md.
+# the controlled compiler environment is required for a bit-for-bit
+# reproducible IGVM. See sh_script/Azure/reproducible_build.md.
 FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba
 
 # Adding rust binaries to PATH.
