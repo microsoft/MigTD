@@ -6,7 +6,7 @@
 # environment). We run it twice from the same prepared sources and fail unless
 # the two migtd.igvm files are byte-identical. Building inside the pinned image
 # is what makes the result reproducible across machines/OS images: a different
-# clang produces different bytes (see doc/reproducible_build.md and readme.md).
+# clang produces different bytes (see sh_script/Azure/reproducible_build.md).
 # An identical image also implies an identical MRTD.
 #
 # This is intentionally the *faithful* check -- it exercises the shipped
