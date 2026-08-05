@@ -8,8 +8,9 @@
   Starts two MigTD instances from the supplied IGVM files, binds a TDX VM to
   the first, then invokes UpgradeMigrationPolicy to rebind it to the second.
   Runtime TD Info Hash values from the MigTD serial logs are authoritative.
-  Sibling .hash files are optional cross-checks and fallbacks when serial
-  capture is disabled. If both images have the same hash, the second mapping
+  Before any MigTD load, the script verifies each IGVM sibling hash against
+  its on-blade hash evidence file (<igvm>.hash.evidence.json). If both images
+  have the same hash, the second mapping
   uses a synthetic lookup hash, matching the host OS rebind test; the VM's
   reported policy remains the real IGVM hash.
 
@@ -39,10 +40,16 @@ param(
     [switch]$UsePersistentSecrets,
     [switch]$CaptureSerial = $true,
     [ValidateRange(1, 120)] [int]$PolicyTimeoutSeconds = 15,
-    [ValidateRange(0, 60)] [int]$SerialDrainTimeoutSeconds = 30
+    [ValidateRange(0, 60)] [int]$SerialDrainTimeoutSeconds = 30,
+    [switch]$SkipHashEvidenceValidation
 )
 
 $ErrorActionPreference = 'Stop'
+$commonScript = Join-Path $PSScriptRoot 'TipHarness.Common.ps1'
+if (-not (Test-Path $commonScript)) {
+    throw "Harness helper not found: $commonScript"
+}
+. $commonScript
 $script:serialCaptures = @{}
 $script:runtimeHashes = @{}
 
@@ -155,56 +162,60 @@ function Wait-MigTdRuntimeHash {
     if (-not $capture) {
         return
     }
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        if (Test-Path $capture.LogPath) {
-            $text = Get-Content $capture.LogPath -Raw -ErrorAction SilentlyContinue
-            $match = [regex]::Match(
-                $text,
-                'TD Info Hash:\s*([0-9a-fA-F]{96})',
-                [System.Text.RegularExpressions.RegexOptions]::RightToLeft)
-            if ($match.Success) {
-                $actualHash = $match.Groups[1].Value.ToLowerInvariant()
-                if ($ExpectedHash -and $actualHash -ne $ExpectedHash) {
-                    Write-Warning "Ignoring stale hash file for '$InstanceId'. HashFile=$ExpectedHash Runtime=$actualHash Image=$ImagePath"
-                }
-                Write-Host "Runtime TD Info Hash verified for '$InstanceId': $actualHash"
-                return $actualHash
-            }
-        }
-        Start-Sleep -Milliseconds 250
-    } while ((Get-Date) -lt $deadline)
-
-    if ($ExpectedHash) {
-        Write-Warning "MigTD runtime TD Info Hash was not found in $($capture.LogPath); using hash file value $ExpectedHash."
-        return $ExpectedHash
-    }
-    throw "MigTD runtime TD Info Hash was not found in $($capture.LogPath) within $TimeoutSeconds seconds and no hash file fallback is available."
+    $actualHash = Wait-TipRuntimeHashFromSerialLog `
+        -LogPath $capture.LogPath `
+        -TimeoutSeconds $TimeoutSeconds `
+        -ExpectedHash $ExpectedHash `
+        -Context $InstanceId
+    Write-Host "Runtime TD Info Hash verified for '$InstanceId': $actualHash"
+    return $actualHash
 }
 
 function Stop-MigTdInstance {
     param([object]$Instance)
 
     $instanceId = if ($Instance) { $Instance.Id } else { $null }
+    $localCleanupFailures = [System.Collections.Generic.List[string]]::new()
     try {
         if ($Instance -and -not $Instance.IsClosed) {
-            Stop-HcsSystem $Instance -ErrorAction SilentlyContinue
-            $Instance.Close()
+            try {
+                Stop-HcsSystem $Instance -ErrorAction Stop
+            } catch {
+                $localCleanupFailures.Add("Stop-HcsSystem $instanceId failed: $($_.Exception.Message)")
+            }
+            try {
+                $Instance.Close()
+            } catch {
+                $localCleanupFailures.Add("Close MigTD handle $instanceId failed: $($_.Exception.Message)")
+            }
         }
-    } catch {
-        Write-Warning "Failed to close MigTD instance: $_"
     } finally {
         $capture = if ($instanceId) { $script:serialCaptures[$instanceId] } else { $null }
         if ($capture) {
-            Wait-Job $capture.Job -Timeout 5 -ErrorAction SilentlyContinue | Out-Null
-            if ($capture.Job.State -notin @('Completed', 'Failed')) {
-                Stop-Job $capture.Job -ErrorAction SilentlyContinue | Out-Null
+            try {
+                Wait-Job $capture.Job -Timeout 5 -ErrorAction Stop | Out-Null
+            } catch {
+                $localCleanupFailures.Add("Wait-Job $instanceId-serial failed: $($_.Exception.Message)")
             }
-            Remove-Job $capture.Job -Force -ErrorAction SilentlyContinue
+            if ($capture.Job.State -notin @('Completed', 'Failed')) {
+                try {
+                    Stop-Job $capture.Job -ErrorAction Stop | Out-Null
+                } catch {
+                    $localCleanupFailures.Add("Stop-Job $instanceId-serial failed: $($_.Exception.Message)")
+                }
+            }
+            try {
+                Remove-Job $capture.Job -Force -ErrorAction Stop
+            } catch {
+                $localCleanupFailures.Add("Remove-Job $instanceId-serial failed: $($_.Exception.Message)")
+            }
             Write-Host "MigTD serial log: $($capture.LogPath)"
             $script:serialCaptures.Remove($instanceId)
         }
+    }
+
+    if ($localCleanupFailures.Count -gt 0) {
+        throw ($localCleanupFailures -join '; ')
     }
 }
 
@@ -333,14 +344,14 @@ function Wait-VmMigrationPolicy {
 }
 
 if ($PSVersionTable.PSVersion.Major -lt 7) {
-    throw 'This test requires PowerShell 7 because the host migration mapping helpers use ConvertFrom-Json -AsHashtable.'
+    throw (New-TipHarnessException 'PRECONDITION' 'This test requires PowerShell 7 because the host migration mapping helpers use ConvertFrom-Json -AsHashtable.')
 }
 if ($OldMigTdId -eq $NewMigTdId) {
-    throw 'OldMigTdId and NewMigTdId must be different.'
+    throw (New-TipHarnessException 'PRECONDITION' 'OldMigTdId and NewMigTdId must be different.')
 }
 foreach ($path in @($OldIgvmFilePath, $NewIgvmFilePath)) {
     if (-not (Test-Path $path)) {
-        throw "IGVM file not found: $path"
+        throw (New-TipHarnessException 'PRECONDITION' "IGVM file not found: $path")
     }
 }
 
@@ -395,8 +406,23 @@ if (-not (Get-Command New-VmStateFile -ErrorAction SilentlyContinue)) {
     }
 }
 
-$oldHashFileValue = Read-MigTdHash $OldHashFilePath -Required:(-not $CaptureSerial)
-$newHashFileValue = Read-MigTdHash $NewHashFilePath -Required:(-not $CaptureSerial)
+$oldHashEvidence = $null
+$newHashEvidence = $null
+if ($SkipHashEvidenceValidation) {
+    $oldHashFileValue = Read-MigTdHash $OldHashFilePath -Required:(-not $CaptureSerial)
+    $newHashFileValue = Read-MigTdHash $NewHashFilePath -Required:(-not $CaptureSerial)
+} else {
+    $oldHashEvidence = Resolve-TipMigTdHashFromFiles `
+        -IgvmFilePath $OldIgvmFilePath `
+        -HashFilePath $OldHashFilePath
+    $newHashEvidence = Resolve-TipMigTdHashFromFiles `
+        -IgvmFilePath $NewIgvmFilePath `
+        -HashFilePath $NewHashFilePath
+    $oldHashFileValue = $oldHashEvidence.MigTdHash
+    $newHashFileValue = $newHashEvidence.MigTdHash
+    Write-Host "Verified sibling hash evidence: $($oldHashEvidence.HashEvidencePath)"
+    Write-Host "Verified sibling hash evidence: $($newHashEvidence.HashEvidencePath)"
+}
 $oldHash = $oldHashFileValue
 $newHash = $newHashFileValue
 $newMappingHash = $null
@@ -404,6 +430,8 @@ $newMappingHash = $null
 $oldMigTd = $null
 $newMigTd = $null
 $vm = $null
+$scriptError = $null
+$cleanupFailures = [System.Collections.Generic.List[string]]::new()
 try {
     if ($oldHashFileValue) {
         Remove-VmHostMigrationTdMapping -MigTdHash $oldHashFileValue -ErrorAction SilentlyContinue
@@ -475,11 +503,11 @@ try {
     try {
         $vm | Update-VmMigrationPolicy
     } catch {
-        $errorText = ($_ | Format-List * -Force | Out-String).Trim()
+        $errorText = Convert-TipErrorRecordToString -ErrorRecord $_
         if ($errorText -match '0x800721CE|external policy') {
-            throw "Rebind rejected with MIGPOLICY_UNSATISFIED_ERROR (0x800721CE). The old and new MigTD policies or enrolled identities do not mutually authorize this rebind. Inspect $OldMigTdId.serial.log and $NewMigTdId.serial.log for the failed policy check."
+            throw (New-TipHarnessException 'TEST_FAILURE' "Rebind rejected with MIGPOLICY_UNSATISFIED_ERROR (0x800721CE). The old and new MigTD policies or enrolled identities do not mutually authorize this rebind. Inspect $OldMigTdId.serial.log and $NewMigTdId.serial.log for the failed policy check.")
         }
-        throw "UpgradeMigrationPolicy rebind failed.`n$errorText`nInspect $OldMigTdId.serial.log and $NewMigTdId.serial.log."
+        throw (New-TipHarnessException 'TRANSPORT' "UpgradeMigrationPolicy rebind failed.`n$errorText`nInspect $OldMigTdId.serial.log and $NewMigTdId.serial.log.")
     }
     Wait-VmMigrationPolicy `
         -TargetVmName $VmName `
@@ -493,6 +521,9 @@ try {
     Write-Host "PASS: '$VmName' rebound to the new MigTD and remained running."
     Write-Host "Current migration policy: $newHash"
 }
+catch {
+    $scriptError = $_
+}
 finally {
     if ($CaptureSerial -and ($oldMigTd -or $newMigTd)) {
         Wait-ForFinalRebindLogs `
@@ -500,12 +531,24 @@ finally {
             -TimeoutSeconds $SerialDrainTimeoutSeconds
     }
     if ($vm) {
-        $vm | Stop-VM -Force -ErrorAction SilentlyContinue
-        $vm | Remove-VM -Force -ErrorAction SilentlyContinue
+        try {
+            $vm | Stop-VM -Force -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Stop-VM $VmName failed: $($_.Exception.Message)")
+        }
+        try {
+            $vm | Remove-VM -Force -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Remove-VM $VmName failed: $($_.Exception.Message)")
+        }
     }
     $finalPolicyHash = if ($newHash) { $newHash } else { $oldHash }
     if ($finalPolicyHash) {
-        Set-VMHostMigrationPolicy DisabledByDefault $finalPolicyHash -ErrorAction SilentlyContinue
+        try {
+            Set-VMHostMigrationPolicy DisabledByDefault $finalPolicyHash -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Set-VMHostMigrationPolicy DisabledByDefault failed: $($_.Exception.Message)")
+        }
     }
     foreach ($hash in @(
         $newMappingHash,
@@ -513,8 +556,52 @@ finally {
         $newHashFileValue,
         $oldHashFileValue
     ) | Where-Object { $_ } | Select-Object -Unique) {
-        Remove-VmHostMigrationTdMapping -MigTdHash $hash -ErrorAction SilentlyContinue
+        try {
+            Remove-VmHostMigrationTdMapping -MigTdHash $hash -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Remove-VmHostMigrationTdMapping $hash failed: $($_.Exception.Message)")
+        }
     }
-    Stop-MigTdInstance $newMigTd
-    Stop-MigTdInstance $oldMigTd
+    try {
+        Stop-MigTdInstance $newMigTd
+    } catch {
+        $cleanupFailures.Add("Stop-MigTdInstance $NewMigTdId failed: $($_.Exception.Message)")
+    }
+    try {
+        Stop-MigTdInstance $oldMigTd
+    } catch {
+        $cleanupFailures.Add("Stop-MigTdInstance $OldMigTdId failed: $($_.Exception.Message)")
+    }
+}
+
+if ($cleanupFailures.Count -gt 0) {
+    $cleanupMessage = ($cleanupFailures -join '; ')
+    if ($scriptError) {
+        throw (New-TipHarnessException 'CLEANUP' "$cleanupMessage | PrimaryError=$($scriptError.Exception.Message)")
+    }
+    throw (New-TipHarnessException 'CLEANUP' $cleanupMessage)
+}
+
+if ($scriptError) {
+    throw $scriptError
+}
+
+[pscustomobject]@{
+    CaseType = 'Rebind'
+    Outcome = 'RebindSuccess'
+    VmName = $VmName
+    OldMigTdId = $OldMigTdId
+    NewMigTdId = $NewMigTdId
+    OldMigTdHash = $oldHash
+    NewMigTdHash = $newHash
+    OldRuntimeMigTdHash = if ($CaptureSerial) { $script:runtimeHashes[$OldMigTdId] } else { $null }
+    NewRuntimeMigTdHash = if ($CaptureSerial) { $script:runtimeHashes[$NewMigTdId] } else { $null }
+    RuntimeMigTdHashSource = if ($CaptureSerial) { 'serial' } else { 'not-captured' }
+    OldHashEvidencePath = if ($oldHashEvidence) { $oldHashEvidence.HashEvidencePath } else { Get-TipHashEvidencePath -HashFilePath $OldHashFilePath }
+    NewHashEvidencePath = if ($newHashEvidence) { $newHashEvidence.HashEvidencePath } else { Get-TipHashEvidencePath -HashFilePath $NewHashFilePath }
+    HashEvidenceVerified = [bool]($oldHashEvidence -and $newHashEvidence)
+    SerialLogs = @(
+        Join-Path (Get-Location) "$OldMigTdId.serial.log",
+        Join-Path (Get-Location) "$NewMigTdId.serial.log"
+    ) | Where-Object { Test-Path $_ }
 }

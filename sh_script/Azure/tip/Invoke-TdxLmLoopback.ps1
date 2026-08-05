@@ -5,6 +5,8 @@
 .DESCRIPTION
   Starts the given MigTD IGVM, registers its hash, creates a TDX guest, migrates
   it to localhost (loopback), and asserts the outcome. Cleans up afterwards.
+  Verifies the IGVM sibling hash evidence (<igvm>.hash.evidence.json) before any
+  MigTD load unless -SkipHashEvidenceValidation is explicitly set.
   Mirrors the Azure OS PR gate (Invoke-TdxLmE2ETest). Requires PowerTest's
   TdxLiveMigrationUtilities for New-TestHcsMigTd; pass -PowerTestPath to import it.
 
@@ -33,13 +35,23 @@ param(
     [switch]$NoPersistentSecrets,
     [ValidateRange(0, 60)]
     [int]$SerialDrainTimeoutSeconds = 30,
+    [ValidateRange(1, 120)]
+    [int]$RuntimeHashTimeoutSeconds = 15,
     # Captures the MigTD's own serial console (built with --log-level info) to
     # <MigTdId>.serial.log via New-TestHcsMigTd -EnableSerial's named pipe.
     # Useful when migration fails with only a generic VMMS error and no detail
     # on why the MigTD itself rejected/aborted.
-    [switch]$CaptureSerial
+    [switch]$CaptureSerial,
+    # By default, require and verify <igvm>.hash.evidence.json before any load.
+    # Use this only for legacy packages that predate hash evidence emission.
+    [switch]$SkipHashEvidenceValidation
 )
 $ErrorActionPreference = 'Stop'
+$commonScript = Join-Path $PSScriptRoot 'TipHarness.Common.ps1'
+if (-not (Test-Path $commonScript)) {
+    throw "Harness helper not found: $commonScript"
+}
+. $commonScript
 
 function Test-ServTdExtLayout {
     param(
@@ -109,7 +121,7 @@ function Test-ServTdExtLayout {
     Assert-HexRange -Name 'CurrentServTdInfoHash' -Offset 112 -Length 48 -Expected $expected
     Assert-ZeroRange -Name 'CurrentServTdAttrAndReserved' -Offset 160 -Length 112
 
-    [pscustomobject]@{
+    $servTdExt = [pscustomobject]@{
         VmName = $TargetVmName
         LengthBytes = 272
         InitServTdInfoHash = Get-HexRange -Offset 0 -Length 48
@@ -119,7 +131,9 @@ function Test-ServTdExtLayout {
         CurrentServTdInfoHash = Get-HexRange -Offset 112 -Length 48
         ReservedRangesZero = $true
         RawServTdExt = $actual
-    } | Format-List
+    }
+    $servTdExt | Format-List | Out-Host
+    return $servTdExt
 }
 
 function Wait-ForFinalQuoteRetry {
@@ -233,13 +247,22 @@ if ($PowerTestPath) {
         Enable-LoopbackMigrationDirectoryWorkaround
     }
 }
-if (-not (Test-Path $IgvmFilePath)) { throw "IGVM not found: $IgvmFilePath" }
-if (-not (Test-Path $HashFilePath)) { throw "Hash file not found: $HashFilePath" }
-
-$MigTdHash = (Get-Content $HashFilePath -Raw).Trim()
+$hashEvidence = Resolve-TipMigTdHashFromFiles `
+    -IgvmFilePath $IgvmFilePath `
+    -HashFilePath $HashFilePath `
+    -SkipHashEvidenceValidation:$SkipHashEvidenceValidation
+$MigTdHash = $hashEvidence.MigTdHash
 Write-Host "MigTD: $IgvmFilePath  hash=$MigTdHash"
+if ($hashEvidence.EvidenceVerified) {
+    Write-Host "Verified sibling hash evidence: $($hashEvidence.HashEvidencePath)"
+}
 
 $migTd = $null; $td = $null; $serialJob = $null; $serialLogPath = $null
+$runtimeMigTdHash = $null
+$scriptError = $null
+$cleanupFailures = [System.Collections.Generic.List[string]]::new()
+$outcome = if ($ServTdExtOnly) { 'ServTdExtPrebind' } else { 'MigrationSuccess' }
+$skipMigration = $false
 try {
     $migTd = New-TestHcsMigTd -Id $MigTdId -IgvmFilePath (Resolve-Path $IgvmFilePath) -GuestStateDirectory . -EnableSerial:$CaptureSerial -Force
 
@@ -268,6 +291,14 @@ try {
     }
 
     $migTd | Start-HcsSystem
+    if ($CaptureSerial -and $serialLogPath) {
+        $runtimeMigTdHash = Wait-TipRuntimeHashFromSerialLog `
+            -LogPath $serialLogPath `
+            -TimeoutSeconds $RuntimeHashTimeoutSeconds `
+            -ExpectedHash $MigTdHash `
+            -Context $MigTdId
+        Write-Host "Runtime TD Info Hash verified for '$MigTdId': $runtimeMigTdHash"
+    }
     Add-VmHostMigrationTdMapping -MigTdHash $MigTdHash -VmId $migTd.Id
     Set-VMHostMigrationPolicy DisabledByDefault $MigTdHash
 
@@ -314,48 +345,134 @@ try {
 
     if ($ServTdExtOnly) {
         if (-not $PowerTestPath) {
-            throw '-PowerTestPath is required for -ServTdExtOnly.'
+            throw (New-TipHarnessException 'PRECONDITION' '-PowerTestPath is required for -ServTdExtOnly.')
         }
         Test-ServTdExtLayout `
             -TargetVmName $VmName `
             -ExpectedHash $MigTdHash `
             -ModuleRoot $PowerTestPath
         Write-Host 'PASS: ServTdExt contains the prebound hash in both binding slots with expected zero padding.'
-        return
+        $outcome = 'ServTdExtPrebind'
+        $skipMigration = $true
     }
 
-    $moveErr = $null
-    Move-VM -Name $VmName -DestinationHost localhost -ErrorVariable moveErr -ErrorAction SilentlyContinue
+    if (-not $skipMigration) {
+        $moveErr = $null
+        Move-VM -Name $VmName -DestinationHost localhost -ErrorVariable moveErr -ErrorAction SilentlyContinue
 
-    if ($ExpectReject) {
-        if (-not $moveErr) { throw "FAIL: migration succeeded but rejection expected" }
-        Write-Host "PASS: migration rejected as expected ($($moveErr[0]))"
-    } else {
-        if ($moveErr)     { throw "FAIL: migration failed: $($moveErr[0])" }
-        Write-Host "PASS: migration succeeded"
+        if ($ExpectReject) {
+            if (-not $moveErr) {
+                throw (New-TipHarnessException 'TEST_FAILURE' 'Migration succeeded but policy rejection was expected.')
+            }
+            $errorText = [string]$moveErr[0]
+            if (-not (Test-TipExpectedRejectionError -ErrorDetail $errorText)) {
+                throw (New-TipHarnessException 'TRANSPORT' "Unexpected migration failure while expecting policy rejection: $errorText")
+            }
+            Write-Host "PASS: migration rejected as expected ($errorText)"
+            $outcome = 'ExpectedRejection'
+        } else {
+            if ($moveErr) {
+                throw (New-TipHarnessException 'TRANSPORT' "Migration failed unexpectedly: $($moveErr[0])")
+            }
+            Write-Host "PASS: migration succeeded"
+            $outcome = 'MigrationSuccess'
+        }
     }
 }
+catch {
+    $scriptError = $_
+}
 finally {
-    if ($td)    { $td | Stop-VM -Force -ErrorAction SilentlyContinue; $td | Remove-VM -Force -ErrorAction SilentlyContinue }
-    if ($MigTdHash) {
-        Set-VMHostMigrationPolicy DisabledByDefault $MigTdHash -ErrorAction SilentlyContinue
+    if ($td) {
+        try {
+            $td | Stop-VM -Force -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Stop-VM $VmName failed: $($_.Exception.Message)")
+        }
+        try {
+            $td | Remove-VM -Force -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Remove-VM $VmName failed: $($_.Exception.Message)")
+        }
     }
-    if ($MigTdHash) { Remove-VmHostMigrationTdMapping -MigTdHash $MigTdHash -ErrorAction SilentlyContinue }
+    if ($MigTdHash) {
+        try {
+            Set-VMHostMigrationPolicy DisabledByDefault $MigTdHash -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Set-VMHostMigrationPolicy DisabledByDefault failed: $($_.Exception.Message)")
+        }
+    }
+    if ($MigTdHash) {
+        try {
+            Remove-VmHostMigrationTdMapping -MigTdHash $MigTdHash -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Remove-VmHostMigrationTdMapping failed: $($_.Exception.Message)")
+        }
+    }
     if ($serialJob) {
         Wait-ForFinalQuoteRetry `
             -LogPath $serialLogPath `
             -TimeoutSeconds $SerialDrainTimeoutSeconds
     }
-    if ($migTd)  { Stop-HcsSystem $migTd -ErrorAction SilentlyContinue; $migTd.Close() }
+    if ($migTd) {
+        try {
+            Stop-HcsSystem $migTd -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Stop-HcsSystem $MigTdId failed: $($_.Exception.Message)")
+        }
+        try {
+            $migTd.Close()
+        } catch {
+            $cleanupFailures.Add("Close MigTD handle $MigTdId failed: $($_.Exception.Message)")
+        }
+    }
     if ($serialJob) {
         # Keep reading until MigTD is stopped and closes the named pipe. Stopping
         # this job before Stop-HcsSystem truncated logs while an outstanding
         # GetQuote retry was still running.
-        Wait-Job $serialJob -Timeout 5 -ErrorAction SilentlyContinue | Out-Null
-        if ($serialJob.State -notin @('Completed', 'Failed')) {
-            Stop-Job $serialJob -ErrorAction SilentlyContinue | Out-Null
+        try {
+            Wait-Job $serialJob -Timeout 5 -ErrorAction Stop | Out-Null
+        } catch {
+            $cleanupFailures.Add("Wait-Job $MigTdId-serial failed: $($_.Exception.Message)")
         }
-        Remove-Job $serialJob -Force -ErrorAction SilentlyContinue
+        if ($serialJob.State -notin @('Completed', 'Failed')) {
+            try {
+                Stop-Job $serialJob -ErrorAction Stop | Out-Null
+            } catch {
+                $cleanupFailures.Add("Stop-Job $MigTdId-serial failed: $($_.Exception.Message)")
+            }
+        }
+        try {
+            Remove-Job $serialJob -Force -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("Remove-Job $MigTdId-serial failed: $($_.Exception.Message)")
+        }
         if (Test-Path $serialLogPath) { Write-Host "MigTD serial log: $serialLogPath" }
     }
+}
+
+if ($cleanupFailures.Count -gt 0) {
+    $cleanupMessage = ($cleanupFailures -join '; ')
+    if ($scriptError) {
+        throw (New-TipHarnessException 'CLEANUP' "$cleanupMessage | PrimaryError=$($scriptError.Exception.Message)")
+    }
+    throw (New-TipHarnessException 'CLEANUP' $cleanupMessage)
+}
+
+if ($scriptError) {
+    throw $scriptError
+}
+
+[pscustomobject]@{
+    CaseType = if ($ServTdExtOnly) { 'ServTdExtPrebind' } else { 'LoopbackMigration' }
+    Outcome = $outcome
+    MigTdId = $MigTdId
+    VmName = $VmName
+    MigTdHash = $MigTdHash
+    RuntimeMigTdHash = $runtimeMigTdHash
+    RuntimeMigTdHashSource = if ($runtimeMigTdHash) { 'serial' } else { 'not-captured' }
+    HashEvidencePath = $hashEvidence.HashEvidencePath
+    HashEvidenceVerified = [bool]$hashEvidence.EvidenceVerified
+    IgvmSha256 = $hashEvidence.IgvmSha256
+    SerialLogs = if ($serialLogPath) { @($serialLogPath) } else { @() }
 }

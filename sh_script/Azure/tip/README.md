@@ -54,17 +54,18 @@ Produces in `out/tip-package/`:
 
 | File | Role |
 |------|------|
-| `test-migtd-accept-all.igvm` + `.hash` | allow-all policy → migration succeeds |
-| `test-migtd-reject-all.igvm` + `.hash` | bad-FMSPC policy → migration rejected |
-| `test-migtd.igvm` + `.hash` | `config/Azure/policy_data_raw.json` → succeeds if node FMSPC/TCB match |
-| `test-migtd_rebind.igvm` + `.hash` | same real policy and signer with `policySvn` incremented by one |
-| `test-migtd-getquote-all.igvm` + `.hash` | GetQuote init image |
-| `test-migtd-accept-all_mock_quote.igvm` + `.hash` | allow-all policy with built-in mock quote |
-| `test-migtd-reject-all_mock_quote.igvm` + `.hash` | reject policy with built-in mock quote |
-| `test-migtd_mock_quote.igvm` + `.hash` | policy generated from mock measurements with built-in mock quote |
-| `test-migtd_mock_quote_rebind.igvm` + `.hash` | same mock-quote real policy and signer with `policySvn` incremented by one |
+| `test-migtd-accept-all.igvm` + `.hash` + `.hash.evidence.json` | allow-all policy → migration succeeds |
+| `test-migtd-reject-all.igvm` + `.hash` + `.hash.evidence.json` | bad-FMSPC policy → migration rejected |
+| `test-migtd.igvm` + `.hash` + `.hash.evidence.json` | `config/Azure/policy_data_raw.json` → succeeds if node FMSPC/TCB match |
+| `test-migtd_rebind.igvm` + `.hash` + `.hash.evidence.json` | same real policy and signer with `policySvn` incremented by one |
+| `test-migtd-getquote-all.igvm` + `.hash` + `.hash.evidence.json` | GetQuote init image |
+| `test-migtd-accept-all_mock_quote.igvm` + `.hash` + `.hash.evidence.json` | allow-all policy with built-in mock quote |
+| `test-migtd-reject-all_mock_quote.igvm` + `.hash` + `.hash.evidence.json` | reject policy with built-in mock quote |
+| `test-migtd_mock_quote.igvm` + `.hash` + `.hash.evidence.json` | policy generated from mock measurements with built-in mock quote |
+| `test-migtd_mock_quote_rebind.igvm` + `.hash` + `.hash.evidence.json` | same mock-quote real policy and signer with `policySvn` incremented by one |
 | `test-migtd{,_rebind,_mock_quote,_mock_quote_rebind}.policy.json` | signed policy snapshot embedded in the corresponding image |
-| `Invoke-TdxLmLoopback.ps1`, `Run-TipTests.ps1` | migration test scripts |
+| `Invoke-TipHarness.ps1`, `Run-TipTests.ps1`, `TipHarness.Common.ps1` | CI/release harness, compatibility wrapper, and shared helpers |
+| `Invoke-TdxLmLoopback.ps1` | migration loopback case executor (success or expected rejection) |
 | `Test-TdxServTdExtPrebind.ps1` | start a prebound TD and validate both ServTdExt hash slots and zero padding |
 | `Test-TdxLmRebind.ps1` | rebind a running TD between two same- or different-image MigTD instances |
 | `Install-TipDependencies.ps1` | install bundled PowerTest, HCSTest v2, and optional test SecFw |
@@ -74,6 +75,10 @@ Produces in `out/tip-package/`:
 `.hash` is the direct `SERVTD_INFO_HASH` the host passes to
 `TDH.SERVTD.PREBIND` as `MigTdHash`. Built with MigTD-native tooling only
 (`cargo image`, `migtd-hash`, `build_azure_mock_test.sh`).
+
+`.hash.evidence.json` binds each `.igvm` file's SHA-256 to its sibling MigTD
+hash. On the TiP blade, the harness verifies this evidence before any MigTD
+load. Missing or mismatched evidence is a hard failure.
 
 The `_mock_quote` variants use the `use-mock-quote` feature and do not use the
 host IGVMAgent GetQuote path. Their sibling `.hash` files are still direct
@@ -110,12 +115,20 @@ then:
 # without -InstallDependencies.
 .\Run-TipTests.ps1 -InstallDependencies -ConfigureHost
 
-# Default suite: agent-independent mock-quote migration + ServTdExt validation.
-.\Run-TipTests.ps1
+# Explicit harness modes for CI/release automation.
+.\Invoke-TipHarness.ps1 -Mode Zip -PackageDir . -ArchivePath .\tip-package.zip
+.\Invoke-TipHarness.ps1 -Mode Unzip -ArchivePath .\tip-package.zip -ExpandDir .\tip-package
 
-# Also run regular IGVMAgent-dependent policy cases.
-.\Run-TipTests.ps1 -IncludeAgentCases
+# Fast PR suite: mock-quote migration + ServTdExt prebind.
+.\Invoke-TipHarness.ps1 -Mode Run -Suite PrFast -PackageDir .\tip-package
+
+# Deep release suite: fast suite + agent cases + rebind.
+.\Invoke-TipHarness.ps1 -Mode Run -Suite ReleaseDeep -PackageDir .\tip-package
 ```
+
+Run mode writes deterministic `test-results\results.json`, captures serial logs
+under `test-results\serial\`, and fails with a non-zero exit for test failures,
+transport/precondition errors, cleanup failures, or missing evidence.
 
 Each case: start MigTD → register hash with host policy `DisabledByDefault` →
 create a TDX VM → set its migratable policy to `EnabledIfHostPermits` → assign
@@ -218,15 +231,17 @@ IGVMs. They may be different files or the same file:
 
 Runtime `TD Info Hash` values parsed from the two serial logs are authoritative,
 so sibling `.hash` files may be stale or absent. Existing `.hash` files are
-used only as cross-checks and as fallbacks when serial capture is disabled.
+used only as cross-checks when serial capture is enabled (runtime-vs-sibling
+mismatch is fail-closed). When serial capture is disabled, the scripts rely on
+verified sibling hash evidence and do not claim runtime reconciliation.
 When the two runtime hashes are equal, the second host mapping uses a synthetic
 key exactly as the host OS rebind test does; `Get-VmMigrationPolicy` must still
 report the real IGVM hash. The target VM defaults to `NoPersistentSecrets`; pass
 `-UsePersistentSecrets` only when target-VM attestation is intentionally part
 of the test. Both MigTD serial logs are captured by default as
 `tipmigtd-rebind-{old,new}.serial.log`; disable this with
-`-CaptureSerial:$false`. The script warns when a sibling hash disagrees with
-the runtime value and waits up to 30 seconds for
+`-CaptureSerial:$false`. The script fails if it cannot observe a runtime hash
+in captured serial evidence within the timeout, and waits up to 30 seconds for
 `ReportStatus for rebinding completed` before stopping either MigTD. If neither
 side receives operation 2 within five seconds, it reports a pre-delivery host
 failure instead. Override the timeout with `-SerialDrainTimeoutSeconds`.
