@@ -22,7 +22,6 @@
 
 * [AzCVMEmu Build & Run — Agent Cheat Sheet](azcvmemu-build-and-run.md) - Feature-flag combinations, prerequisites, `migtdemu.sh` invocations.
 * [Policy v2 Generation Workflow](policy-v2-workflow.md) - JSON/CoRIM packaging, signer-anchor enrollment, and measurement-stable mapping/key rotation.
-* [Integration Testing — QEMU/vsock and Azure TiP](integration-testing.md) - The two non-EMU integration test layers, build/run commands, current status.
-* [MigTD TiP Lab-Blade Troubleshooting Skill](../skills/migtd-tip-troubleshoot/SKILL.md) - PowerTest/HCSTest setup, host validation, serial/hash diagnosis, and Hyper-V ETW capture.
+* [Integration Testing — QEMU/vsock](integration-testing.md) - Local non-EMU integration testing with vsock and serial transports.
 * [Release Process](release-process.md) - Version semantics, release content checklist, release steps.
 * [Code Coverage Plan (Draft Status)](code-coverage-plan.md) - Proposed per-PR coverage flow — decided backend/tooling, phased plan, open questions.
