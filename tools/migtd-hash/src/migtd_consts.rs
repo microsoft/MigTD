@@ -13,11 +13,12 @@
 //! upstream byte pattern so any drift fails at `cargo test -p migtd-hash`.
 
 use r_efi::efi::Guid;
-use td_layout::build_time::TD_SHIM_CONFIG_SIZE;
+use td_layout::build_time::{TD_SHIM_CONFIG_BASE, TD_SHIM_CONFIG_SIZE};
 
 /// Size (in bytes) of the Configuration Firmware Volume (CFV) section of the
 /// MigTD IGVM/binary image.
 pub const CONFIG_VOLUME_SIZE: usize = TD_SHIM_CONFIG_SIZE as usize;
+pub const CONFIG_VOLUME_BASE: u64 = TD_SHIM_CONFIG_BASE as u64;
 
 /// FFS GUID of the migration policy file embedded in CFV.
 /// Mirrors `migtd::config::MIGTD_POLICY_FFS_GUID`.

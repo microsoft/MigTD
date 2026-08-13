@@ -164,12 +164,14 @@ artifact_stem() {
 # CFV content changes, RTMR0/RTMR1 are also unaffected since they don't cover
 # policy content, only the firmware separator + issuer chain hash).
 enroll_policy() {
+  local enrolled_image="$PROJECT_ROOT/$IMG.enrolled"
   ( cd "$PROJECT_ROOT/deps/td-shim" && CC=clang AR=llvm-ar \
     cargo run -p td-shim-tools --bin td-shim-enroll --features=enroller -- \
       "$PROJECT_ROOT/$IMG" \
-      -f "$POLICY_FFS_GUID" "$PROJECT_ROOT/$POLICY" \
-      "$POLICY_ISSUER_CHAIN_FFS_GUID" "$PROJECT_ROOT/$CHAIN" \
-      -o "$PROJECT_ROOT/$IMG" )
+      -f "$POLICY_FFS_GUID" "$POLICY" \
+      "$POLICY_ISSUER_CHAIN_FFS_GUID" "$CHAIN" \
+      -o "$enrolled_image" )
+  mv "$enrolled_image" "$PROJECT_ROOT/$IMG"
 }
 emit() {  # name
   local name="$1" stem base

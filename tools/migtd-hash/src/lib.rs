@@ -4,6 +4,7 @@
 
 use anyhow::{anyhow, Error, Result};
 use crypto::{hash::digest_sha384, SHA384_DIGEST_SIZE};
+use igvm::{IgvmDirectiveHeader, IgvmFile};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,9 +17,9 @@ use td_shim_tools::tee_info_hash::{Manifest, TdInfoStruct};
 
 mod migtd_consts;
 use migtd_consts::{
-    CONFIG_VOLUME_SIZE, MIGTD_POLICY_FFS_GUID, MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID,
-    MIGTD_ROOT_CA_FFS_GUID, MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID,
-    TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
+    CONFIG_VOLUME_BASE, CONFIG_VOLUME_SIZE, MIGTD_POLICY_FFS_GUID,
+    MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID, MIGTD_ROOT_CA_FFS_GUID,
+    MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID, TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT,
 };
 
 const MIGTD_IMAGE_SIZE: u64 = 0x100_0000;
@@ -80,7 +81,7 @@ pub fn build_td_info_unmasked(
     let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
     image.seek(SeekFrom::Start(0))?;
     if igvmformat {
-        cfv = td_info.read_igvmcfvdata(&mut image);
+        cfv = read_igvm_cfv_data(&mut image)?;
     } else {
         image.read(&mut cfv)?;
     }
@@ -92,6 +93,33 @@ pub fn build_td_info_unmasked(
         .copy_from_slice(rtmr2(&cfv, is_ra_disabled, is_policy_v2)?.as_slice());
 
     Ok(td_info)
+}
+
+fn read_igvm_cfv_data(image: &mut File) -> Result<Vec<u8>> {
+    let mut contents = Vec::new();
+    image.read_to_end(&mut contents)?;
+    let igvm =
+        IgvmFile::new_from_binary(&contents, None).map_err(|e| anyhow!("IGVM parse error: {e}"))?;
+    let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
+
+    for directive in igvm.directives() {
+        if let IgvmDirectiveHeader::PageData { gpa, data, .. } = directive {
+            let Some(start) = gpa.checked_sub(CONFIG_VOLUME_BASE) else {
+                continue;
+            };
+            let start = start as usize;
+            if start >= cfv.len() {
+                continue;
+            }
+            let end = start
+                .checked_add(data.len())
+                .filter(|end| *end <= cfv.len())
+                .ok_or_else(|| anyhow!("IGVM CFV page at {gpa:#x} exceeds the CFV boundary"))?;
+            cfv[start..end].copy_from_slice(data);
+        }
+    }
+
+    Ok(cfv)
 }
 
 /// Field-by-field clone of a [`TdInfoStruct`] (which does not derive [`Clone`]).

@@ -236,6 +236,7 @@ generate_rotated_leaf_certificates() {
     local curve_name
     local hash_algo
     local leaf_subject="/CN=MigTD Policy Issuer/O=Microsoft Corporation"
+    local signer_eku_oid="${MIGTD_SIGNER_EKU_OID:-1.3.6.1.4.1.32473.1.1}"
 
     for file in root_ca.key root_ca.pem policy_signing.key policy_signing.pem; do
         if [ ! -f "$source_dir/$file" ]; then
@@ -270,7 +271,7 @@ generate_rotated_leaf_certificates() {
         -days 365 \
         -$hash_algo \
         -extensions v3_ca \
-        -extfile <(echo -e "[v3_ca]\nkeyUsage = digitalSignature")
+        -extfile <(printf '[v3_ca]\nkeyUsage = digitalSignature\nextendedKeyUsage = %s\n' "$signer_eku_oid")
     cat "$output_dir/policy_signing.pem" "$output_dir/root_ca.pem" \
         > "$output_dir/policy_issuer_chain.pem"
     rm -f "$output_dir/policy_signing.csr"
