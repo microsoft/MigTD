@@ -213,6 +213,22 @@ pub async fn rsp_handle_message(spdm_responder: &mut ResponderContext) -> Result
         let res = Box::pin(spdm_responder.process_message(false, 0, raw_packet)).await;
         log::info!("BC> RSP-LOOP-{} process_message returned\n", iter);
 
+        match res {
+            Ok(Ok(_)) => {}
+            Ok(Err(spdm_status)) => {
+                if spdm_status.severity == StatusSeverity::ERROR
+                    && matches!(spdm_status.status_code, StatusCode::VDM(_))
+                {
+                    return Err(spdm_status);
+                }
+                if spdm_status == SPDM_STATUS_INVALID_STATE_LOCAL {
+                    // Terminate the responder upon invalid state.
+                    return Err(spdm_status);
+                }
+            }
+            Err(_) => return Err(SPDM_STATUS_RECEIVE_FAIL),
+        }
+
         let session_id = spdm_responder.common.runtime_info.get_last_session_id();
         if session_id.is_some() {
             sid = session_id;
@@ -223,30 +239,8 @@ pub async fn rsp_handle_message(spdm_responder: &mut ResponderContext) -> Result
                 .get_session_via_id(sid.unwrap())
                 .is_none()
         {
-            //Terminate the responder upon end_session received.
+            // Terminate the responder upon end_session received.
             break;
-        }
-
-        match res {
-            Ok(spdm_result) => {
-                match spdm_result {
-                    Ok(_) => {}
-                    Err(spdm_status) => {
-                        if spdm_status.severity == StatusSeverity::ERROR
-                            && matches!(spdm_status.status_code, StatusCode::VDM(_))
-                        {
-                            return Err(spdm_status);
-                        }
-                        if spdm_status == SPDM_STATUS_INVALID_STATE_LOCAL {
-                            //Terminate the responder upon invalid state.
-                            return Err(spdm_status);
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                return Err(SPDM_STATUS_RECEIVE_FAIL);
-            }
         }
     }
     Ok(())
