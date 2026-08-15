@@ -178,17 +178,24 @@ mod v2 {
             policy_peer.len(),
             event_log_peer.len()
         );
-        let (policy_peer, peer_issuer_chain) =
+        let (policy_peer, peer_issuer_chain, peer_servtd_corim) =
             crate::migration::pre_session_data::decode_peer_data(policy_peer)
                 .ok_or(PolicyError::InvalidParameter)?;
         log::info!(
-            "BC> POL-AR-02 decode_peer_data ok policy.len={} issuer_chain.len={}\n",
+            "BC> POL-AR-02 decode_peer_data ok policy.len={} issuer_chain.len={} servtd_corim.len={}\n",
             policy_peer.len(),
-            peer_issuer_chain.len()
+            peer_issuer_chain.len(),
+            peer_servtd_corim.map(|c| c.len()).unwrap_or(0)
         );
         if is_src {
             log::info!("BC> POL-AR-03 -> authenticate_migration_dest\n");
-            authenticate_migration_dest(quote_peer, event_log_peer, policy_peer, peer_issuer_chain)
+            authenticate_migration_dest(
+                quote_peer,
+                event_log_peer,
+                policy_peer,
+                peer_issuer_chain,
+                peer_servtd_corim,
+            )
         } else {
             log::info!("BC> POL-AR-03 -> authenticate_migration_source\n");
             authenticate_migration_source(
@@ -196,6 +203,7 @@ mod v2 {
                 event_log_peer,
                 policy_peer,
                 peer_issuer_chain,
+                peer_servtd_corim,
             )
         }
     }
@@ -205,6 +213,7 @@ mod v2 {
         event_log_dst: &[u8],
         mig_policy_dst: &[u8],
         policy_issuer_chain: &[u8],
+        peer_servtd_corim: Option<&[u8]>,
     ) -> Result<Vec<u8>, PolicyError> {
         log::info!("BC> POL-DST-01 authenticate_remote_common BEGIN\n");
         let (evaluation_data_dst, verified_policy_dst, suppl_data) = authenticate_remote_common(
@@ -212,6 +221,7 @@ mod v2 {
             event_log_dst,
             mig_policy_dst,
             policy_issuer_chain,
+            peer_servtd_corim,
         )?;
         log::info!(
             "BC> POL-DST-02 authenticate_remote_common ok suppl_data.len={}\n",
@@ -248,6 +258,7 @@ mod v2 {
         event_log_src: &[u8],
         mig_policy_src: &[u8],
         policy_issuer_chain: &[u8],
+        peer_servtd_corim: Option<&[u8]>,
     ) -> Result<Vec<u8>, PolicyError> {
         log::info!("BC> POL-SRC-01 authenticate_remote_common BEGIN\n");
         let (evaluation_data_src, _verified_policy_src, suppl_data) = authenticate_remote_common(
@@ -255,6 +266,7 @@ mod v2 {
             event_log_src,
             mig_policy_src,
             policy_issuer_chain,
+            peer_servtd_corim,
         )?;
         log::info!(
             "BC> POL-SRC-02 authenticate_remote_common ok suppl_data.len={}\n",
@@ -286,7 +298,7 @@ mod v2 {
         event_log_dst: &[u8],
         mig_policy_dst: &[u8],
     ) -> Result<Vec<u8>, PolicyError> {
-        let (mig_policy_dst, peer_issuer_chain) =
+        let (mig_policy_dst, peer_issuer_chain, peer_servtd_corim) =
             crate::migration::pre_session_data::decode_peer_data(mig_policy_dst)
                 .ok_or(PolicyError::InvalidParameter)?;
         let (evaluation_data_dst, verified_policy_dst, tdx_report) = authenticate_rebinding_common(
@@ -294,6 +306,7 @@ mod v2 {
             event_log_dst,
             mig_policy_dst,
             peer_issuer_chain,
+            peer_servtd_corim,
         )?;
         let relative_reference = get_local_tcb_evaluation_info()?;
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
@@ -327,7 +340,7 @@ mod v2 {
         _init_tdinfo: &[u8],
         servtd_ext_src: &[u8],
     ) -> Result<Vec<u8>, PolicyError> {
-        let (mig_policy_src, peer_issuer_chain) =
+        let (mig_policy_src, peer_issuer_chain, peer_servtd_corim) =
             crate::migration::pre_session_data::decode_peer_data(mig_policy_src)
                 .ok_or(PolicyError::InvalidParameter)?;
         // Verify quote src / event log src / policy src
@@ -336,6 +349,7 @@ mod v2 {
             event_log_src,
             mig_policy_src,
             peer_issuer_chain,
+            peer_servtd_corim,
         )?;
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
@@ -363,6 +377,7 @@ mod v2 {
         event_log: &[u8],
         mig_policy: &'p [u8],
         policy_issuer_chain: &[u8],
+        peer_servtd_corim: Option<&[u8]>,
     ) -> Result<(PolicyEvaluationInfo, VerifiedPolicy<'p>, Vec<u8>), PolicyError> {
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
@@ -383,6 +398,7 @@ mod v2 {
             event_log,
             mig_policy,
             policy_issuer_chain,
+            peer_servtd_corim,
             &get_rtmrs_from_suppl_data(&suppl_data)?,
         )?;
         log::info!("BC> POL-CMN-03 verify_policy_and_event_log ok\n");
@@ -405,6 +421,7 @@ mod v2 {
         event_log: &[u8],
         mig_policy: &'p [u8],
         policy_issuer_chain: &[u8],
+        peer_servtd_corim: Option<&[u8]>,
     ) -> Result<(PolicyEvaluationInfo, VerifiedPolicy<'p>, TdxReport), PolicyError> {
         // 1. Verify quote & get supplemental data
         let tdreport_verified = verify_tdreport(tdreport)?;
@@ -414,6 +431,7 @@ mod v2 {
             event_log,
             mig_policy,
             policy_issuer_chain,
+            peer_servtd_corim,
             &get_rtmrs_from_tdreport(&tdreport_verified)?,
         )?;
 
@@ -471,6 +489,8 @@ mod v2 {
         event_log: &[u8],
         mig_policy: &'p [u8],
         policy_issuer_chain: &[u8],
+        #[cfg_attr(not(feature = "servtd_corim"), allow(unused_variables))]
+        peer_servtd_corim: Option<&[u8]>,
         rtmrs: &[[u8; SHA384_DIGEST_SIZE]; 4],
     ) -> Result<VerifiedPolicy<'p>, PolicyError> {
         let unverified_policy = RawPolicyData::deserialize_from_json(mig_policy)?;
@@ -481,6 +501,7 @@ mod v2 {
         // 2. Verify the peer policy using the peer's issuer chain
         let local_policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
         let local_servtd_crl = local_policy.servtd_crl.as_deref().map(str::as_bytes);
+        #[cfg_attr(not(feature = "servtd_corim"), allow(unused_mut))]
         let mut verified_policy = unverified_policy
             .verify_with_authoritative_servtd_crl(policy_issuer_chain, local_servtd_crl)?;
 
@@ -528,11 +549,13 @@ mod v2 {
             _ => return Err(PolicyError::PeerCertChainValidation),
         }
 
-        // CoRIM is a local endorsement authority, not peer-supplied policy
-        // data. Attach our verified CoRIM for peer TCB lookups, then apply our
-        // measured CRL to every retained peer/local-authority signer chain.
+        // Peer SVN lookups must use the authenticated peer TCB-mapping CoRIM.
         #[cfg(feature = "servtd_corim")]
-        verified_policy.set_servtd_corim_from(local_policy);
+        if let Some(peer_corim_cose) = peer_servtd_corim {
+            verified_policy
+                .attach_verified_peer_servtd_corim(peer_corim_cose)
+                .log_err("Peer servtd CoRIM verification")?;
+        }
         if let Some(servtd_crl) = local_servtd_crl {
             verified_policy
                 .verify_signer_chains_not_revoked(servtd_crl)
@@ -763,7 +786,7 @@ mod v2 {
         _init_tdinfo: &[u8],
         servtd_ext_src: &[u8],
     ) -> Result<Vec<u8>, PolicyError> {
-        let (mig_policy_src, peer_issuer_chain) =
+        let (mig_policy_src, peer_issuer_chain, peer_servtd_corim) =
             crate::migration::pre_session_data::decode_peer_data(peer_data)
                 .ok_or(PolicyError::InvalidParameter)?;
 
@@ -772,6 +795,7 @@ mod v2 {
             event_log_src,
             mig_policy_src,
             peer_issuer_chain,
+            peer_servtd_corim,
         )?;
 
         let relative_reference = get_local_tcb_evaluation_info()?;
