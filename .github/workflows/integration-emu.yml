@@ -121,6 +121,15 @@ jobs:
             test-command: "./migtdemu.sh --operation rebind-prepare --policy-file ./config/AzCVMEmu/policy_v2_corim.json --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor.bin --servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim.cose --mock-report --features spdm_attestation --both --no-sudo --log-level info"
             artifact-name: "corim-rebind-test-logs"
 
+          # The source CoRIM maps the mock TDINFO hash while the destination
+          # CoRIM does not, requiring lookup through the authenticated peer.
+          - test-name: "CoRIM Asymmetric Peer SVN Lookup (Mock Report)"
+            test-type: "corim-asymmetric-migration"
+            install-jq: 'true'
+            timeout-seconds: 900
+            test-command: "./migtdemu.sh --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_corim_asymmetric.json --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin --src-servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim_asymmetric_src.cose --dst-servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim_asymmetric_dst.cose --mock-report --features spdm_attestation --both --no-sudo --log-level info"
+            artifact-name: "corim-asymmetric-migration-test-logs"
+
           - test-name: "SPDM Rebind Prepare (Skip RA)"
             test-type: "spdm-rebind-skip-ra"
             install-jq: 'true'
@@ -249,6 +258,7 @@ jobs:
         run: |
           chmod +x ./migtdemu.sh
           chmod +x ./sh_script/build_AzCVMEmu_policy_and_test.sh
+          chmod +x ./sh_script/gen_asymmetric_servtd_corim_fixture.sh
 
       - name: Generate policy files
         if: matrix.install-jq == 'true'
@@ -266,6 +276,10 @@ jobs:
               config/AzCVMEmu/servtd_signer_anchor.bin \
               config/AzCVMEmu/tcb_mapping_corim.cose
           fi
+
+      - name: Generate asymmetric CoRIM fixtures
+        if: matrix.test-type == 'corim-asymmetric-migration'
+        run: ./sh_script/gen_asymmetric_servtd_corim_fixture.sh
 
       - name: Run test
         id: test_run
@@ -447,6 +461,35 @@ jobs:
             done
           fi
 
+          # Confirm the peer mappings differ and the policy check succeeded.
+          if [[ "${{ matrix.test-type }}" == "corim-asymmetric-migration" ]]; then
+            echo ""
+            echo "=== Verifying asymmetric peer CoRIM fixtures ==="
+            if ! jq -e '[.policyData.policy[] | select(has("servtd"))] | length == 0' \
+              config/AzCVMEmu/policy_v2_corim_asymmetric.json >/dev/null; then
+              echo "❌ policy_v2_corim_asymmetric.json still contains a servtd isvsvn rule (would mask the decisive check)"
+              exit 1
+            fi
+            if [[ $(wc -c < config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin) -ne 48 ]]; then
+              echo "❌ Asymmetric ServTD signer anchor is not 48 bytes"
+              exit 1
+            fi
+            if cmp -s config/AzCVMEmu/tcb_mapping_corim_asymmetric_src.cose \
+                      config/AzCVMEmu/tcb_mapping_corim_asymmetric_dst.cose; then
+              echo "❌ Source and destination CoRIM fixtures are byte-identical -- scenario is not asymmetric"
+              exit 1
+            fi
+            echo "✅ Source/destination CoRIM fixtures differ and share a 48-byte signer anchor"
+            for ROLE in source destination; do
+              LOG=$(find . -maxdepth 1 -name "migtd_*_${ROLE}.log" -print -quit)
+              if [[ -n "$LOG" ]] && grep -aq "UnqualifiedMigTdInfo\|Policy v2 check failed" "$LOG"; then
+                echo "❌ $ROLE log shows a policy check failure despite the run being reported as passing"
+                exit 1
+              fi
+            done
+            echo "✅ No UnqualifiedMigTdInfo/policy-check-failed evidence in either role's log"
+          fi
+
           # Dump revocation-related log lines for the signer-revocation test.
           if [[ "${{ matrix.test-type }}" == "policy-v2-revoked" ]]; then
             echo ""
@@ -477,6 +520,10 @@ jobs:
             config/AzCVMEmu/policy_v2_corim.json
             config/AzCVMEmu/servtd_signer_anchor.bin
             config/AzCVMEmu/tcb_mapping_corim.cose
+            config/AzCVMEmu/policy_v2_corim_asymmetric.json
+            config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin
+            config/AzCVMEmu/tcb_mapping_corim_asymmetric_src.cose
+            config/AzCVMEmu/tcb_mapping_corim_asymmetric_dst.cose
             target/release/migtd
           retention-days: 7
           if-no-files-found: ignore
