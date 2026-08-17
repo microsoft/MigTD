@@ -207,6 +207,7 @@ validate_rotated_leaf_certificates() {
     local source_dir="$1"
     local rotated_dir="$2"
     local source_subject rotated_subject
+    local source_eku rotated_eku
 
     if ! cmp -s "$source_dir/root_ca.pem" "$rotated_dir/root_ca.pem"; then
         echo "Error: Rotated leaf does not use the original root CA." >&2
@@ -219,6 +220,15 @@ validate_rotated_leaf_certificates() {
         -noout -subject -nameopt RFC2253)
     if [ "$source_subject" != "$rotated_subject" ]; then
         echo "Error: Rotated leaf Subject Name differs from the original." >&2
+        exit 1
+    fi
+
+    source_eku=$(openssl x509 -in "$source_dir/policy_signing.pem" \
+        -noout -ext extendedKeyUsage)
+    rotated_eku=$(openssl x509 -in "$rotated_dir/policy_signing.pem" \
+        -noout -ext extendedKeyUsage)
+    if [ "$source_eku" != "$rotated_eku" ]; then
+        echo "Error: Rotated leaf extended key usage differs from the original." >&2
         exit 1
     fi
 
@@ -236,6 +246,7 @@ generate_rotated_leaf_certificates() {
     local curve_name
     local hash_algo
     local leaf_subject="/CN=MigTD Policy Issuer/O=Microsoft Corporation"
+    local signer_eku_oid="${MIGTD_SIGNER_EKU_OID:-1.3.6.1.4.1.32473.1.1}"
 
     for file in root_ca.key root_ca.pem policy_signing.key policy_signing.pem; do
         if [ ! -f "$source_dir/$file" ]; then
@@ -270,7 +281,7 @@ generate_rotated_leaf_certificates() {
         -days 365 \
         -$hash_algo \
         -extensions v3_ca \
-        -extfile <(echo -e "[v3_ca]\nkeyUsage = digitalSignature")
+        -extfile <(printf '[v3_ca]\nkeyUsage = digitalSignature\nextendedKeyUsage = %s\n' "$signer_eku_oid")
     cat "$output_dir/policy_signing.pem" "$output_dir/root_ca.pem" \
         > "$output_dir/policy_issuer_chain.pem"
     rm -f "$output_dir/policy_signing.csr"
