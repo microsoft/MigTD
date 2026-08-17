@@ -27,6 +27,8 @@ on:
     paths:
       - "sh_script/Azure/**"
       - ".github/workflows/reproducible-igvm.yml"
+      - "config/AzCVMEmu/corim/**"
+      - "tools/migtd-hash/**"
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -73,8 +75,19 @@ jobs:
         # actual IGVM build (clang/rust/nasm) happens inside the container.
         run: bash sh_script/preparation.sh
 
+      - name: Install host enrollment-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm nasm
+
       - name: Test linux-sgx pruning safety
         run: bash src/attestation/test-prune-unused-linux-sgx.sh
+
+      - name: Test policy-only enrollment artifact contract
+        run: bash sh_script/Azure/test_policy_only_enrollment_contract.sh
+
+      - name: Test Docker wrapper sidecar contract
+        run: bash sh_script/Azure/test_docker_build_igvm_wrapper.sh
 
       - name: Build Azure IGVM in the pinned container (run 1)
         run: ./sh_script/Azure/docker_build_igvm.sh -t build-igvm -o "$RUNNER_TEMP/out1"
@@ -84,7 +97,16 @@ jobs:
         # the two IGVMs are independent rebuilds in the same pinned environment.
         run: ./sh_script/Azure/docker_build_igvm.sh -t build-igvm -o "$RUNNER_TEMP/out2"
 
+      - name: Validate staged signer-anchor and CoRIM enrollment
+        run: |
+          cargo build --release -p migtd-hash
+          bash sh_script/Azure/test_corim_enrollment_flow.sh \
+            "$RUNNER_TEMP/out1/migtd.igvm" \
+            "$RUNNER_TEMP/out1/migtd.policy_v2.json" \
+            "$RUNNER_TEMP/corim-enrollment"
+
       - name: Compare IGVM images
+        id: compare-igvm
         run: |
           set -euo pipefail
           A=$(awk '{print $1}' "$RUNNER_TEMP/out1/migtd.igvm.sha256")
@@ -112,11 +134,19 @@ jobs:
           fi
 
       - name: Upload IGVM images on mismatch
-        if: failure()
+        if: steps.compare-igvm.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: igvm-repro-mismatch
           path: |
             ${{ runner.temp }}/out1/migtd.igvm
             ${{ runner.temp }}/out2/migtd.igvm
+          if-no-files-found: ignore
+
+      - name: Upload staged enrollment evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: corim-enrollment-evidence
+          path: ${{ runner.temp }}/corim-enrollment
           if-no-files-found: ignore

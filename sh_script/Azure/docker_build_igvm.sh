@@ -10,7 +10,7 @@
 #
 # Two source modes:
 #   local (default) : your current working tree (minus target/ and .git) is
-#                     copied in and built with `make build-igvm generate-hash-v2`.
+#                     copied in and built with `make build-igvm`.
 #                     The tree must already be prepared (submodules initialised
 #                     and sh_script/preparation.sh applied) -- it normally is if
 #                     you have built MigTD before. If not, use --clone.
@@ -40,8 +40,8 @@
 #   # Reproducible build of a specific upstream commit
 #   sh_script/Azure/docker_build_igvm.sh --clone <commit-sha>
 #
-#   # Build the allow-all mock-quote test IGVM
-#   sh_script/Azure/docker_build_igvm.sh -t build-igvm-mock-quote-allow-all
+# The wrapper publishes only the policy-only enrollment artifact contract.
+# Custom targets must emit and pass strict verification for the same sidecar.
 #
 set -euo pipefail
 
@@ -82,7 +82,7 @@ command -v docker >/dev/null 2>&1 || { err "docker is not installed or not on PA
 
 # Default Makefile target depends on the source mode.
 if [ -z "$TARGET" ]; then
-    if [ "$MODE" = "clone" ]; then TARGET="build-igvm-all"; else TARGET="build-igvm generate-hash-v2"; fi
+    if [ "$MODE" = "clone" ]; then TARGET="build-igvm-all"; else TARGET="build-igvm"; fi
 fi
 
 # Sanity check for local mode: the tree must be prepared.
@@ -106,7 +106,11 @@ else
 fi
 
 # 2) Generate the in-container build script for the chosen mode.
-WORK="$(mktemp -d)"
+WORK="$OUTPUT/.docker-build-work.$$"
+if ! mkdir "$WORK"; then
+    err "Unable to create wrapper work directory: $WORK"
+    exit 1
+fi
 cleanup() {
     if [ -n "${CID-}" ]; then docker rm -f "$CID" >/dev/null 2>&1 || true; fi
     rm -rf "$WORK"
@@ -122,6 +126,10 @@ if [ "$MODE" = "clone" ]; then
             echo 'git -c advice.detachedHead=false checkout '"$REF"' && git submodule update --init --recursive'
         fi
         echo 'cd sh_script/Azure && make '"$TARGET"
+        echo 'cd /root/MigTD'
+        echo 'test -f target/release/migtd.policy_v2.json'
+        echo 'cargo run -p migtd-hash -- --image target/release/migtd.igvm --verify-policy-only-enrollment-artifact --extract-policy target/release/migtd.policy_v2.extracted.json'
+        echo 'cmp target/release/migtd.policy_v2.json target/release/migtd.policy_v2.extracted.json'
     } > "$WORK/_build.sh"
 else
     {
@@ -137,6 +145,10 @@ else
         # pruning can run without weakening checkout safety checks.
         echo 'export MIGTD_SOURCE_EXPORT=1'
         echo 'cd /root/MigTD/sh_script/Azure && make '"$TARGET"
+        echo 'cd /root/MigTD'
+        echo 'test -f target/release/migtd.policy_v2.json'
+        echo 'cargo run -p migtd-hash -- --image target/release/migtd.igvm --verify-policy-only-enrollment-artifact --extract-policy target/release/migtd.policy_v2.extracted.json'
+        echo 'cmp target/release/migtd.policy_v2.json target/release/migtd.policy_v2.extracted.json'
     } > "$WORK/_build.sh"
 fi
 
@@ -165,9 +177,28 @@ fi
 
 # 4) Extract artifacts.
 info "Extracting artifacts to $OUTPUT"
-docker cp "$CID:/root/MigTD/target/release/migtd.igvm" "$OUTPUT/migtd.igvm"
+if ! docker cp "$CID:/root/MigTD/target/release/migtd.igvm" "$OUTPUT/migtd.igvm"; then
+    err "Built IGVM is missing or could not be copied"
+    exit 1
+fi
 ( cd "$OUTPUT" && sha256sum migtd.igvm | tee migtd.igvm.sha256 )
-# The MRTD/RTMR measurements are emitted by `generate-hash` into the build log.
+if ! docker cp "$CID:/root/MigTD/target/release/migtd.policy_v2.json" \
+    "$OUTPUT/migtd.policy_v2.json"; then
+    err "Required migtd.policy_v2.json sidecar is missing or could not be copied"
+    exit 1
+fi
+if ! docker cp "$CID:/root/MigTD/target/release/migtd.policy_v2.extracted.json" \
+    "$WORK/migtd.policy_v2.extracted.json"; then
+    err "Strict embedded-policy extraction result is missing or could not be copied"
+    exit 1
+fi
+if ! cmp "$OUTPUT/migtd.policy_v2.json" "$WORK/migtd.policy_v2.extracted.json"; then
+    err "Copied policy sidecar is not byte-equal to the policy embedded in migtd.igvm"
+    exit 1
+fi
+( cd "$OUTPUT" && sha256sum migtd.policy_v2.json | tee migtd.policy_v2.json.sha256 )
+# Fully enrolled test targets may emit measurements. The default policy-only
+# artifact has no valid RTMR1/tdinfo_hash until private anchor enrollment.
 grep -iE 'MR_TD|MRTD|RTMR|measurement|servtd|SHA384|hash' "$OUTPUT/build.log" \
     > "$OUTPUT/migtd.igvm.measurements.txt" 2>/dev/null || true
 
