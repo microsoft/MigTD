@@ -4,6 +4,7 @@
 
 use anyhow::{anyhow, Error, Result};
 use crypto::{hash::digest_sha384, SHA384_DIGEST_SIZE};
+use igvm::{IgvmDirectiveHeader, IgvmFile};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,6 +12,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     mem::size_of,
 };
+use td_layout::build_time::TD_SHIM_CONFIG_BASE;
 use td_shim_interface::td_uefi_pi::{fv, pi};
 use td_shim_tools::tee_info_hash::{Manifest, TdInfoStruct};
 
@@ -80,7 +82,7 @@ pub fn build_td_info_unmasked(
     let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
     image.seek(SeekFrom::Start(0))?;
     if igvmformat {
-        cfv = td_info.read_igvmcfvdata(&mut image);
+        cfv = read_igvm_cfv_data(&mut image)?;
     } else {
         image.read(&mut cfv)?;
     }
@@ -92,6 +94,34 @@ pub fn build_td_info_unmasked(
         .copy_from_slice(rtmr2(&cfv, is_ra_disabled, is_policy_v2)?.as_slice());
 
     Ok(td_info)
+}
+
+fn read_igvm_cfv_data(image: &mut File) -> Result<Vec<u8>> {
+    let mut contents = Vec::new();
+    image.read_to_end(&mut contents)?;
+    let igvm = IgvmFile::new_from_binary(&contents, None)
+        .map_err(|e| anyhow!("failed to parse IGVM image: {e:?}"))?;
+    let cfv_base = u64::from(TD_SHIM_CONFIG_BASE);
+    let cfv_end = cfv_base + CONFIG_VOLUME_SIZE as u64;
+    let mut cfv = vec![0u8; CONFIG_VOLUME_SIZE];
+
+    for directive in igvm.directives() {
+        let IgvmDirectiveHeader::PageData { gpa, data, .. } = directive else {
+            continue;
+        };
+        if *gpa < cfv_base || *gpa >= cfv_end || data.is_empty() {
+            continue;
+        }
+
+        let start = (*gpa - cfv_base) as usize;
+        let end = start
+            .checked_add(data.len())
+            .filter(|end| *end <= cfv.len())
+            .ok_or_else(|| anyhow!("IGVM CFV page at GPA {gpa:#x} exceeds the CFV range"))?;
+        cfv[start..end].copy_from_slice(data);
+    }
+
+    Ok(cfv)
 }
 
 /// Field-by-field clone of a [`TdInfoStruct`] (which does not derive [`Clone`]).
