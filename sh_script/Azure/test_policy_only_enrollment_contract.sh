@@ -52,7 +52,7 @@ if grep -E -- '--root-ca|--policy-issuer-chain|--signer-anchor|--servtd-corim' "
     echo "public build command contains a forbidden enrollment input" >&2
     exit 1
 fi
-if grep -E -- 'servtd-corim-generator|private[_-]key|openssl gen' "$MAKE_DRY_RUN" >/dev/null; then
+if grep -E -- 'private[_-]key|openssl (gen|req|x509)' "$MAKE_DRY_RUN" >/dev/null; then
     echo "public build command invokes local signing or key generation" >&2
     exit 1
 fi

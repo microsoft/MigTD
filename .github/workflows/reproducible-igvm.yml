@@ -27,8 +27,8 @@ on:
     paths:
       - "sh_script/Azure/**"
       - ".github/workflows/reproducible-igvm.yml"
+      - "config/AzCVMEmu/corim/**"
       - "tools/migtd-hash/**"
-      - "tools/servtd-corim-generator/**"
       - "xtask/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -99,7 +99,7 @@ jobs:
 
       - name: Validate staged signer-anchor and CoRIM enrollment
         run: |
-          cargo build --release -p migtd-hash -p servtd-corim-generator
+          cargo build --release -p migtd-hash
           bash sh_script/Azure/test_corim_enrollment_flow.sh \
             "$RUNNER_TEMP/out1/migtd.igvm" \
             "$RUNNER_TEMP/out1/migtd.policy_v2.json" \
