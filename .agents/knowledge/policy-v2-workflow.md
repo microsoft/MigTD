@@ -66,6 +66,11 @@ At boot, MigTD:
   older destination does not need to predict future source releases.
 - Re-issuing a JSON mapping, CoRIM, or optional TD Identity is measurement
   neutral because those bytes are outside RTMR2.
+- Images built with `use-mock-quote` need two current-release mapping entries:
+  the synthetic mock-report `tdinfo_hash` used by peer policy evaluation and
+  the final image `SERVTD_INFO_HASH` used by `SERVTD_EXT` continuity checks.
+  Generate measured-image policy collateral with
+  `build_azure_mock_test.sh --retain-mock-report-mapping`.
 - Rotating leaf or intermediate keys is measurement neutral only when the root
   and signer-anchor EKU are unchanged; the new chain must still validate
   and pass signer revocation checks.
@@ -90,3 +95,8 @@ Legacy scripts still use `config/templates/policy_v2_signed.json` and
 `servtdCollateral`, the 48-byte anchor file, and the signed `.cose` mapping.
 Do not mix the direct-anchor and PEM-chain inputs accidentally: the direct
 anchor takes precedence when both CFV slots are populated.
+
+GitHub `cargo image` matrix jobs are compile checks, not publishable release
+artifacts. A deployable image must go through either the release CoRIM
+generation/enrollment gates or a measured-image JSON mapping flow; never ship a
+matrix image with the static template mapping.

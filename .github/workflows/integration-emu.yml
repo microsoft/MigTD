@@ -49,6 +49,9 @@ jobs:
             --no-default-features \
             --features "AzCVMEmu,policy_v2,test_mock_report,spdm_attestation,servtd_corim"
           cargo test -p policy --features "policy_v2,servtd_corim"
+          cargo test -p migtd-hash
+          bash -n sh_script/Azure/build_azure_mock_test.sh
+          bash -n sh_script/Azure/build_mock_quote_igvm.sh
 
   emulation-tests:
     name: ${{ matrix.test-name }}
