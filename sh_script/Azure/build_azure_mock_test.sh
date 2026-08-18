@@ -301,6 +301,7 @@ SERVTD_CERT_DIR_OVERRIDE=""
 ROTATE_LEAF_FROM=""
 MEASURED_IMAGE=""
 MEASURED_MANIFEST="$PROJECT_ROOT/config/Azure/servtd_info.json"
+RETAIN_MOCK_REPORT_MAPPING=false
 POLICY_SVN_OVERRIDE=""
 REVOKE_TDINFO_HASHES=()
 TCB_MAPPING_INPUT=""
@@ -353,6 +354,10 @@ while [[ $# -gt 0 ]]; do
             MEASURED_MANIFEST="$2"
             shift 2
             ;;
+        --retain-mock-report-mapping)
+            RETAIN_MOCK_REPORT_MAPPING=true
+            shift
+            ;;
         --policy-svn)
             POLICY_SVN_OVERRIDE="$2"
             shift 2
@@ -396,6 +401,10 @@ while [[ $# -gt 0 ]]; do
             echo "                               measurements into the signed tcb_mapping/policy."
             echo "  --measured-manifest FILE     Manifest used to measure --measured-image (default:"
             echo "                               config/Azure/servtd_info.json)"
+            echo "  --retain-mock-report-mapping Retain the synthetic mock-report tdinfo_hash"
+            echo "                               alongside --measured-image. Required for images"
+            echo "                               built with use-mock-quote, whose policy evaluation"
+            echo "                               resolves peer TCB metadata from the mock report."
             echo "  --policy-svn SVN             Override policySvn before signing (test/release staging)"
             echo "  --tcb-mapping FILE           Previous authority-maintained mapping to extend"
             echo "                               (default: existing output, then config/Azure)"
@@ -419,6 +428,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$RETAIN_MOCK_REPORT_MAPPING" = true ] && [ -z "$MEASURED_IMAGE" ]; then
+    echo -e "${RED}--retain-mock-report-mapping requires --measured-image${NC}" >&2
+    exit 1
+fi
 
 echo "Configuration:"
 echo "  Project root: $PROJECT_ROOT"
@@ -686,8 +700,23 @@ echo
 echo -e "${BLUE}=== Step 4: Updating Cumulative TCB Mapping ===${NC}"
 
 TDINFO_HASH_FILE="$TEMP_DIR/tdinfo_hash.hex"
+MAPPING_UPDATE_SOURCE="$TCB_MAPPING_SOURCE"
+if [ "$RETAIN_MOCK_REPORT_MAPPING" = true ]; then
+    MOCK_MAPPING_UPDATED="$TEMP_DIR/tcb_mapping_with_mock_report.json"
+    MOCK_TDINFO_HASH_FILE="$TEMP_DIR/mock_tdinfo_hash.hex"
+    "$TOOLS_DIR/migtd-hash" \
+        --policy-v2 \
+        --from-report "$REPORT_DATA_FILE" \
+        --output-tdinfo-hash "$MOCK_TDINFO_HASH_FILE" \
+        --update-tcb-mapping "$TCB_MAPPING_SOURCE" \
+        --output-tcb-mapping "$MOCK_MAPPING_UPDATED" \
+        --mapping-isvsvn "$ISVSVN"
+    MAPPING_UPDATE_SOURCE="$MOCK_MAPPING_UPDATED"
+    MOCK_TDINFO_HASH=$(tr 'a-z' 'A-Z' < "$MOCK_TDINFO_HASH_FILE")
+    echo -e "  retaining mock-report tdinfo_hash = $MOCK_TDINFO_HASH"
+fi
 MAPPING_UPDATE_ARGS=(
-    --update-tcb-mapping "$TCB_MAPPING_SOURCE"
+    --update-tcb-mapping "$MAPPING_UPDATE_SOURCE"
     --output-tcb-mapping "$TCB_MAPPING_UPDATED"
     --mapping-isvsvn "$ISVSVN"
 )

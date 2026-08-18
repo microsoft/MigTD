@@ -555,6 +555,27 @@ mod tests {
     }
 
     #[test]
+    fn tcb_mapping_retains_multiple_hashes_for_same_svn() {
+        let input = format!(
+            r#"{{"id":"mapping","svnMappings":[{{"tdMeasurements":{{"tdinfo_hash":"{HASH_AA}"}},"isvsvn":1}}]}}"#
+        );
+        let current = [0x11u8; 48];
+
+        let output = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 1)), &[]).unwrap();
+        let value: Value = serde_json::from_slice(&output).unwrap();
+        let mappings = value["svnMappings"].as_array().unwrap();
+
+        assert_eq!(mappings.len(), 2);
+        assert!(mappings.iter().all(|mapping| mapping["isvsvn"] == 1));
+        assert!(mappings
+            .iter()
+            .any(|mapping| mapping["tdMeasurements"]["tdinfo_hash"] == HASH_11));
+        assert!(mappings
+            .iter()
+            .any(|mapping| mapping["tdMeasurements"]["tdinfo_hash"] == HASH_AA));
+    }
+
+    #[test]
     fn tcb_mapping_two_phase_uses_authority_history_not_mock_output() {
         let historical_hash = "22".repeat(48);
         let authority = format!(
