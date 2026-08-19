@@ -49,7 +49,10 @@ pub extern "C" fn servtd_get_quote(tdquote_req_buf: *mut c_void, len: u64) -> i3
     let notify_registered = set_vmm_notification();
 
     match tdvmcall_get_quote(shared.as_mut_bytes()) {
-        Ok(()) => {}
+        Ok(()) => {
+            #[cfg(feature = "test-get-quote")]
+            log::info!("test-get-quote: GHCI GetQuote request accepted by VMM\n");
+        }
         Err(TdVmcallError::VmcallRetry) => {
             log::error!("tdvmcall_get_quote returned RETRY\n");
             return AttestLibError::Busy as i32;
