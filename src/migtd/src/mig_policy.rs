@@ -136,13 +136,6 @@ mod v2 {
             .try_call_once(|| Ok(verified_policy))
             .map(|p| p.get_version().to_string())?;
 
-        #[cfg(feature = "test-get-quote")]
-        {
-            log::info!("test-get-quote: testing quote generation during init\n");
-            let _info = get_local_tcb_evaluation_info()?;
-            log::info!("test-get-quote: quote generation and verification succeeded\n");
-        }
-
         Ok(version)
     }
 
