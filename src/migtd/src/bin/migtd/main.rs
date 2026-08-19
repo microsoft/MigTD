@@ -124,6 +124,22 @@ pub fn runtime_main() {
     // Measure the input data
     do_measurements();
 
+    #[cfg(feature = "test-get-quote")]
+    {
+        use migtd::mig_policy;
+
+        log::info!("test-get-quote: testing quote after RTMR measurements\n");
+        if let Err(e) = mig_policy::get_local_tcb_evaluation_info() {
+            let message = format!("GetQuote initialization test failed: {:?}", e);
+            log::error!("{}\n", message);
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                message.as_bytes(),
+            );
+        }
+        log::info!("test-get-quote: quote generation and verification succeeded\n");
+    }
+
     migration::event::register_callback();
 
     // Query the capability of VMM

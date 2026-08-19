@@ -352,10 +352,16 @@ MigTD runtime_main() runs                             (src/migtd/src/bin/migtd/m
        ├─ get_policy_issuer_chain_and_measure        → RTMR1 (signer anchor)
        └─ get_policy_and_measure                     → RTMR2 (policy)
        (test mode replaces both with a single RTMR2 test-feature event)
+  └─ if test-get-quote:
+       └─ generate and verify a real quote            (after RTMR1/RTMR2)
   └─ register migration callback, handle_pre_mig() …
 ```
 
-After this point, the TD report's `tdinfo` is frozen at:
+The `test-get-quote` path intentionally runs only after `do_measurements()`.
+The package's `test-migtd-getquote-all.igvm` enables `igvm-attest`, not
+`use-mock-quote`, so its TDREPORT comes from the real TDCALL path and includes
+the finalized runtime measurements. After this point, the TD report's `tdinfo`
+is frozen at:
 
 ```
 mrtd   = SHA384( all measured pages of td-shim + payload )      [deterministic per image]
