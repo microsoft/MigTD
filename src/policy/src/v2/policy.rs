@@ -639,7 +639,9 @@ impl<'a> PolicyData<'a> {
     /// Enforce non-optional deny checks.
     ///
     /// Reject `Revoked` platform status when global checks are enabled.
-    /// Always check engine status; treat unknown (`None`) as denied.
+    /// When TD Identity status is available, reject `Revoked`. SVN-only
+    /// JSON/CoRIM policies intentionally have no status; explicit servTD policy
+    /// fields and init/current SVN ordering enforce qualification where needed.
     fn enforce_mandatory_deny(
         value: &PolicyEvaluationInfo,
         skip_global: bool,
@@ -652,14 +654,10 @@ impl<'a> PolicyData<'a> {
             }
         }
 
-        // Engine status must be known; fail closed on `None`.
-        match value.migtd_tcb_status.as_deref() {
-            Some(status) => {
-                if ServtdTcbStatus::try_from(status)? == ServtdTcbStatus::Revoked {
-                    return Err(PolicyError::SvnMismatch);
-                }
+        if let Some(status) = value.migtd_tcb_status.as_deref() {
+            if ServtdTcbStatus::try_from(status)? == ServtdTcbStatus::Revoked {
+                return Err(PolicyError::SvnMismatch);
             }
-            None => return Err(PolicyError::UnqualifiedMigTdInfo),
         }
 
         Ok(())
@@ -2027,6 +2025,8 @@ mod test {
         // No block: still deny `Revoked` platform status.
         let value = PolicyEvaluationInfo {
             tcb_status: Some("Revoked".to_string()),
+            migtd_isvsvn: Some(1),
+            migtd_tcb_status: Some("UpToDate".to_string()),
             ..PolicyEvaluationInfo::default()
         };
         let relative = PolicyEvaluationInfo::default();
@@ -2041,6 +2041,7 @@ mod test {
     fn test_absent_block_denies_revoked_engine() {
         // No block: still deny `Revoked` engine status.
         let value = PolicyEvaluationInfo {
+            migtd_isvsvn: Some(1),
             migtd_tcb_status: Some("Revoked".to_string()),
             ..PolicyEvaluationInfo::default()
         };
@@ -2057,6 +2058,7 @@ mod test {
         // No block: non-`Revoked` status is allowed.
         let value = PolicyEvaluationInfo {
             tcb_status: Some("UpToDate".to_string()),
+            migtd_isvsvn: Some(1),
             migtd_tcb_status: Some("UpToDate".to_string()),
             ..PolicyEvaluationInfo::default()
         };
@@ -2072,6 +2074,7 @@ mod test {
         // In rebinding (`skip_global`), platform status is ignored.
         let value = PolicyEvaluationInfo {
             tcb_status: Some("Revoked".to_string()),
+            migtd_isvsvn: Some(1),
             migtd_tcb_status: Some("UpToDate".to_string()),
             ..PolicyEvaluationInfo::default()
         };
@@ -2083,20 +2086,40 @@ mod test {
     }
 
     #[test]
-    fn test_unclassifiable_engine_is_denied() {
-        // Fail closed: unknown engine status (`None`) is denied in all paths.
+    fn test_absent_block_allows_engine_without_identity_status() {
+        // With no servTD rule, absent identity status is valid for SVN-only
+        // policies and for asymmetric peer-mapping tests.
         let value = PolicyEvaluationInfo {
             tcb_status: Some("UpToDate".to_string()),
-            migtd_tcb_status: None,
             ..PolicyEvaluationInfo::default()
         };
         let relative = PolicyEvaluationInfo::default();
 
         assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, false).is_err()
+            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, false).is_ok()
         );
         assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true).is_err()
+            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true).is_ok()
         );
+    }
+
+    #[test]
+    fn test_servtd_rule_requires_endorsed_engine() {
+        let block = vec![PolicyTypes::Servtd(
+            serde_json::from_str(
+                r#"{"migtdIdentity":{"isvsvn":{"operation":"greater-or-equal","reference":1}}}"#,
+            )
+            .unwrap(),
+        )];
+        let value = PolicyEvaluationInfo::default();
+        let relative = PolicyEvaluationInfo::default();
+
+        assert!(PolicyData::<'static>::evaluate_policy_block(
+            Some(&block),
+            &value,
+            &relative,
+            false
+        )
+        .is_err());
     }
 }
