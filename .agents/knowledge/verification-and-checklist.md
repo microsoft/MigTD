@@ -30,7 +30,7 @@ automatically; **locally you must run it manually** after:
 - any `git submodule update`,
 - switching to a branch with different submodule SHAs.
 
-## Verification — all four CI workflows MUST pass, no exceptions
+## Verification — all five CI workflows MUST pass, no exceptions
 
 The project standard is that **every test in every workflow passes** before a
 change is considered done. Use the gauntlet script as the standard pre-push
@@ -43,9 +43,10 @@ verification:
 .agents/skills/migtd-review/scripts/run-ci-gauntlet.sh --only emu    # one stage
 ```
 
-Stages mirror the four workflows: **format → deny → main → emu** (after
-`prep`). The script stops at the first failure. **Fix the root cause; don't
-skip ahead.**
+Stages mirror the five workflows: **format → deny → library → main → emu**
+(after `prep`). The EMU stage includes the CoRIM policy contract and all 18
+matrix scenarios. The script stops at the first failure. **Fix the root cause;
+don't skip ahead.**
 
 `cargo test` alone is **not sufficient** for changes to:
 
