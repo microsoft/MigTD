@@ -508,7 +508,15 @@ mod test {
         assert_eq!(level.tcb.isvsvn, 3);
         assert_eq!(level.tcb_date, "2025-06-01T00:00:00Z");
         assert_eq!(level.tcb_status, "OutOfDate");
-        assert!(identity.get_tcb_level_by_svn(2).is_none());
+        assert_eq!(
+            identity
+                .get_tcb_level_by_svn(2)
+                .expect("svn 2 uses the highest lower breakpoint")
+                .tcb
+                .isvsvn,
+            1
+        );
+        assert!(identity.get_tcb_level_by_svn(0).is_none());
     }
 
     #[test]
