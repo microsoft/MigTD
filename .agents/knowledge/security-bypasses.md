@@ -14,9 +14,10 @@ development/test build features, and explains **why** each is bypassed.
 > **None of these bypasses are acceptable in production.** They exist solely
 > to enable development/testing on non-production environments.
 
-> Locations are given by function (line numbers drift). The init-TDINFO
-> verification is bypassed in EMU/mock by a **`cfg` feature gate**, not by any
-> SERVTD_EXT opt-out — integration2 always sends a populated `ServtdExt`.
+> Locations are given by function (line numbers drift). There is no local
+> startup check comparing TDINFO.MROWNERCONFIG with policy SVN; peer
+> init/current continuity is enforced through the authenticated one-hash
+> mapping.
 
 ---
 
