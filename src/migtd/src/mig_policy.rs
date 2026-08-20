@@ -755,33 +755,6 @@ mod v2 {
         })
     }
 
-    /// Per GHCI 1.5: Verify that own TDINFO.MROWNERCONFIG matches policy SVN.
-    ///
-    /// NOTE: the `MROWNER == SHA384(policy-signer public key)` binding has been
-    /// **deprecated** — the policy-signer trust root is now the RTMR1 signer
-    /// anchor, and the CoRIM-only enrollment carries no signer public key in
-    /// the image. Only the MROWNERCONFIG (policy SVN) binding is enforced.
-    /// Must be called at MigTD startup to ensure VMM correctly provisioned the TD.
-    pub fn verify_own_tdinfo() -> Result<(), PolicyError> {
-        let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
-        let policy_svn = policy.policy_data.get_policy_svn();
-
-        // Get own TDINFO from TDReport
-        let tdx_report = tdx_tdcall::tdreport::tdcall_report(&[0u8; 64])
-            .map_err(|_| PolicyError::GetTdxReport)?;
-        let td_info = &tdx_report.td_info;
-
-        // Verify MROWNERCONFIG == policy_svn (stored as little-endian u32 in first 4 bytes,
-        // remaining 44 bytes must be zero)
-        let mut expected_mrownerconfig = [0u8; SHA384_DIGEST_SIZE];
-        expected_mrownerconfig[..4].copy_from_slice(&policy_svn.to_le_bytes());
-        if td_info.mrownerconfig != expected_mrownerconfig {
-            return Err(PolicyError::SvnMismatch);
-        }
-
-        Ok(())
-    }
-
     /// Destination-side migration helper: authenticate the source MigTD and
     /// require its initial mapped SVN to be no newer than its current mapped
     /// SVN. The legacy init-TDINFO argument is ignored for wire compatibility.
