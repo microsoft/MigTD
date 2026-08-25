@@ -31,7 +31,7 @@ pub struct ServtdCollateral<'a> {
     /// JSON-only and optional (there is no CoRIM form). When present it lets
     /// migration policy use `tcbDate` / `tcbStatus` bars; when absent, policy
     /// is driven by the ISV SVN alone. See
-    /// `doc/corim_attestation_design.md` §3.2.
+    /// `doc/tcb_mapping_design_proposal.md`.
     #[serde(borrow, default, skip_serializing_if = "Option::is_none")]
     pub servtd_identity: Option<RawServtdIdentity<'a>>,
     /// Legacy location for the optional PEM CRL covering the servTD signer
@@ -79,7 +79,7 @@ impl<'a> RawServtdIdentity<'a> {
 /// `mrOwnerConfig`, MRTD/RTMRs) and the SGX-enclave `mrsigner` / `isvProdId`
 /// fields are dropped. It reduces to an envelope plus an
 /// `isvsvn -> (tcb_date, tcb_status)` table. See
-/// `doc/corim_attestation_design.md` §3.2.
+/// `doc/tcb_mapping_design_proposal.md`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TdIdentity {
@@ -220,7 +220,8 @@ impl TdTcbMapping {
     }
 
     /// Look up the engine SVN for the TD represented by `report` by computing
-    /// `tdinfo_hash` (per redesign §RTMR-layout) and matching the
+    /// `tdinfo_hash` (see `doc/tcb_mapping_design_proposal.md`,
+    /// "Measurement layout") and matching the
     /// `svnMappings[].tdMeasurements.tdinfoHash` entries.
     pub fn get_engine_svn_by_report(&self, report: &Report) -> Option<u16> {
         let tdinfo_hash = compute_tdinfo_hash_from_report(report).ok()?;
