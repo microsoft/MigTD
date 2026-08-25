@@ -12,17 +12,14 @@ can live-migrate a user TD.
 > - **`igvm-attest`** for quote retrieval (attestation)
 > - **`vmcall-raw`** for the GHCI guest–host channel
 > - **SPDM** as the mutual-attestation / secure-session protocol
-> - **policy v2** (signed policy + ServTD collateral)
+> - **policy v2** (RTMR2-bound policyData + signed ServTD endorsements)
 >
 > Build feature set (`sh_script/Azure/Makefile`):
 > `vmcall-raw, stack-guard, main, vmcall-interrupt, oneshot-apic,
 > spdm_attestation, igvm-attest` built with `--image-format igvm --policy-v2`.
 >
-> The recent proof-of-concept work for the **one-hash TCB-mapping with CoRIM
-> hash endorsement** (the `servtd_corim` feature / latest redesign commits) is
-> intentionally **excluded** here; the pre-existing policy v2 / ServTD-collateral
-> functionality *is* covered. Non-Azure options (RA-TLS, virtio/vsock
-> transports, `bin` image format) are out of scope.
+> Non-Azure options (RA-TLS, virtio/vsock transports, `bin` image format) are
+> out of scope. The Azure one-hash JSON and CoRIM endorsement paths are covered.
 
 ---
 
@@ -46,9 +43,10 @@ can live-migrate a user TD.
 Orchestrated in `src/migtd/src/bin/migtd/main.rs` and
 `src/migtd/src/migration/session.rs`:
 
-1. **Boot & self-measurement** (`do_measurements`): read the signed policy and
-   the policy issuer chain from the Configuration Firmware Volume (CFV), verify
-   the policy, and extend the measurements into RTMRs via the CCEL event log.
+1. **Boot & self-measurement** (`do_measurements`): read policyData and its
+   PEM-derived or direct signer anchor from the Configuration Firmware Volume
+   (CFV), verify inner endorsements, and extend RTMR1/RTMR2 through the CCEL
+   event log.
 2. **VMM logging init** (`init_vmm_logger`, `create_logarea`): set up per-vCPU
    log areas for the `vmcall-raw` channel.
 3. **Wait for request** (`wait_for_request`): receive a request from the VMM over
@@ -119,9 +117,9 @@ Implemented in `src/migtd/src/migration/{data.rs, session.rs, event.rs}`:
 ### Measurement & Event Log (`src/migtd/src/event_log.rs`)
 - `write_tagged_event_log`: SHA-384 of measured data → `tdcall_extend_rtmr` →
   append a tagged CCEL event.
-- Measured items: the **policy issuer chain** (RTMR1, as a stable *signer
-  anchor*) and the canonical **`policyData`** bytes (RTMR2, with
-  `servtdTcbMapping` redacted so it stays updatable).
+- Measured items: the root+EKU **signer anchor** in RTMR1 and canonical
+  **`policyData`** in RTMR2. JSON packaging redacts the TCB mapping and mapping
+  issuer chain; CoRIM-only policyData is measured in full.
 - `verify_event_log` replays the event log against the RTMRs from the verified
   quote (bypassed under `AzCVMEmu` / `use-mock-quote` test builds).
 
@@ -143,7 +141,8 @@ exchange (`src/migtd/src/spdm/`, `migration/spdm_session.rs`):
   **vendor-defined messages (VDM)**:
   - `ExchangePubKey` — provision peer public keys before attestation.
   - `ExchangeMigrationAttestInfo` — exchange **quote**, **event log**, **policy
-    hash**, **SERVTD_EXT**, and **init TD info**.
+    hash**, and **SERVTD_EXT**. The legacy Init_TDINFO wire field remains only
+    for framing compatibility and is ignored.
   - `ExchangeMigrationInfo` — exchange migration export/import versions and the
     **forward/backward Migration Session Key**.
   - plus **rebind** variants for the `StartRebinding` flow.
@@ -160,8 +159,8 @@ attestation.
 
 ## 6. Migration Policy (v2)
 
-Implemented in `src/policy/` and `src/migtd/src/mig_policy.rs`; the signed policy
-is enrolled into the IGVM image and measured into RTMR at boot.
+Implemented in `src/policy/` and `src/migtd/src/mig_policy.rs`; policyData is
+enrolled into the image and measured into RTMR2 at boot.
 
 ### What it enforces
 - Platform/quote collateral: FMSPC, TCB info, TCB status & date, TCB evaluation
@@ -171,15 +170,16 @@ is enrolled into the IGVM image and measured into RTMR at boot.
   `MROWNER`, `MROWNERCONFIG`, `RTMR0–3` from the verified report.
 
 ### Policy v2 structure & verification
-- A **signed `policyData` wrapper**, a **policy issuer chain** (X.509 v3,
-  ECDSA-P384/SHA-384), and **signed ServTD collateral** containing a signed **TD
-  identity** and **TCB mapping**, each with their own issuer chains.
-- Runtime: `init_policy` verifies the signed policy and sets the root CA;
-  `authenticate_remote*` verifies the quote/TDREPORT, event-log integrity, policy
-  signature & integrity, peer issuer-chain compatibility, and TCB relationships.
-- **Measurement binding:** RTMR1 ← issuer-chain *signer anchor*; RTMR2 ←
-  canonical `policyData` (with `servtdTcbMapping` redacted). The same canonical
-  bytes are reproduced offline by `migtd-hash --policy-v2`.
+- Canonical `policyData`, a PEM-derived or direct **RTMR1 signer anchor**, and
+  either signed JSON ServTD collateral or a signed TCB-mapping CoRIM.
+- The legacy outer `policyData` signature is ignored. Runtime:
+  `init_policy` verifies RTMR2 integrity and inner JSON/CoRIM endorsements;
+  `authenticate_remote*` verifies quote/TDREPORT evidence, event-log integrity,
+  signer-anchor compatibility, and TCB relationships.
+- **Measurement binding:** RTMR1 ← root+EKU signer anchor; RTMR2 ← canonical
+  `policyData`. JSON policyData redacts only `servtdTcbMapping` and
+  `servtdTcbMappingIssuerChain`; CoRIM-only policyData is measured in full. The
+  same bytes are reproduced offline by `migtd-hash --policy-v2`.
 - Migration continuity: MigTD resolves the authenticated source's initial and
   current `SERVTD_INFO_HASH` values through the source's verified one-hash
   mapping and requires the mapped initial SVN not to exceed the current SVN.
@@ -222,7 +222,7 @@ is enrolled into the IGVM image and measured into RTMR at boot.
   sign/verify (via `ring`), **SHA-384** hashing, secure random.
 - X.509 / PEM handling: PEM↔DER, minimal cert builder, chain split/validation,
   signature verification, **COSE_Sign1 (ES384 + x5chain)** verification, and CRL
-  number parsing — used to validate the signed policy, ServTD collateral, and
+  number parsing — used to validate signed ServTD endorsements and their
   issuer chains.
 
 ---
@@ -244,8 +244,9 @@ is enrolled into the IGVM image and measured into RTMR at boot.
 ## 11. Build, IGVM Image & Hashing
 
 - **`cargo image --image-format igvm`** builds the MigTD **IGVM** image and
-  enrolls the signed policy, policy issuer chain, and root CA into the CFV
-  (`xtask`). Supports `--log-level` and `--debug`.
+  enrolls policyData plus either a PEM policy issuer chain or a direct signer
+  anchor. CoRIM builds also enroll the signed mapping CoRIM. Policy v1 alone
+  uses the separate root-CA enrollment. Supports `--log-level` and `--debug`.
 - The **Azure Makefile** (`sh_script/Azure/Makefile`) is the canonical build:
   `cargo image --no-default-features --features
   vmcall-raw,stack-guard,main,vmcall-interrupt,oneshot-apic,spdm_attestation,igvm-attest
@@ -270,7 +271,8 @@ is enrolled into the IGVM image and measured into RTMR at boot.
   mapping + issuer chains.
 - **json-signer** — sign / finalize / verify JSON for `policyData`, `tdIdentity`,
   and `tdTcbMapping`.
-- **migtd-policy-verifier** — verify a signed policy JSON and its issuer chain.
+- **migtd-policy-verifier** — verify Policy v2 JSON endorsements and signer
+  chains.
 
 ---
 
@@ -317,7 +319,7 @@ is enrolled into the IGVM image and measured into RTMR at boot.
 - `vmcall-raw` — GHCI / migration transport.
 - `igvm-attest` — IGVM quote retrieval.
 - `spdm_attestation` — SPDM mutual-attestation secure session.
-- `policy_v2` — signed policy + ServTD collateral (also enables
+- `policy_v2` — RTMR2-bound policyData + signed ServTD endorsement (also enables
   `attestation/attest-lib-ext` collateral verification).
 - `stack-guard`, `vmcall-interrupt`, `oneshot-apic`, `main` — hardening, event
   interrupt, APIC one-shot timer, and the migration binary.

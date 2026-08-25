@@ -3,15 +3,18 @@ type: Reference
 title: MigTD Architecture Overview (Azure Build)
 description: Agent-oriented map of MigTD's main functional areas for the Azure IGVM build — flow, transport, attestation, policy v2, and error codes — with pointers into source.
 tags: [architecture, azure, spdm, policy-v2, migration]
-timestamp: 2026-07-13T22:37:00+00:00
+timestamp: 2026-08-25T22:12:55+00:00
 ---
 
 # MigTD Architecture Overview (Azure Build)
 
-Canonical source: [doc/MigTD_Functionality_Summary.md](../../doc/MigTD_Functionality_Summary.md)
-(335 lines, kept up to date independently — read it in full before making
-architectural changes). This file is a **navigation aid**: what exists where,
-so you know which doc/source to open next.
+Overview source:
+[doc/MigTD_Functionality_Summary.md](../../doc/MigTD_Functionality_Summary.md).
+For Policy v2 measurement details, treat
+[doc/tcb_mapping_design_proposal.md](../../doc/tcb_mapping_design_proposal.md)
+and `src/policy/src/v2/measurement.rs` as authoritative. This file is a
+**navigation aid**: what exists where, so you know which doc/source to open
+next.
 
 ## What MigTD is
 
@@ -52,7 +55,6 @@ Session Key (MSK)** so the VMM can live-migrate a user TD. Entry point:
 
 ## Explicitly out of scope of the Azure-focused doc
 
-The implemented optional one-hash TCB-mapping / CoRIM endorsement path
-(`servtd_corim`) and
-non-Azure options (RA-TLS, virtio/vsock transports, `bin` image format) — see
-[doc/MigTD_Functionality_Summary.md](../../doc/MigTD_Functionality_Summary.md) scope note.
+Non-Azure options (RA-TLS, virtio/vsock transports, `bin` image format) — see
+[doc/MigTD_Functionality_Summary.md](../../doc/MigTD_Functionality_Summary.md)
+scope note. The one-hash JSON and CoRIM endorsement paths are in scope.

@@ -44,7 +44,7 @@ cargo build -p servtd-collateral-generator
 
 Result: `servtd_collateral.json` (contains signed `td identity` and `tcb mapping`, and their issuer chains).
 
-## 3. Generate and Sign Policy
+## 3. Generate Policy
 
 Generate a policy v2 JSON referencing:
 - Attestation collaterals (from step 1)
@@ -64,14 +64,17 @@ For CoRIM-only enrollment, omit `--servtd-collateral` and pass
 `--servtd-crl /path/to/servtd_signer_crl.pem`; the CRL is stored as measured
 top-level `servtdCrl` and applies to the separately enrolled CoRIM `x5chain`.
 
-Sign the policy:
+The legacy outer policy signature may still be emitted for compatibility:
 
 ```sh
 cargo build -p json-signer
 ./target/debug/json-signer --sign  --name policyData --private-key /path/to/pkcs8 --input /path/to/policy_v2.json --output policy_v2_signed.json
 ```
 
-Result: `policy_v2_signed.json` (contains `policyData` and its signature).
+Result: `policy_v2_signed.json` contains `policyData` and its legacy outer
+signature. MigTD neither verifies nor otherwise uses that outer signature:
+policyData integrity comes from RTMR2, while the inner JSON mapping/identity
+signatures or CoRIM signature provide endorsement authenticity.
 
 ## 4. Build Final MigTD Image with Policy and Issuer Chain
 
@@ -92,9 +95,27 @@ cargo image --policy-v2 \
 ```
 
 During startup:
-- Policy issuer chain is measured (see measurement flow in [src/migtd/src/bin/migtd/main.rs](../src/migtd/src/bin/migtd/main.rs)).
-- Policy integrity is verified with issuer chain and measured by RTMR and event log (`RawPolicyData::verify` in [src/policy/src/v2/policy.rs](../src/policy/src/v2/policy.rs)).
+- MigTD derives the root+EKU signer anchor from the policy issuer chain and
+  measures that anchor into RTMR1.
+- Canonical `policyData` is measured into RTMR2 after redacting only the JSON
+  TCB mapping and its issuer chain.
+- Inner JSON signatures are verified, and each signer chain must resolve to
+  the RTMR1 anchor (`RawPolicyData::verify` in
+  [src/policy/src/v2/policy.rs](../src/policy/src/v2/policy.rs)).
 - Collaterals are used for quote verification and TCB evaluation.
+
+For CoRIM-only packaging, enroll the precomputed signer anchor and signed
+mapping CoRIM instead of the PEM policy issuer chain:
+
+```sh
+cargo image --policy-v2 \
+  --policy /path/to/policy_v2_corim.json \
+  --signer-anchor /path/to/signer_anchor.bin \
+  --servtd-corim /path/to/tcb_mapping.cose
+```
+
+The CoRIM-only policy omits `servtdCollateral`; its complete canonical
+`policyData` is measured into RTMR2.
 
 ## 5. Build Final MigTD Image with policy which contain updated TCD mapping
 ### Generate new key pair for policy signing
@@ -152,5 +173,11 @@ cargo image --policy-v2 \
 
 1. Platform collaterals -> `collateral_*.json`
 2. ServTD collateral -> sign -> `servtd_collateral_signed.json`
-3. Policy generator -> `policy_v2.json` -> sign -> `policy_v2_signed.json`
-4. Build image with signed policy + issuer chain -> `cargo image --policy-v2 --policy config/templates/policy_v2_signed.json --policy-issuer-chain config/templates/policy_issuer_chain.pem`
+3. Policy generator -> `policy_v2.json`; an outer signature is optional and
+   ignored by MigTD.
+4. Build a JSON image with policy + PEM signer chain, or a CoRIM-only image
+   with policy + direct signer anchor + signed CoRIM.
+
+See [tcb_mapping_design_proposal.md](./tcb_mapping_design_proposal.md) and
+[policy_v2_measurements.md](./policy_v2_measurements.md) for the exact
+measurement and one-hash contracts.

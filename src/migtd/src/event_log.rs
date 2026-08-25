@@ -28,8 +28,9 @@ pub const TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT: &[u8] = b"test_disable_ra_and_ac
 pub const TAGGED_EVENT_ID_POLICY: u32 = 0x1;
 pub const TAGGED_EVENT_ID_ROOT_CA: u32 = 0x2;
 pub const TAGGED_EVENT_ID_POLICY_ISSUER_CHAIN: u32 = 0x3;
-/// Single RTMR2 extend for v2 policy: canonical bytes of `policyData` with
-/// `servtdCollateral.servtdTcbMapping` removed
+/// Single RTMR2 extend for v2 policy: canonical bytes of `policyData` with the
+/// JSON TCB mapping and its issuer chain removed. CoRIM-only policyData has no
+/// `servtdCollateral` and is measured in full
 /// (see `doc/tcb_mapping_design_proposal.md`). Replaces the prior six per-field
 /// extends (`TAGGED_EVENT_ID_POLICY_VERSION/_ID/_SVN/_COLLATERALS`,
 /// `TAGGED_EVENT_ID_SERVTD_IDENTITY`, and the `policy[]`-only use of
