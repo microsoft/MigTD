@@ -195,7 +195,7 @@ pub struct PolicyEvaluationInfo {
 
     /// The CRL number of the servtd signer CRL (`servtdCrl`), used
     /// for monotonic anti-rollback of the signer revocation list. See
-    /// `doc/rtmr1_signer_anchor_proposal.md` §revocation.
+    /// `doc/rtmr1_signer_anchor_proposal.md`, "servTD signer CRL".
     pub servtd_crl_num: Option<u32>,
 }
 
@@ -361,8 +361,9 @@ pub fn check_policy_integrity(
     policy: &[u8],
     events: &BTreeMap<EventName, CcEvent>,
 ) -> Result<(), PolicyError> {
-    // RTMR2 is extended once with the canonical bytes of `policyData` with
-    // `servtdCollateral.servtdTcbMapping` removed. See
+    // RTMR2 is extended once with canonical `policyData`. JSON collateral
+    // redacts the TCB mapping and mapping issuer chain; CoRIM-only policyData
+    // has no `servtdCollateral` and is measured in full. See
     // `doc/tcb_mapping_design_proposal.md` for the rationale. The verifier
     // recomputes those exact bytes via the same helper used by the runtime
     // extender (`get_policy_and_measure`) and `migtd-hash` (offline RTMR2
@@ -495,9 +496,9 @@ impl<'a> RawPolicyData<'a> {
                 };
 
                 // Bind the TCB-mapping signer chain to the RTMR1 signer anchor.
-                // `servtdTcbMappingIssuerChain` is redacted from RTMR2 (measured
-                // into RTMR1 instead), so require the chain that verified
-                // `servtdTcbMapping` to hash to the same anchor RTMR1 commits to.
+                // `servtdTcbMappingIssuerChain` is redacted from RTMR2, so
+                // require the chain that verified `servtdTcbMapping` to resolve
+                // to the same root+EKU anchor committed to RTMR1.
                 // A swapped chain fails closed; leaf/intermediate rotation under
                 // the same root + EKU keeps the anchor stable.
                 let mapping_anchor = compute_signer_anchor_from_chain_pem(
@@ -1386,9 +1387,9 @@ mod test {
     }
 
     /// RTMR1 signer-anchor binding (security-critical): because
-    /// `servtdTcbMappingIssuerChain` is redacted from the RTMR2 measurement, it
-    /// is kept measured only by requiring it to hash to the RTMR1 signer anchor
-    /// derived from the CFV issuer chain. Verifying against an unrelated CFV
+    /// `servtdTcbMappingIssuerChain` is redacted from RTMR2, its signer identity
+    /// is bound by requiring it to resolve to the RTMR1 signer anchor enrolled
+    /// directly or derived from the CFV issuer chain. An unrelated CFV
     /// chain (different root + leaf signer EKU fingerprint) must fail closed with
     /// `SignerAnchorMismatch` — even though the embedded chains still validate
     /// the inner signatures.

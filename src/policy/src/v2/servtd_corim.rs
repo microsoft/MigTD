@@ -24,7 +24,7 @@
 //! The hash -> svn lookup is driven by the CES triples. There is no TD
 //! Identity document: the SVN is the endorsement, and the MigTD `tcb_date` /
 //! `tcb_status` translation moved to policy-authoring time (see
-//! `doc/corim_attestation_design.md` §7).
+//! `doc/tcb_mapping_design_proposal.md`).
 //!
 //! # `no_std`
 //!
