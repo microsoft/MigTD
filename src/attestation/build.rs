@@ -61,6 +61,27 @@ fn run_preparation_script(lib_path: &Path, script: &str, args: &[&str]) {
     assert!(status.success(), "{script} failed: {status}");
 }
 
+fn apply_source_export_patch(lib_path: &Path, source_dir: &str, patch: &str) {
+    let source_dir = lib_path.join(source_dir);
+    let status = Command::new("git")
+        .args(["apply", "--no-index"])
+        .arg(patch)
+        .current_dir(&source_dir)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to apply {patch}: {error}"));
+    if status.success() {
+        return;
+    }
+
+    let status = Command::new("git")
+        .args(["apply", "--no-index", "--reverse", "--check"])
+        .arg(patch)
+        .current_dir(&source_dir)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to check {patch}: {error}"));
+    assert!(status.success(), "{patch} failed: {status}");
+}
+
 fn prepare_attestation_sources(lib_path: &Path, make_cflags: Option<&str>) {
     if lib_path.join(".git").exists() {
         let mut prep = Command::new("make");
@@ -81,8 +102,17 @@ fn prepare_attestation_sources(lib_path: &Path, make_cflags: Option<&str>) {
     }
 
     // Source archives and docker-copied trees have populated submodules but no
-    // Git metadata. Run the non-Git parts of servtd_attest_preparation directly.
-    run_preparation_script(lib_path, "external/sgx-emm/create_symlink.sh", &[]);
+    // Git metadata. Mirror linux-sgx's sgx_2.30 preparation targets directly.
+    run_preparation_script(
+        &lib_path.join("sdk"),
+        "external/sgx-emm/create_symlink.sh",
+        &[],
+    );
+    apply_source_export_patch(
+        lib_path,
+        "sdk/external/libcxxrt/libcxxrt_code",
+        "../sgx_libcxxrt.patch",
+    );
     run_preparation_script(
         lib_path,
         "external/dcap_source/QuoteVerification/prepare_sgxssl.sh",
