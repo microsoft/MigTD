@@ -395,7 +395,9 @@ fn extract_cert_chain_from_pem(cert_chain_pem: &[u8]) -> Result<Vec<CertificateD
     Ok(cert_chain)
 }
 
-/// Verifies a certificate chain (leaf to root)
+/// Verifies a certificate chain (leaf to root).
+///
+/// Every certificate that acts as an issuer must be authorized as a CA.
 fn verify_certificate_chain(cert_chain: &[CertificateDer<'_>]) -> Result<()> {
     if cert_chain.is_empty() {
         return Err(Error::CertChainVerification(
@@ -413,6 +415,12 @@ fn verify_certificate_chain(cert_chain: &[CertificateDer<'_>]) -> Result<()> {
             .map_err(|_| Error::ParseCertificate)?;
         let issuer_cert = x509::Certificate::from_der(cert_chain[i + 1].as_ref())
             .map_err(|_| Error::ParseCertificate)?;
+
+        if !is_ca_certificate(&issuer_cert)? {
+            return Err(Error::CertChainVerification(
+                "Certificate chain contains a non-CA issuer".into(),
+            ));
+        }
 
         verify_cert_signature(&subject_cert, &issuer_cert)?;
     }
@@ -509,21 +517,15 @@ fn verify_signature_with_algorithm(
 /// Performs the following checks:
 /// 1. Verifies the peer chain's internal signature integrity
 /// 2. Root CA must match between local and peer chains
-/// 3. Every issuer certificate in the peer chain MUST carry the X.509
-///    `BasicConstraints` extension with `cA=TRUE` (RFC 5280 §4.2.1.9). This
-///    prevents a peer from presenting `[fake_leaf, legit_leaf, …]` where the
-///    legit leaf's private key was stolen and used to sign a synthetic
-///    sub-leaf — the legit leaf is not a CA, so it is not a valid issuer.
-/// 4. The local and peer leaves must assert the same single, dedicated EKU OID.
+/// 3. The local and peer leaves must assert the same single, dedicated EKU OID.
 ///
 /// Intentionally not checked:
 /// - **Intermediate cert identity** — intermediate cert contents are not
 ///   compared against the local chain's intermediates. This lets either
 ///   side rotate its intermediate CA(s) independently, as long as the
 ///   shared root and the leaf signer-purpose EKU remain stable and every issuer
-///   in the peer chain is itself a CA (check 4). Intermediate certs are
-///   still validated structurally (signature integrity in check 1 and
-///   CA-attribute in check 4).
+///   in the peer chain is itself a CA. Intermediate certs are still validated
+///   structurally by the common chain verifier.
 pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -> Result<()> {
     let local_chain = extract_cert_chain_from_pem(local_chain_pem)?;
     let peer_chain = extract_cert_chain_from_pem(peer_chain_pem)?;
@@ -534,20 +536,7 @@ pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -
     // 2. Root CA must match (DER byte comparison)
     check_root_ca_match(&local_chain, &peer_chain)?;
 
-    // 3. Every issuer in the peer chain must be a CA.
-    for cert_der in peer_chain.iter().skip(1) {
-        let issuer =
-            x509::Certificate::from_der(cert_der.as_ref()).map_err(|_| Error::ParseCertificate)?;
-        if !is_ca_certificate(&issuer)? {
-            return Err(Error::PeerCertChainValidation(
-                "Peer chain contains a non-CA issuer certificate (BasicConstraints \
-                 cA=TRUE missing)"
-                    .into(),
-            ));
-        }
-    }
-
-    // 4. Leaf signer-purpose EKUs must match. The local measured chain defines
+    // 3. Leaf signer-purpose EKUs must match. The local measured chain defines
     // the required purpose; a missing, ambiguous, any-purpose, or different
     // peer EKU fails closed.
     let local_leaf = x509::Certificate::from_der(local_chain[0].as_ref())
@@ -969,23 +958,31 @@ mdG27TBGsOS6KzfZ7avUDurwwFx++58HjoLq68p8jvKQBQJjco9bcwUFAjEA7otq
     }
 
     #[test]
-    fn test_validate_peer_cert_chain_non_ca_intermediate() {
-        // Sanity: ensure the attacker chain otherwise passes lower-level
-        // checks — its signature integrity verifies because the legit leaf
-        // private key was used to sign the fake leaf.
+    fn test_certificate_chain_rejects_non_ca_issuer() {
         let attacker = attacker_chain();
         let cert_chain = extract_cert_chain_from_pem(attacker).unwrap();
-        assert!(verify_certificate_chain(&cert_chain).is_ok());
-
-        // The full validation must reject the attacker chain because the
-        // legit leaf (acting as the issuer of the fake leaf) is not a CA.
-        let local = test_chain();
-        let result = validate_peer_cert_chain(local, attacker);
+        let result = verify_certificate_chain(&cert_chain);
         match result {
-            Err(Error::PeerCertChainValidation(msg)) => {
+            Err(Error::CertChainVerification(msg)) => {
                 assert!(msg.contains("non-CA"), "unexpected error message: {msg}");
             }
-            other => panic!("Expected PeerCertChainValidation, got: {other:?}"),
+            other => panic!("Expected CertChainVerification, got: {other:?}"),
+        }
+
+        assert!(validate_peer_cert_chain(test_chain(), attacker).is_err());
+    }
+
+    #[test]
+    fn test_cose_chain_rejects_non_ca_issuer() {
+        let cert_chain = extract_cert_chain_from_pem(attacker_chain()).unwrap();
+        let cert_refs: Vec<&[u8]> = cert_chain.iter().map(|cert| cert.as_ref()).collect();
+        let result = verify_cose_sign1_es384_x5chain(&cert_refs, &[], &[0u8; 96]);
+
+        match result {
+            Err(Error::CertChainVerification(msg)) => {
+                assert!(msg.contains("non-CA"), "unexpected error message: {msg}");
+            }
+            other => panic!("Expected CertChainVerification, got: {other:?}"),
         }
     }
 
