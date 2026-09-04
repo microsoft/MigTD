@@ -1466,7 +1466,7 @@ mod test {
         use crate::migration::MIGTD_MIGRATION_INFO_HEADER_SIZE;
         use crate::migration::{
             data::{RequestDataBufferHeader, WaitForRequestResponse},
-            EnableLogAreaInfo, MigrationResult, ReportInfo,
+            EnableLogAreaInfo, MigrationResult,
         };
         use core::mem::size_of;
         use core::task::Poll;
@@ -1644,27 +1644,8 @@ mod test {
         }
 
         #[test]
-        fn test_parse_get_td_report_full() {
+        fn test_parse_get_td_report_request_id() {
             let request_id: u64 = 0xBB00_0000_0000_0002;
-            let mut payload = vec![0u8; size_of::<ReportInfo>()];
-            payload[0..8].copy_from_slice(&request_id.to_le_bytes());
-            payload[8..72].fill(0xCC);
-            let buf = build_request_buffer(3, &payload);
-            let mut pending = None;
-            let result = parse_request(&buf, HDR_LEN, &mut pending);
-            match result {
-                Poll::Ready(Ok(WaitForRequestResponse::GetTdReport(info))) => {
-                    assert_eq!(info.mig_request_id, request_id);
-                    assert_eq!(info.reportdata[0], 0xCC);
-                }
-                _ => panic!("Expected GetTdReport, got unexpected variant"),
-            }
-            cleanup_request(request_id);
-        }
-
-        #[test]
-        fn test_parse_get_td_report_request_id_only() {
-            let request_id: u64 = 0xCC00_0000_0000_0003;
             let payload = request_id.to_le_bytes();
             let buf = build_request_buffer(3, &payload);
             let mut pending = None;
@@ -1672,16 +1653,29 @@ mod test {
             match result {
                 Poll::Ready(Ok(WaitForRequestResponse::GetTdReport(info))) => {
                     assert_eq!(info.mig_request_id, request_id);
-                    assert_eq!(info.reportdata, [0u8; 64]);
                 }
-                _ => panic!("Expected GetTdReport with zero reportdata, got unexpected variant"),
+                _ => panic!("Expected GetTdReport, got unexpected variant"),
             }
             cleanup_request(request_id);
         }
 
         #[test]
+        fn test_parse_get_td_report_legacy_report_data_rejected() {
+            let request_id: u64 = 0xCC00_0000_0000_0003;
+            let mut payload = vec![0xCC; 72];
+            payload[0..8].copy_from_slice(&request_id.to_le_bytes());
+            let buf = build_request_buffer(3, &payload);
+            let mut pending = None;
+            let result = parse_request(&buf, HDR_LEN, &mut pending);
+            assert!(matches!(
+                result,
+                Poll::Ready(Err(MigrationResult::InvalidParameter))
+            ));
+        }
+
+        #[test]
         fn test_parse_get_td_report_wrong_size_rejected() {
-            // 16 bytes is neither 8 nor 72 → read_from_bytes rejects
+            // Only the exact 8-byte request ID is accepted.
             let buf = build_request_buffer(3, &[0u8; 16]);
             let mut pending = None;
             let result = parse_request(&buf, HDR_LEN, &mut pending);
