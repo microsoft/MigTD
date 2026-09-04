@@ -83,7 +83,8 @@ Implemented in `src/migtd/src/migration/{data.rs, session.rs, event.rs}`:
 - Request set (`WaitForRequestResponse`):
   - `StartMigration` — run the MSK key-exchange flow.
   - `StartRebinding` — approve rebinding the user TD to a new MigTD (policy v2).
-  - `GetTdReport` — return a TD report for given report data.
+  - `GetTdReport` — return a TD report using MigTD's fixed report data; the
+    request payload contains only the migration request ID.
   - `EnableLogArea` — enable/raise the VMM log level for a request.
   - `GetMigtdData` — return MigTD attestation data (policy v2).
 - `ReportStatus` returns the per-request result (`ReportStatusResponse` carries

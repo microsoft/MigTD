@@ -37,7 +37,7 @@ use scroll::{Pread, Pwrite};
 /// Usage: `impl_read_from_bytes_with_optional!(Type, field_name, default_value)`
 ///
 /// Example:
-///   `impl_read_from_bytes_with_optional!(ReportInfo, reportdata, [0u8; 64])`
+///   `impl_read_from_bytes_with_optional!(MigtdDataInfo, reportdata, [0u8; 64])`
 #[cfg(feature = "vmcall-raw")]
 macro_rules! impl_read_from_bytes_with_optional {
     ($t:ty, $field:ident, $default:expr) => {
@@ -337,11 +337,22 @@ pub struct ReportInfo {
     // ID for the migration request, which can be used in TDG.VP.VMCALL
     // <Service.MigTD.ReportStatus>
     pub mig_request_id: u64,
-    pub reportdata: [u8; 64],
 }
 
 #[cfg(feature = "vmcall-raw")]
-impl_read_from_bytes_with_optional!(ReportInfo, reportdata, [0u8; 64]);
+impl ReportInfo {
+    pub fn read_from_bytes(
+        data_length: u32,
+        payload: &[u8],
+    ) -> core::result::Result<Self, MigrationResult> {
+        if data_length != core::mem::size_of::<Self>() as u32 {
+            return Err(MigrationResult::InvalidParameter);
+        }
+        payload
+            .pread(0)
+            .map_err(|_| MigrationResult::InvalidParameter)
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Pread, Pwrite)]

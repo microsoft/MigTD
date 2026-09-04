@@ -579,12 +579,8 @@ fn handle_pre_mig_emu() -> i32 {
                         }
                         WaitForRequestResponse::GetTdReport(report_info) => {
                             log::info!(migration_request_id = report_info.mig_request_id; "Processing GetTDReport request\n");
-                            log::debug!(migration_request_id = report_info.mig_request_id;
-                                "ReportData (first 32 bytes): {:02x?}\n",
-                                &report_info.reportdata[0..32]
-                            );
 
-                            // Generate TD report using the reportdata
+                            // Generate the TD report using MigTD's fixed report data.
                             log::debug!(migration_request_id = report_info.mig_request_id; "Generating TD report with vTPM interface\n");
 
                             let reportdata = get_tdreport_reportdata();
