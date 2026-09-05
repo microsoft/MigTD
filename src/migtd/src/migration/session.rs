@@ -965,11 +965,8 @@ async fn migration_src_exchange_msk(
     let (mut spdm_requester, io_ref) = spdm::spdm_requester(transport)
         .map_err(|_| map_spdm_setup_err(info.mig_info.mig_request_id))?;
 
-    // NOTE: SPDM source historically calls `exchange_info(.., false)` (IMPORT
-    // versions) and `cal_mig_version(false, ...)` — asymmetric with the TLS
-    // source path (`is_src=true`). Preserved verbatim by this refactor to
-    // avoid a behavior change. Tracked as a separate behavior bug.
-    let exchange_information = exchange_info(&info.mig_info, false).map_err(|e| {
+    // The requester advertises the source's EXPORT range, not its IMPORT range.
+    let exchange_information = exchange_info(&info.mig_info, true).map_err(|e| {
         log::error!(migration_request_id = info.mig_info.mig_request_id;
             "exchange_msk: exchange_info error: {:?}\n", e);
         e
@@ -989,7 +986,7 @@ async fn migration_src_exchange_msk(
     .await?;
 
     let mig_ver =
-        cal_mig_version(false, &exchange_information, &remote_information).map_err(|e| {
+        cal_mig_version(true, &exchange_information, &remote_information).map_err(|e| {
             log::error!(migration_request_id = info.mig_info.mig_request_id;
                 "exchange_msk: cal_mig_version error: {:?}\n", e);
             e
