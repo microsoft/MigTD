@@ -48,6 +48,21 @@ use crate::migration::MigtdMigrationInformation;
 use crate::spdm::vmcall_msg::VMCALL_SPDM_MESSAGE_HEADER_SIZE;
 
 pub(crate) type SpdmDeviceIoArc<T> = Arc<Mutex<MigtdTransport<T>>>;
+
+// The raw application buffer holds the ephemeral signing key. Borrow the whole
+// context so the exchange can keep using it while the buffer is wiped on both
+// normal return and future cancellation.
+struct AppContextGuard<'a, T> {
+    context: &'a mut T,
+    buffer: fn(&mut T) -> &mut [u8],
+}
+
+impl<T> Drop for AppContextGuard<'_, T> {
+    fn drop(&mut self) {
+        (self.buffer)(self.context).zeroize();
+    }
+}
+
 pub struct MigtdTransport<T: AsyncRead + AsyncWrite + Unpin + Send> {
     pub transport: T,
 }

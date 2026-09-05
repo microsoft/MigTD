@@ -48,6 +48,15 @@ full detail on how each path verifies TDINFO, and
 [Security Bypasses](security-bypasses.md) for which of these checks are
 bypassed under which build feature.
 
+## Async key cleanup
+
+- SPDM application-context buffers contain encoded ephemeral signing keys.
+  Zeroization after an `.await` covers returned results, but not cancellation:
+  `with_timeout` drops the unfinished exchange future.
+- Hold `spdm::AppContextGuard` across migration and rebind exchanges so dropping
+  either role's future wipes the buffer. Keep cancellation coverage for all
+  four entry points in `src/migtd/src/spdm/tests.rs`.
+
 ## TDINFO / MROwner / MROwnerConfig semantics
 
 - **MROwner** is provisioned by GHCI as the hash of the policy signer's
