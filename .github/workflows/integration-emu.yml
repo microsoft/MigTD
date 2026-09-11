@@ -44,6 +44,7 @@ jobs:
 
       - name: Build and test CoRIM-only policy contract
         run: |
+          bash src/attestation/test-fixup-libservtd-attest-lib.sh
           export SPDM_CONFIG="$GITHUB_WORKSPACE/config/spdm_config.json"
           cargo build \
             --no-default-features \

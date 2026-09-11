@@ -231,6 +231,8 @@ fn main() {
         assert!(status.success(), "failed to run fixup script: {status}");
         println!("cargo:rustc-link-arg=-lservtd_attest_app");
         println!("cargo:rustc-link-arg=-lcrypto");
+        // GNU ld must see libc after the late native archives that call atexit.
+        println!("cargo:rustc-link-arg=-lc");
     }
     #[cfg(not(feature = "AzCVMEmu"))]
     println!("cargo:rustc-link-lib=static=servtd_attest");

@@ -91,4 +91,9 @@ for i in ${targets}
 do
     lib="${i%.a}_app.a"
     ar r "${lib}" "${obj}"
+    # Enclave exit stubs must not override the host libc's exit handlers.
+    if ! objcopy --localize-symbol=atexit --localize-symbol=__cxa_atexit "${lib}"; then
+        echo "$0: failed to localize enclave exit stubs in ${lib}" >&2
+        exit 1;
+    fi
 done

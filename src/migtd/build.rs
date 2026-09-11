@@ -17,5 +17,7 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-z,norelro");
         println!("cargo:rustc-link-arg=-lservtd_attest_app");
         println!("cargo:rustc-link-arg=-lcrypto");
+        // GNU ld must see libc after the late native archives that call atexit.
+        println!("cargo:rustc-link-arg=-lc");
     }
 }
