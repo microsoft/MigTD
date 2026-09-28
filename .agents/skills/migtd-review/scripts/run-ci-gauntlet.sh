@@ -260,6 +260,7 @@ fi
 # build internally. We match the workflow exactly.
 if stage_should_run emu; then
     banner emu
+    step native-archive-fixup bash src/attestation/test-fixup-libservtd-attest-lib.sh
 
     # CI generates all default, rotation, revocation, and CoRIM-only policy
     # variants before the corresponding scenarios. A single generation covers

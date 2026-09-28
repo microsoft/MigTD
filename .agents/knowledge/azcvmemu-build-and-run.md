@@ -49,6 +49,20 @@ reports/quotes and needs no TPM at all. The script auto-sets
 `/dev/tpmrm0` exists and permissions are insufficient (not needed for
 `--mock-report` or `--skip-ra`).
 
+## Host exit handlers
+
+`src/attestation/fixup-libservtd-attest-lib.sh` localizes the enclave's
+`atexit` and `__cxa_atexit` stubs only in `libservtd_attest_app.a`. The host
+must use libc's handlers: exporting the stubs can conflict with
+`libc_nonshared.a` or silently suppress process-exit callbacks. The original
+firmware archive must remain unchanged. The neighboring
+`test-fixup-libservtd-attest-lib.sh` checks both callbacks, archive integrity,
+repeatability, and fatal `objcopy` errors in CI and the local gauntlet.
+The native link directives in both build scripts must put `-lc` after
+`-lcrypto`: GNU ld cannot resolve a late static OpenSSL `atexit` reference
+by rescanning the earlier libc archive, unlike LLD. The regression extracts
+those directives and links with GNU ld and `-nodefaultlibs` to cover this.
+
 ## Manual run requires two env vars
 
 ```bash
