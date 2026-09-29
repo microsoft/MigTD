@@ -16,12 +16,18 @@ pub mod session;
 pub mod transport;
 
 use crate::driver::ticks::TimeoutError;
+#[cfg(feature = "test-timeout-migration")]
+use crate::driver::ticks::Timer;
 use crate::ratls::RatlsError;
 use crate::ratls::{
     INVALID_MIG_POLICY_ERROR, MIG_POLICY_UNSATISFIED_ERROR, MUTUAL_ATTESTATION_ERROR,
 };
 use alloc::string::ToString;
 use alloc::vec::Vec;
+#[cfg(feature = "test-reject-first-migration")]
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "test-timeout-migration")]
+use core::time::Duration;
 use crypto::Error as CryptoError;
 use r_efi::efi::Guid;
 use rust_std_stub::io;
@@ -74,6 +80,47 @@ use tdx_tdcall::TdVmcallError;
 use virtio_serial::VirtioSerialError;
 #[cfg(any(feature = "virtio-vsock", feature = "vmcall-vsock"))]
 use vsock::VsockError;
+
+#[cfg(feature = "test-reject-first-migration")]
+static REJECT_NEXT_MIGRATION_REQUEST: AtomicBool = AtomicBool::new(true);
+
+#[cfg(feature = "test-reject-first-migration")]
+fn should_reject_first_migration(flag: &AtomicBool) -> bool {
+    flag.swap(false, Ordering::SeqCst)
+}
+
+#[cfg(feature = "test-reject-first-migration")]
+pub async fn migration_test_override(request_id: u64) -> Option<MigrationResult> {
+    if should_reject_first_migration(&REJECT_NEXT_MIGRATION_REQUEST) {
+        log::warn!(migration_request_id = request_id;
+            "Test mode: rejecting the first migration request\n");
+        Some(MigrationResult::PolicyUnsatisfiedError)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "test-timeout-migration")]
+const MIGRATION_RESPONSE_DELAY: Duration = Duration::from_secs(8 * 60);
+
+#[cfg(all(
+    not(feature = "test-reject-first-migration"),
+    feature = "test-timeout-migration"
+))]
+pub async fn migration_test_override(request_id: u64) -> Option<MigrationResult> {
+    log::warn!(migration_request_id = request_id;
+        "Test mode: delaying migration failure for eight minutes\n");
+    Timer::after(MIGRATION_RESPONSE_DELAY).await;
+    Some(MigrationResult::NetworkError)
+}
+
+#[cfg(not(any(
+    feature = "test-reject-first-migration",
+    feature = "test-timeout-migration"
+)))]
+pub async fn migration_test_override(_request_id: u64) -> Option<MigrationResult> {
+    None
+}
 
 pub const VMCALL_SERVICE_COMMON_GUID: Guid = Guid::from_fields(
     0xfb6fc5e1,
@@ -571,6 +618,26 @@ mod test {
         // mrownerconfig at offset 160..208
         tdinfo[160..208].copy_from_slice(mrownerconfig);
         tdinfo
+    }
+
+    #[cfg(test)]
+    mod fault_injection_tests {
+        #[cfg(feature = "test-reject-first-migration")]
+        #[test]
+        fn reject_first_migration_only_once() {
+            use super::should_reject_first_migration;
+            use core::sync::atomic::AtomicBool;
+
+            let reject_next = AtomicBool::new(true);
+            assert!(should_reject_first_migration(&reject_next));
+            assert!(!should_reject_first_migration(&reject_next));
+        }
+
+        #[cfg(feature = "test-timeout-migration")]
+        #[test]
+        fn timeout_migration_waits_eight_minutes() {
+            assert_eq!(super::MIGRATION_RESPONSE_DELAY.as_secs(), 8 * 60);
+        }
     }
 
     /// Build a MigtdMigrationInformation byte buffer matching the active
