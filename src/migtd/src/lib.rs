@@ -27,6 +27,23 @@ compile_error!("`use-mock-quote` bypasses RA-TLS channel binding and is test-onl
 #[cfg(all(feature = "test_disable_ra_and_accept_all", not(debug_assertions)))]
 compile_error!("`test_disable_ra_and_accept_all` disables remote attestation (accept-all RA-TLS), violating Design Guide §4 mutual authentication; it is test-only and must not be enabled in a release build. Build the test image with the dev profile (`cargo image --debug`).");
 
+#[cfg(all(
+    any(
+        feature = "test-reject-first-migration",
+        feature = "test-timeout-migration"
+    ),
+    not(debug_assertions)
+))]
+compile_error!("Migration fault-injection features are test-only and must not be enabled in a release build. Build test images with the dev profile (`cargo image --debug`).");
+
+#[cfg(all(
+    feature = "test-reject-first-migration",
+    feature = "test-timeout-migration"
+))]
+compile_error!(
+    "`test-reject-first-migration` and `test-timeout-migration` are mutually exclusive."
+);
+
 #[cfg_attr(feature = "main", macro_use)]
 extern crate alloc;
 

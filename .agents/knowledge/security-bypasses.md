@@ -28,6 +28,8 @@ development/test build features, and explains **why** each is bypassed.
 | `AzCVMEmu` | Desktop emulator (no TDX) | ✗ | Emulated (REPORTDATA not bound) | Emulated |
 | `test_mock_report` | Emulated (implies AzCVMEmu) | ✗ | Emulated | Emulated |
 | `use-mock-quote` | **Real TDX hardware** | ✓ | **Real** (REPORTDATA correctly bound) | Static mock data |
+| `test-reject-first-migration` | **Real TDX hardware** | ✓ | Real | First `StartMigration` returns `PolicyUnsatisfiedError`; later requests use the normal path |
+| `test-timeout-migration` | **Real TDX hardware** | ✓ | Real | Every `StartMigration` waits eight minutes, then returns `NetworkError` |
 
 - **`AzCVMEmu` / `test_mock_report`**: no hardware — `tdcall_report` is emulated
   and does **not** embed caller-supplied REPORTDATA, so every REPORTDATA-derived
@@ -87,3 +89,7 @@ All of the above, **plus**:
 `use-mock-quote` bypasses quote-derived migration REPORTDATA checks. It does
 not bypass mapped init/current SVN ordering. There is no destination-local
 Init_TDINFO allowlist in the one-hash design.
+
+The migration fault-injection features do not weaken policy or attestation
+verification. They short-circuit only `StartMigration` handling and are
+compile-time blocked from release-profile builds.

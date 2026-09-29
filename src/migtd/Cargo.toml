@@ -92,6 +92,8 @@ igvm-attest = ["attestation/igvm-attest"]
 test-get-quote = ["policy_v2", "attestation/test-get-quote"]
 use-mock-quote = ["attestation/use-mock-quote"]  # Use mock quote and mock TD report for non-AzCVMEmu testing
 mock_quote_retry = ["AzCVMEmu", "tdx-tdcall-emu/mock_quote_retry"]
+test-reject-first-migration = [] # Reject only the first StartMigration request
+test-timeout-migration = [] # Delay every StartMigration response by eight minutes
 AzCVMEmu = [
 	"main",                     # Include main feature by default
 	"attestation/AzCVMEmu",

@@ -532,10 +532,17 @@ fn handle_pre_mig() {
                     match request {
                         WaitForRequestResponse::StartMigration(wfr_info) => {
                             log::trace!(migration_request_id = wfr_info.mig_info.mig_request_id; "Processing StartMigration request\n");
-                            let status = exchange_msk(&wfr_info)
-                                .await
-                                .map(|_| MigrationResult::Success)
-                                .unwrap_or_else(|e| e);
+                            let request_id = wfr_info.mig_info.mig_request_id;
+                            let status = if let Some(status) =
+                                migration::migration_test_override(request_id).await
+                            {
+                                status
+                            } else {
+                                exchange_msk(&wfr_info)
+                                    .await
+                                    .map(|_| MigrationResult::Success)
+                                    .unwrap_or_else(|e| e)
+                            };
                             if status == MigrationResult::Success {
                                 log::trace!(migration_request_id = wfr_info.mig_info.mig_request_id; "Successfully completed key exchange\n");
                             } else {
@@ -672,6 +679,7 @@ fn sleep() {
 
 #[cfg(test)]
 fn main() {}
+
 // FIXME: remove when https://github.com/Amanieu/minicov/issues/12 is fixed.
 #[cfg(all(feature = "coverage", target_os = "none"))]
 #[no_mangle]
