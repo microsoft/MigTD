@@ -53,14 +53,9 @@ bypassed under which build feature.
 - **MROwner** is provisioned by GHCI as the hash of the policy signer's
   public key, but it is no longer the cross-peer signer trust anchor.
 - **MROwnerConfig** = MigTD policy SVN (a.k.a. "migtd svn").
-- `verify_own_tdinfo()` checks only that the local `MROwnerConfig` matches
-  policy SVN. The old local `MROwner == signer-key hash` check is deprecated
-  because anchor-only CoRIM enrollment carries no leaf public key.
-- Migration/rebind currently cross-check full **init** TDINFO
-  `MROwner`/`MROwnerConfig` with that same peer's authenticated current
-  report. This is transitional compatibility logic, not the final one-hash
-  mechanism. The final mechanism compares the two SVNs resolved from the
-  source peer's verified hash mapping.
+- There is no local startup check comparing `MROwnerConfig` with policy SVN.
+  The policy is bound through measured RTMR2 data, while migration continuity
+  uses authenticated peer measurements and their verified one-hash mapping.
 - Cross-peer signer compatibility is the RTMR1 anchor equality
   (root fingerprint + leaf EKU). Leaf and intermediate keys may rotate
   independently under the same anchor.
@@ -69,10 +64,6 @@ bypassed under which build feature.
   callers see it as absent. The completed one-hash flow must use
   `ServtdExt.init_servtd_info_hash` directly and must not depend on a
   VMM-supplied 512-byte Init_TDINFO.
-- Under the **`AzCVMEmu`** feature, **skip the `verify_own_tdinfo()`
-  MROwnerConfig check** rather than emulating it via env vars. The
-  env-var emulation approach was tried (commit `8ce39a3`) and abandoned as
-  "too much to maintain". Current pattern: feature-gate-skip on `AzCVMEmu`.
 - Existing `REVERTME` commits typically bypass MROwner/MROwnerConfig checks
   because the host isn't ready to plumb them through; these are test-only
   and must be reverted before upstreaming.

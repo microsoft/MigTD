@@ -180,8 +180,10 @@ is enrolled into the IGVM image and measured into RTMR at boot.
 - **Measurement binding:** RTMR1 ← issuer-chain *signer anchor*; RTMR2 ←
   canonical `policyData` (with `servtdTcbMapping` redacted). The same canonical
   bytes are reproduced offline by `migtd-hash --policy-v2`.
-- Self-check: MigTD verifies its own `TDINFO.MROWNER/MROWNERCONFIG` against the
-  policy key/SVN (`verify_own_tdinfo`).
+- Migration continuity: MigTD resolves the authenticated source's initial and
+  current `SERVTD_INFO_HASH` values through the source's verified one-hash
+  mapping and requires the mapped initial SVN not to exceed the current SVN.
+  There is no separate local TDINFO-to-policy-SVN startup check.
 - See `doc/policy_v2.md` and `doc/policy_v2_measurements.md`.
 
 ---

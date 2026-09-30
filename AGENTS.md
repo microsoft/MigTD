@@ -32,7 +32,7 @@ Rules for every AI-assisted change.
 - Never mix the two paths.
 - `MROwner` is the policy signer key hash.
 - `MROwnerConfig` is the policy SVN.
-- Check local TDINFO during startup.
+- Do not compare local TDINFO MROwnerConfig with policy SVN at startup.
 - Require the same signer during migration.
 - Require source SVN to meet destination SVN.
 - Resolve both the initial and current MigTD hashes through the authenticated
@@ -41,7 +41,6 @@ Rules for every AI-assisted change.
 - Ignore the legacy wire Init_TDINFO after validating request framing.
 - Keep `init_td_info` as the sole wire TDINFO field.
 - Do not add redundant MigTD hash fields.
-- Under `AzCVMEmu`, skip the local TDINFO check.
 - Never upstream test-only security bypasses.
 - Size-check every VMM-controlled byte range.
 - Check `u32` offset arithmetic for wraparound.
