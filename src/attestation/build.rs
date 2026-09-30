@@ -3,7 +3,11 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 use std::env;
+use std::path::Path;
 use std::process::Command;
+
+const PRUNE_ENV: &str = "MIGTD_PRUNE_UNUSED_LINUX_SGX";
+const SOURCE_EXPORT_ENV: &str = "MIGTD_SOURCE_EXPORT";
 
 /// Detect the major version of the system `cc` when it is GCC.
 ///
@@ -47,6 +51,71 @@ fn attestation_make_cflags() -> Option<String> {
     (!cflags.is_empty()).then_some(cflags)
 }
 
+fn run_preparation_script(lib_path: &Path, script: &str, args: &[&str]) {
+    let status = Command::new("bash")
+        .arg(script)
+        .args(args)
+        .current_dir(lib_path)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to run {script}: {error}"));
+    assert!(status.success(), "{script} failed: {status}");
+}
+
+fn prepare_attestation_sources(lib_path: &Path, make_cflags: Option<&str>) {
+    if lib_path.join(".git").exists() {
+        let mut prep = Command::new("make");
+        prep.arg("-C")
+            .arg(lib_path)
+            .arg("servtd_attest_preparation");
+        if let Some(cflags) = make_cflags {
+            prep.env("CFLAGS", cflags);
+        }
+        let status = prep
+            .status()
+            .expect("failed to run make servtd_attest_preparation for attestation library!");
+        assert!(
+            status.success(),
+            "failed to build servtd_attest_preparation: {status}"
+        );
+        return;
+    }
+
+    // Source archives and docker-copied trees have populated submodules but no
+    // Git metadata. Run the non-Git parts of servtd_attest_preparation directly.
+    run_preparation_script(lib_path, "external/sgx-emm/create_symlink.sh", &[]);
+    run_preparation_script(
+        lib_path,
+        "external/dcap_source/QuoteVerification/prepare_sgxssl.sh",
+        &["nobuild"],
+    );
+}
+
+fn env_flag(name: &str) -> bool {
+    match env::var(name) {
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => true,
+        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") => false,
+        Ok(value) => panic!("{name} must be 0, 1, true, or false; got {value:?}"),
+        Err(env::VarError::NotPresent) => false,
+        Err(error) => panic!("failed to read {name}: {error}"),
+    }
+}
+
+fn prune_mode(lib_path: &Path) -> Option<&'static str> {
+    if env_flag(SOURCE_EXPORT_ENV) {
+        assert!(
+            !lib_path.join(".git").exists(),
+            "{SOURCE_EXPORT_ENV}=1 is only valid for a source export without Git metadata"
+        );
+        return Some("--source-export");
+    }
+
+    if env_flag(PRUNE_ENV) || env_flag("TF_BUILD") {
+        return Some("--git-checkout");
+    }
+
+    None
+}
+
 fn main() {
     // Skip the compilation of attestation library when the remote attestation is not enabled or
     // running unit test.
@@ -65,32 +134,46 @@ fn main() {
     let _ = env::var("AR").ok().map(|_| env::remove_var("AR"));
 
     let crate_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let lib_path = crate_path
-        .join("../../deps/linux-sgx")
-        .display()
-        .to_string();
+    let lib_path = crate_path.join("../../deps/linux-sgx");
+    let prune_script = crate_path.join("prune-unused-linux-sgx.sh");
+    let fixup_script = crate_path.join("fixup-libservtd-attest-lib.sh");
+
+    println!("cargo:rerun-if-env-changed={PRUNE_ENV}");
+    println!("cargo:rerun-if-env-changed={SOURCE_EXPORT_ENV}");
+    println!("cargo:rerun-if-env-changed=TF_BUILD");
+    println!("cargo:rerun-if-changed={}", lib_path.display());
+    println!("cargo:rerun-if-changed={}", prune_script.display());
+    println!("cargo:rerun-if-changed={}", fixup_script.display());
 
     // GCC >= 14 turns several legacy DCAP warnings into hard errors; demote them so
     // the vendored linux-sgx attestation lib still builds. Preserves user CFLAGS.
     let make_cflags = attestation_make_cflags();
 
-    // make servtd_attest_preparation
-    let mut prep = Command::new("make");
-    prep.args(["-C", &lib_path, "servtd_attest_preparation"]);
-    if let Some(cflags) = &make_cflags {
-        prep.env("CFLAGS", cflags);
+    prepare_attestation_sources(&lib_path, make_cflags.as_deref());
+
+    // Component Governance builds and ephemeral source exports remove upstream
+    // trees that ServTD attestation does not use. Developer builds are
+    // non-destructive unless pruning is explicitly requested.
+    if let Some(mode) = prune_mode(&lib_path) {
+        let status = match Command::new("bash")
+            .arg(&prune_script)
+            .arg(mode)
+            .arg(&lib_path)
+            .current_dir(&crate_path)
+            .status()
+        {
+            Ok(status) => status,
+            Err(error) => panic!("failed to run {}: {error}", prune_script.display()),
+        };
+        assert!(
+            status.success(),
+            "failed to prune unused linux-sgx sources: {status}"
+        );
     }
-    let status = prep
-        .status()
-        .expect("failed to run make servtd_attest_preparation for attestation library!");
-    assert!(
-        status.success(),
-        "failed to build servtd_attest_preparation: {status}"
-    );
 
     // make servtd_attest
     let mut build = Command::new("make");
-    build.args(["-C", &lib_path, "servtd_attest"]);
+    build.arg("-C").arg(&lib_path).arg("servtd_attest");
     if let Some(cflags) = &make_cflags {
         build.env("CFLAGS", cflags);
     }
@@ -101,7 +184,7 @@ fn main() {
 
     let search_dir = format!(
         "{}/external/dcap_source/QuoteGeneration/quote_wrapper/servtd_attest/linux",
-        &lib_path
+        lib_path.display()
     );
 
     println!("cargo:rustc-link-search=native={search_dir}");
@@ -110,9 +193,8 @@ fn main() {
     #[cfg(feature = "AzCVMEmu")]
     {
         // Run the fixup script to create the modified library for AzCVMEmu
-        let script_path = crate_path.join("fixup-libservtd-attest-lib.sh");
         let status = Command::new("bash")
-            .arg(&script_path)
+            .arg(&fixup_script)
             .current_dir(&crate_path)
             .status()
             .expect("failed to run fixup-libservtd-attest-lib.sh script!");
