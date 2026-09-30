@@ -46,7 +46,9 @@ strip = true
 [profile.release]
 panic = "abort" # disable stack unwinding on panic
 opt-level = "z"
-lto = true
+lto = "fat"
+codegen-units = 1
+strip = true
 
 [patch.crates-io]
 ring = { path = "deps/td-shim/library/ring" }
