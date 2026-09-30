@@ -87,13 +87,8 @@ build-igvm-all: pre-build build-igvm generate-hash-v2
 # --- Shared v2 mock-quote IGVM build (used by accept, reject, mock-quote targets) ---
 
 build-igvm-v2-mock:
-	cd ../../ && cargo image --policy-v2 --debug \
-	 --image-format igvm \
-	 --no-default-features \
-	 --features $(IGVM_FEATURES_MOCK_QUOTE) \
+	./build_mock_quote_igvm.sh $(MOCK_POLICY_ARGS) \
 	 --log-level $(LOG_LEVEL) \
-	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
-	 --policy config/Azure/policy_v2_signed.json \
 	 --output $(IGVM_FILE)
 
 # --- Accept-all (allow-all v2 policy + mock quote) ---
@@ -106,7 +101,8 @@ generate-policy-accept:
 		exit 1; \
 	fi
 
-build-igvm-accept: pre-build generate-policy-accept build-igvm-v2-mock
+build-igvm-accept: pre-build
+	$(MAKE) build-igvm-v2-mock MOCK_POLICY_ARGS=--allow-all
 
 build-igvm-accept-all: build-igvm-accept generate-hash-v2
 
@@ -120,7 +116,8 @@ generate-policy-reject:
 		exit 1; \
 	fi
 
-build-igvm-reject: pre-build generate-policy-reject build-igvm-v2-mock
+build-igvm-reject: pre-build
+	$(MAKE) build-igvm-v2-mock MOCK_POLICY_ARGS=--reject
 
 build-igvm-reject-all: build-igvm-reject test-reject generate-hash-v2
 
@@ -165,7 +162,8 @@ generate-policy-mock-quote:
 		exit 1; \
 	fi
 
-build-igvm-mock-quote: pre-build generate-policy-mock-quote build-igvm-v2-mock
+build-igvm-mock-quote: pre-build
+	$(MAKE) build-igvm-v2-mock
 
 # --- Mock-quote allow-all ---
 
@@ -177,4 +175,5 @@ generate-policy-mock-quote-allow-all:
 		exit 1; \
 	fi
 
-build-igvm-mock-quote-allow-all: pre-build generate-policy-mock-quote-allow-all build-igvm-v2-mock
+build-igvm-mock-quote-allow-all: pre-build
+	$(MAKE) build-igvm-v2-mock MOCK_POLICY_ARGS=--allow-all
