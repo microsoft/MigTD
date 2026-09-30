@@ -248,6 +248,15 @@ impl<'a> VerifiedPolicy<'a> {
         &self.policy_data.version
     }
 
+    /// Whether servtd lookups use a JSON TD Identity that must provide status.
+    pub fn requires_servtd_tcb_status(&self) -> bool {
+        #[cfg(feature = "servtd_corim")]
+        if self.servtd_corim.is_some() {
+            return false;
+        }
+        self.servtd_identity.is_some()
+    }
+
     /// Attach decoded CoRIM servtd collateral. Once set, **all** servtd
     /// lookups resolve against the CoRIM and the legacy JSON collateral is no
     /// longer consulted.
@@ -655,6 +664,8 @@ impl<'a> PolicyData<'a> {
             }
         }
 
+        // Callers reject missing status when JSON TD Identity is authoritative;
+        // CoRIM and SVN-only JSON may omit it.
         if let Some(status) = value.migtd_tcb_status.as_deref() {
             if ServtdTcbStatus::try_from(status)? == ServtdTcbStatus::Revoked {
                 return Err(PolicyError::SvnMismatch);
@@ -1203,7 +1214,8 @@ mod test {
         let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
         let issuer_chain =
             include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
-        policy.verify(issuer_chain).unwrap();
+        let verified = policy.verify(issuer_chain).unwrap();
+        assert!(verified.requires_servtd_tcb_status());
     }
 
     /// SVN-only deployment: a policy whose `servtdCollateral` ships **no**
@@ -1230,6 +1242,7 @@ mod test {
 
         assert!(verified.servtd_identity.is_none());
         assert!(verified.servtd_identity_issuer_chain.is_none());
+        assert!(!verified.requires_servtd_tcb_status());
 
         // The SVN resolves, but there is no date/status without TD Identity.
         let known_hash = hex_string_to_bytes(
@@ -1572,6 +1585,7 @@ mod test {
         // (hash 347c6170…79286384 -> svn 1).
         let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cbor");
         verified.set_servtd_corim(ServtdCorim::decode(tcb, 0).unwrap());
+        assert!(!verified.requires_servtd_tcb_status());
 
         // Fail-closed: the legacy hash is no longer resolvable (no fallback).
         assert!(verified

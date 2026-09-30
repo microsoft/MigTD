@@ -628,6 +628,14 @@ mod v2 {
         let report_value = Report::new(suppl_data)?;
 
         let migtd = policy.servtd_lookup_by_report(&report_value);
+        if policy.requires_servtd_tcb_status()
+            && migtd
+                .as_ref()
+                .and_then(|lookup| lookup.tcb_status.as_deref())
+                .is_none()
+        {
+            return Err(PolicyError::UnqualifiedMigTdInfo);
+        }
         let pck_crl_num = get_crl_number(collaterals.pck_crl.as_bytes())
             .map_err(|_| PolicyError::InvalidCollateral)?;
         let root_ca_crl_num = get_crl_number(collaterals.root_ca_crl.as_bytes())
@@ -670,6 +678,14 @@ mod v2 {
 
         let tdinfo_hash = tdinfo_hash_from_td_info(&mapping_tdreport.td_info)?;
         let migtd = policy.servtd_lookup_by_tdinfo_hash(&tdinfo_hash);
+        if policy.requires_servtd_tcb_status()
+            && migtd
+                .as_ref()
+                .and_then(|lookup| lookup.tcb_status.as_deref())
+                .is_none()
+        {
+            return Err(PolicyError::UnqualifiedMigTdInfo);
+        }
 
         Ok(PolicyEvaluationInfo {
             tee_tcb_svn: Some(tdreport.tee_tcb_info.tee_tcb_svn),
