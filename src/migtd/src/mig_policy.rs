@@ -339,7 +339,9 @@ mod v2 {
         //
         // The authenticated source report carries the current source policy
         // signer and SVN. Do not additionally require these measurements in
-        // the destination's local TCB mapping.
+        // the destination's local TCB mapping: that would require an older
+        // policy to predict future MigTD images and break migration during
+        // independently issued policy signer rotations.
         let servtd_ext_src_obj =
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
         verify_init_tdinfo(init_tdinfo, &servtd_ext_src_obj)?;
@@ -951,9 +953,9 @@ mod v2 {
             false,
         )?;
 
-        // Cross-check init TDINFO against MROWNER/MROWNERCONFIG from
-        // verified quote supplemental data, verify init TDINFO integrity
-        // against ServtdExt hash, and allowlist-gate init measurements.
+        // Cross-check init TDINFO against MROWNER/MROWNERCONFIG from the
+        // verified quote supplemental data and verify its integrity against
+        // the source's ServtdExt hash.
         //
         // Skipped when running with mock quotes/reports that carry static
         // test data — the mock init TDINFO does not have measurements

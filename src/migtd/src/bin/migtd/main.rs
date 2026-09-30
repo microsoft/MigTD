@@ -292,7 +292,7 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
 
     let event_data = version.as_bytes();
 
-    // Per docs/tcb_mapping_redesign.md: RTMR2 is extended ONCE with the
+    // Per doc/tcb_mapping_redesign.md: RTMR2 is extended ONCE with the
     // canonical bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
     // removed. The redaction is what makes `servtdTcbMapping` updateable
     // after the IGVM is published; every other `policyData` field — including
@@ -349,7 +349,7 @@ fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
         }
     };
 
-    // Per docs/tcb_mapping_redesign.md: RTMR1 is extended with the SHA384 of
+    // Per doc/tcb_mapping_redesign.md: RTMR1 is extended with the SHA384 of
     // the *signer anchor* A, NOT the entire PEM blob. A is derived from the
     // root CA fingerprint and the leaf certificate's dedicated signer EKU, with
     // a domain-separation tag, so the value is stable across rotations of
