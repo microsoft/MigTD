@@ -6,6 +6,7 @@
 # Mirrors:
 #   .github/workflows/format.yml
 #   .github/workflows/deny.yml
+#   .github/workflows/library.yml
 #   .github/workflows/main.yml
 #   .github/workflows/integration-emu.yml
 #
@@ -20,7 +21,7 @@
 #   ./run-ci-gauntlet.sh --only STAGE      # run a single stage only
 #   ./run-ci-gauntlet.sh -h | --help
 #
-# STAGE ∈ { prep | format | deny | main | emu }
+# STAGE ∈ { prep | format | deny | library | main | emu }
 #
 set -u
 set -o pipefail
@@ -34,7 +35,7 @@ mkdir -p "$LOG_DIR"
 SUMMARY="$LOG_DIR/summary.txt"
 : > "$SUMMARY"
 
-STAGES=(prep format deny main emu)
+STAGES=(prep format deny library main emu)
 FROM_STAGE="prep"
 ONLY_STAGE=""
 
@@ -139,6 +140,39 @@ banner() {
     echo "============== stage: $CURRENT_STAGE ==============" | tee -a "$SUMMARY"
 }
 
+verify_corim_runtime() {
+    local operation="$1"
+    local policy_file="$2"
+    local anchor_file="$3"
+
+    jq -e '.policyData | has("servtdCollateral") | not' "$policy_file" >/dev/null &&
+        [ "$(wc -c < "$anchor_file")" -eq 48 ] || return 1
+
+    local role log
+    for role in source destination; do
+        log="migtd_${operation}_${role}.log"
+        [ -f "$log" ] &&
+            grep -aq "Loaded signed ServTD CoRIM endorsement" "$log" || return 1
+    done
+}
+
+verify_asymmetric_corim() {
+    jq -e '[.policyData.policy[] | select(has("servtd"))] | length == 0' \
+        config/AzCVMEmu/policy_v2_corim_asymmetric.json >/dev/null &&
+        [ "$(wc -c < config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin)" -eq 48 ] &&
+        ! cmp -s config/AzCVMEmu/tcb_mapping_corim_asymmetric_src.cose \
+            config/AzCVMEmu/tcb_mapping_corim_asymmetric_dst.cose || return 1
+
+    local role log
+    for role in source destination; do
+        log="migtd_migration_${role}.log"
+        [ -f "$log" ] || return 1
+        if grep -aq "UnqualifiedMigTdInfo\|Policy v2 check failed" "$log"; then
+            return 1
+        fi
+    done
+}
+
 # ============================================================ STAGE: prep
 if stage_should_run prep; then
     banner prep
@@ -175,6 +209,14 @@ if stage_should_run deny; then
         echo "⚠  fail (ignored per CI policy, log: $CURRENT_STAGE_LOG)" | tee -a "$SUMMARY"
     fi
     step bans cargo deny check bans
+fi
+
+# ============================================================ STAGE: library
+# Mirrors .github/workflows/library.yml.
+if stage_should_run library; then
+    banner library
+    step lib-build cargo xtask lib-build
+    step lib-test cargo xtask lib-test
 fi
 
 # ============================================================ STAGE: main
@@ -219,10 +261,21 @@ fi
 if stage_should_run emu; then
     banner emu
 
-    # CI generates all default, rotation, and revocation policy variants before
-    # each policy-v2 scenario. A single generation covers this local serial run.
+    # CI generates all default, rotation, revocation, and CoRIM-only policy
+    # variants before the corresponding scenarios. A single generation covers
+    # this local serial run.
     step policy-generation ./sh_script/build_AzCVMEmu_policy_and_test.sh \
-        --mock-report --skip-test
+        --mock-report --skip-test --corim-only
+
+    # CoRIM-only policy contract job.
+    step corim-policy__build env SPDM_CONFIG="$REPO_ROOT/config/spdm_config.json" \
+        cargo build --no-default-features \
+        --features AzCVMEmu,policy_v2,test_mock_report,spdm_attestation,servtd_corim
+    step corim-policy__policy-tests cargo test -p policy \
+        --features policy_v2,servtd_corim
+    step corim-policy__hash-tests cargo test -p migtd-hash
+    step corim-policy__azure-script-syntax bash -n sh_script/Azure/build_azure_mock_test.sh
+    step corim-policy__mock-script-syntax bash -n sh_script/Azure/build_mock_quote_igvm.sh
 
     # 1. skip-ra
     step skip-ra__build cargo build \
@@ -268,7 +321,37 @@ if stage_should_run emu; then
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
 
-    # 8. spdm-rebind-skip-ra
+    # 8. corim-migration
+    step corim-migration ./migtdemu.sh --policy-v2 \
+        --policy-file ./config/AzCVMEmu/policy_v2_corim.json \
+        --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor.bin \
+        --servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim.cose \
+        --mock-report --features spdm_attestation --both --no-sudo --log-level info
+    step corim-migration__verify verify_corim_runtime migration \
+        config/AzCVMEmu/policy_v2_corim.json \
+        config/AzCVMEmu/servtd_signer_anchor.bin
+
+    # 9. corim-rebind
+    step corim-rebind ./migtdemu.sh --operation rebind-prepare \
+        --policy-file ./config/AzCVMEmu/policy_v2_corim.json \
+        --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor.bin \
+        --servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim.cose \
+        --mock-report --features spdm_attestation --both --no-sudo --log-level info
+    step corim-rebind__verify verify_corim_runtime rebind-prepare \
+        config/AzCVMEmu/policy_v2_corim.json \
+        config/AzCVMEmu/servtd_signer_anchor.bin
+
+    # 10. corim-asymmetric-migration
+    step corim-asymmetric__generate ./sh_script/gen_asymmetric_servtd_corim_fixture.sh
+    step corim-asymmetric-migration ./migtdemu.sh --policy-v2 \
+        --policy-file ./config/AzCVMEmu/policy_v2_corim_asymmetric.json \
+        --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin \
+        --src-servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim_asymmetric_src.cose \
+        --dst-servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim_asymmetric_dst.cose \
+        --mock-report --features spdm_attestation --both --no-sudo --log-level info
+    step corim-asymmetric-migration__verify verify_asymmetric_corim
+
+    # 11. spdm-rebind-skip-ra
     step spdm-rebind-skip-ra__build cargo build \
         --features AzCVMEmu,policy_v2,test_disable_ra_and_accept_all,spdm_attestation --no-default-features
     step spdm-rebind-skip-ra ./migtdemu.sh --operation rebind-prepare \
@@ -276,11 +359,11 @@ if stage_should_run emu; then
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
         --skip-ra --debug --features spdm_attestation --both --no-sudo --log-level info
 
-    # 9. mock-quote-retry
+    # 12. mock-quote-retry
     step mock-quote-retry ./migtdemu.sh --mock-report --mock-quote-retry \
         --features igvm-attest --both --no-sudo --log-level info
 
-    # 10. policy-v2-key-rotation
+    # 13. policy-v2-key-rotation
     step policy-v2-key-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
@@ -288,7 +371,7 @@ if stage_should_run emu; then
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
         --mock-report --both --no-sudo --log-level info
 
-    # 11. policy-v2-key-rotation-igvm
+    # 14. policy-v2-key-rotation-igvm
     step policy-v2-key-rotation-igvm ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
@@ -296,7 +379,7 @@ if stage_should_run emu; then
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
         --mock-report --features igvm-attest --both --no-sudo --log-level info
 
-    # 12. spdm-policy-v2-key-rotation
+    # 15. spdm-policy-v2-key-rotation
     step spdm-policy-v2-key-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
@@ -304,7 +387,7 @@ if stage_should_run emu; then
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
 
-    # 13. policy-v2-policy-mapping-rotation
+    # 16. policy-v2-policy-mapping-rotation
     step policy-v2-policy-mapping-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
@@ -312,7 +395,7 @@ if stage_should_run emu; then
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
         --mock-report --both --no-sudo --log-level info
 
-    # 14. policy-v2-all-chains-rotation
+    # 17. policy-v2-all-chains-rotation
     step policy-v2-all-chains-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
@@ -320,7 +403,7 @@ if stage_should_run emu; then
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
         --mock-report --both --no-sudo --log-level info
 
-    # 15. policy-v2-revoked
+    # 18. policy-v2-revoked
     step policy-v2-revoked__build cargo build --release \
         --features AzCVMEmu,policy_v2,test_mock_report --no-default-features
     step_expect_failure_pattern policy-v2-revoked SignerRevoked \

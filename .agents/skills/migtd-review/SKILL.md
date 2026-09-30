@@ -162,7 +162,7 @@ cargo test -p migtd --lib <module_you_touched>
 # OR run individual scenarios via ./migtdemu.sh (see §6).
 ```
 
-### Full CI parity (all four workflows MUST pass — no exceptions)
+### Full CI parity (all five workflows MUST pass — no exceptions)
 
 The user has stated **every test in every workflow must pass**. The reusable gauntlet script automates this — use it as the standard pre-push verification:
 
@@ -170,7 +170,7 @@ The user has stated **every test in every workflow must pass**. The reusable gau
 .agents/skills/migtd-review/scripts/run-ci-gauntlet.sh
 ```
 
-It runs the four CI workflows in the order `prep → format → deny → main → emu` and **stops at the first failure** with the failing command, the path of the captured log, and a resume hint (`--from <stage>`). Logs land under `target/ci-gauntlet/`. Total wall-clock is ~30 min cold, much less on warm caches.
+It runs the five CI workflows in the order `prep → format → deny → library → main → emu` and **stops at the first failure** with the failing command, the path of the captured log, and a resume hint (`--from <stage>`). Logs land under `target/ci-gauntlet/`. Total wall-clock is ~30 min cold, much less on warm caches.
 
 ```bash
 .agents/skills/migtd-review/scripts/run-ci-gauntlet.sh --list           # list stages
@@ -186,8 +186,9 @@ What each stage covers (the commands the script runs are the source of truth):
 |---|---|---|
 | `.github/workflows/format.yml` | `format` | `cargo fmt -- --check`, `cargo check`, `cargo clippy --features stack-guard,virtio-vsock,virtio-serial,vmcall-interrupt` (no `-D warnings`) |
 | `.github/workflows/deny.yml` | `deny` | `cargo deny check advisories`, `cargo deny check sources` (continue-on-error), `cargo deny check bans` |
+| `.github/workflows/library.yml` | `library` | `cargo xtask lib-build`, `cargo xtask lib-test` |
 | `.github/workflows/main.yml` | `main` | 32 `cargo image` builds = 4 devices × 2 policy_versions × 2 protocols × 2 build_types |
-| `.github/workflows/integration-emu.yml` | `emu` | 15 EMU scenarios mirroring the workflow matrix exactly, including the explicit pre-builds and the fail-closed revoked-signer policy test |
+| `.github/workflows/integration-emu.yml` | `emu` | CoRIM policy-contract checks plus 18 EMU scenarios mirroring the workflow matrix exactly, including CoRIM-only migration/rebind/asymmetric lookup and the fail-closed revoked-signer policy test |
 
 **Note**: the format.yml clippy step uses a *different* feature set than the in-scope set above (`stack-guard,virtio-vsock,virtio-serial,vmcall-interrupt`). Both must compile cleanly; the former is what runs in CI and gates merges.
 
