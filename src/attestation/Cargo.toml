@@ -27,5 +27,6 @@ AzCVMEmu = ["tdx-tdcall-emu", "td-payload-emu"]
 attest-lib-ext = []
 policy_v2=[]
 igvm-attest = []  # Get quote via IGVM interface (mutually exclusive with use-mock-quote)
+test-get-quote = []
 vmcall-raw = []
 use-mock-quote = ["tdx-mock-data"]  # Use mock quote and mock TD report for testing (mutually exclusive with AzCVMEmu)
