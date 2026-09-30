@@ -16,11 +16,14 @@ timestamp: 2026-07-10T19:26:55+00:00
 bash sh_script/preparation.sh
 ```
 
-This applies the `spdm-rs` patches to `deps/td-shim/library/ring`
-(`EphemeralPrivateKey::to_bytes`, `digest::serialize`). **Skipping it
-produces build errors that look like a real baseline regression but
-aren't.** CI runs it automatically; **locally you must run it manually**
-after:
+This applies the `spdm-rs` patches to the ring source selected by MigTD's
+workspace override, `deps/td-shim/library/ring`
+(`EphemeralPrivateKey::export_private_key_bytes`/`from_private_key_bytes` and
+`digest::Context::to_bytes`/`from_bytes`). See
+[`doc/dependency_preparation.md`](../../doc/dependency_preparation.md) for why
+spdm-rs's own ring copy is not selected. **Skipping preparation produces build
+errors that look like a real baseline regression but aren't.** CI runs it
+automatically; **locally you must run it manually** after:
 
 - a fresh clone,
 - `git clean -fdx`,
