@@ -156,3 +156,18 @@ pub fn init_file_based_emulation_with_policy_chain(
         crate::td_uefi_pi::fv::load_policy_issuer_chain_from_file(policy_issuer_chain_path);
     policy_loaded && chain_loaded
 }
+
+/// Initialize policy-v2 emulation with the CoRIM-only release inputs
+#[cfg(feature = "policy_v2")]
+pub fn init_file_based_emulation_with_corim(
+    policy_path: &str,
+    servtd_signer_anchor_path: &str,
+    servtd_corim_path: &str,
+) -> bool {
+    crate::td_uefi_pi::fv::set_file_reader(real_file_reader);
+    let policy_loaded = crate::td_uefi_pi::fv::load_policy_from_file(policy_path);
+    let anchor_loaded =
+        crate::td_uefi_pi::fv::load_servtd_signer_anchor_from_file(servtd_signer_anchor_path);
+    let corim_loaded = crate::td_uefi_pi::fv::load_servtd_corim_from_file(servtd_corim_path);
+    policy_loaded && anchor_loaded && corim_loaded
+}

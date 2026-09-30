@@ -80,34 +80,58 @@ fn initialize_emulation() {
 
     #[cfg(feature = "policy_v2")]
     let result = {
-        // policy_v2: root CA is embedded in policy collaterals, only need issuer chain
-        let policy_issuer_chain_file_path = env::var("MIGTD_POLICY_ISSUER_CHAIN_FILE")
-            .map_err(|_| {
-                log::error!("Policy v2 requires a policy issuer chain file but MIGTD_POLICY_ISSUER_CHAIN_FILE was not set\n");
-            })
-            .unwrap_or_else(|_| process::exit(1));
+        let signer_anchor = env::var("MIGTD_SERVTD_SIGNER_ANCHOR_FILE").ok();
+        let servtd_corim = env::var("MIGTD_SERVTD_CORIM_FILE").ok();
 
-        log::info!(
-            "MIGTD_POLICY_ISSUER_CHAIN_FILE set to: {}\n",
-            policy_issuer_chain_file_path
-        );
+        match (signer_anchor, servtd_corim) {
+            (Some(anchor_path), Some(corim_path)) => {
+                for (description, path) in [
+                    ("ServTD signer anchor", &anchor_path),
+                    ("signed ServTD CoRIM", &corim_path),
+                ] {
+                    if !std::path::Path::new(path).exists() {
+                        println!("{} file not found: {}", description, path);
+                        print_usage();
+                        process::exit(1);
+                    }
+                }
 
-        // Verify chain file exists
-        if !std::path::Path::new(&policy_issuer_chain_file_path).exists() {
-            println!(
-                "Policy issuer chain file not found: {}",
-                policy_issuer_chain_file_path
-            );
-            print_usage();
-            process::exit(1);
+                log::info!("MIGTD_SERVTD_SIGNER_ANCHOR_FILE set to: {}\n", anchor_path);
+                log::info!("MIGTD_SERVTD_CORIM_FILE set to: {}\n", corim_path);
+                let anchor_path: &'static str = Box::leak(anchor_path.into_boxed_str());
+                let corim_path: &'static str = Box::leak(corim_path.into_boxed_str());
+                td_shim_interface_emu::init_file_based_emulation_with_corim(
+                    policy_path,
+                    anchor_path,
+                    corim_path,
+                )
+            }
+            (None, None) => {
+                // policy_v2: root CA is embedded in policy collaterals.
+                let chain_path = env::var("MIGTD_POLICY_ISSUER_CHAIN_FILE")
+                    .unwrap_or_else(|_| {
+                        log::error!("Policy v2 requires either MIGTD_POLICY_ISSUER_CHAIN_FILE or both CoRIM-only input variables\n");
+                        process::exit(1);
+                    });
+
+                log::info!("MIGTD_POLICY_ISSUER_CHAIN_FILE set to: {}\n", chain_path);
+                if !std::path::Path::new(&chain_path).exists() {
+                    println!("Policy issuer chain file not found: {}", chain_path);
+                    print_usage();
+                    process::exit(1);
+                }
+
+                let chain_path: &'static str = Box::leak(chain_path.into_boxed_str());
+                td_shim_interface_emu::init_file_based_emulation_with_policy_chain(
+                    policy_path,
+                    chain_path,
+                )
+            }
+            _ => {
+                log::error!("MIGTD_SERVTD_SIGNER_ANCHOR_FILE and MIGTD_SERVTD_CORIM_FILE must be set together\n");
+                process::exit(1);
+            }
         }
-
-        let chain_path_static: &'static str =
-            Box::leak(policy_issuer_chain_file_path.into_boxed_str());
-        td_shim_interface_emu::init_file_based_emulation_with_policy_chain(
-            policy_path,
-            chain_path_static,
-        )
     };
 
     #[cfg(not(feature = "policy_v2"))]
@@ -141,7 +165,11 @@ fn initialize_emulation() {
         #[cfg(feature = "policy_v2")]
         {
             let chain_file = env::var("MIGTD_POLICY_ISSUER_CHAIN_FILE").ok();
+            let anchor_file = env::var("MIGTD_SERVTD_SIGNER_ANCHOR_FILE").ok();
+            let corim_file = env::var("MIGTD_SERVTD_CORIM_FILE").ok();
             log::info!("  Policy Issuer Chain: {:?}\n", chain_file);
+            log::info!("  ServTD Signer Anchor: {:?}\n", anchor_file);
+            log::info!("  Signed ServTD CoRIM: {:?}\n", corim_file);
         }
     } else {
         log::error!("Failed to initialize file-based emulation\n");
