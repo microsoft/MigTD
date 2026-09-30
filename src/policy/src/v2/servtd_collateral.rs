@@ -22,8 +22,8 @@ pub struct ServtdCollateral<'a> {
     #[serde(borrow)]
     pub servtd_tcb_mapping: RawServtdTcbMapping<'a>,
     /// Optional TD Identity issuer chain (PEM). Present only when the optional
-    /// `servtdIdentity` is shipped; bound to the RTMR1 signer anchor in
-    /// `RawPolicyData::verify`.
+    /// `servtdIdentity` is shipped; measured into RTMR2 and also bound to the
+    /// RTMR1 signer anchor in `RawPolicyData::verify`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub servtd_identity_issuer_chain: Option<String>,
     /// Optional MigTD TD Identity (`isvsvn -> (tcb_date, tcb_status)`).
