@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-//! CoRIM-based hash endorsement: decodes the wire format produced by the
-//! host-side `mig-td-tools` signer and resolves a `tdinfo_hash` to a
-//! [`ServtdLookup`] (the MigTD ISV SVN). This is the only alternative to the
-//! legacy JSON collateral; the legacy path stays unchanged from the one-hash
-//! redesign.
+//! CoRIM-based hash endorsement: decodes the signed TCB-mapping CoRIM generated
+//! during a MigTD production release (referred to as the "producer" below) and
+//! resolves a `tdinfo_hash` to a [`ServtdLookup`] (the MigTD ISV SVN). This is
+//! the only alternative to the legacy JSON collateral; the legacy path stays
+//! unchanged from the one-hash redesign.
 //!
 //! # One document
 //!
@@ -63,11 +63,11 @@ use crate::{
     PolicyError,
 };
 
-// ---- Wire-format constants (must match `mig-td-tools::types::servtd`) ------
+// ---- MigTD CoRIM wire-format constants -----------------------------------
 
 /// Component class for both documents: `class = { vendor: "Intel",
-/// model: "TDX" }` (no `class-id`). The producer switched from a
-/// shared class-id UUID to this vendor/model class.
+/// model: "TDX" }` (no `class-id`). The producer switched from a shared
+/// class-id UUID to this vendor/model class.
 pub const CLASS_VENDOR: &str = "Intel";
 /// See [`CLASS_VENDOR`].
 pub const CLASS_MODEL: &str = "TDX";
@@ -111,9 +111,8 @@ impl ServtdCorim {
     }
 
     /// Decode from the **signed** TCB Mapping CoRIM document
-    /// (`COSE_Sign1-corim`, `#6.18`), as produced by the `mig-td-tools` signer
-    /// and shipped in the `.cose` file, verifying the signature before any
-    /// payload byte is trusted.
+    /// (`COSE_Sign1-corim`, `#6.18`) shipped in the `.cose` file, verifying the
+    /// signature before any payload byte is trusted.
     ///
     /// The COSE envelope is parsed, its embedded RFC 9360 `x5chain` and ES384
     /// signature are verified, and the chain's trust anchor is bound to
@@ -456,13 +455,13 @@ mod test {
         assert!(provider.lookup_by_tdinfo_hash(&[0xAA; 32]).is_none());
     }
 
-    /// Interop regression: decode the inner CoRIM payload from the real
-    /// pipeline-signed `mig-td-tools` sample (envelope stripped) and resolve
-    /// the endorsed release `347c6170…79286384 -> svn 1`.
+    /// Interop regression: decode the inner CoRIM payload from a real
+    /// pipeline-signed sample (envelope stripped) and resolve the endorsed
+    /// release `347c6170…79286384 -> svn 1`.
     #[test]
-    fn interop_with_mig_td_tools_producer() {
+    fn interop_with_producer() {
         let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cbor");
-        let provider = ServtdCorim::decode(tcb, 0).expect("decode producer CBOR");
+        let provider = ServtdCorim::decode(tcb, 0).expect("decode producer CoRIM CBOR");
 
         let mut hash = [0u8; 48];
         hex_decode(
@@ -478,11 +477,10 @@ mod test {
         assert!(provider.lookup_by_tdinfo_hash(&[0xCC; 48]).is_none());
     }
 
-    /// End-to-end with the real signed `COSE_Sign1` sample emitted by the
-    /// `mig-td-tools` pipeline: verify the envelope's ES384 signature +
-    /// `x5chain`, bind the signer to the RTMR1 signer anchor, then resolve a
-    /// hash. The sample endorses a single release: `347c6170…79286384 ->
-    /// svn 1`.
+    /// End-to-end with a real signed `COSE_Sign1` pipeline sample: verify the
+    /// envelope's ES384 signature + `x5chain`, bind the signer to the RTMR1
+    /// signer anchor, then resolve a hash. The sample endorses a single
+    /// release: `347c6170…79286384 -> svn 1`.
     #[test]
     fn interop_with_signed_cose_samples() {
         let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cose");
