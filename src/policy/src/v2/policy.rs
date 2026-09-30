@@ -232,24 +232,11 @@ pub struct VerifiedPolicy<'a> {
     /// authority for servtd lookups (fail-closed: a CoRIM miss is a miss,
     /// with no fallback to the legacy JSON collateral). Only available with
     /// the `servtd_corim` feature.
+    ///
+    /// For a peer policy, this must be the peer's authenticated CoRIM.
+    /// Using the local mapping breaks migration between independent releases.
     #[cfg(feature = "servtd_corim")]
-    servtd_corim: Option<ServtdCorimAuthority<'a>>,
-}
-
-#[cfg(feature = "servtd_corim")]
-enum ServtdCorimAuthority<'a> {
-    Owned(ServtdCorim),
-    Borrowed(&'a ServtdCorim),
-}
-
-#[cfg(feature = "servtd_corim")]
-impl ServtdCorimAuthority<'_> {
-    fn as_ref(&self) -> &ServtdCorim {
-        match self {
-            Self::Owned(corim) => corim,
-            Self::Borrowed(corim) => corim,
-        }
-    }
+    servtd_corim: Option<ServtdCorim>,
 }
 
 impl<'a> VerifiedPolicy<'a> {
@@ -264,19 +251,27 @@ impl<'a> VerifiedPolicy<'a> {
     /// Attach decoded CoRIM servtd collateral. Once set, **all** servtd
     /// lookups resolve against the CoRIM and the legacy JSON collateral is no
     /// longer consulted.
+    ///
+    /// Callers attaching a CoRIM to a *peer's* `VerifiedPolicy` MUST have
+    /// already verified `corim`'s COSE signature/x5chain against that same
+    /// peer's own resolved `signer_anchor` (see `ServtdCorim::decode_signed`).
+    /// Never attach a locally-sourced CoRIM to a peer's policy.
     #[cfg(feature = "servtd_corim")]
     pub fn set_servtd_corim(&mut self, corim: ServtdCorim) {
-        self.servtd_corim = Some(ServtdCorimAuthority::Owned(corim));
+        self.servtd_corim = Some(corim);
     }
 
-    /// Use the local, already signature/anchor-verified CoRIM as the authority
-    /// for peer TCB lookups. Peers do not supply a CoRIM or CRL for this step.
+    /// Verify and attach the peer's signed TCB-mapping CoRIM using its signer
+    /// anchor. Current and initial peer hash lookups then use this mapping.
+    /// Callers must still apply the local authoritative servTD CRL.
     #[cfg(feature = "servtd_corim")]
-    pub fn set_servtd_corim_from(&mut self, local_policy: &'static VerifiedPolicy<'static>) {
-        self.servtd_corim = local_policy
-            .servtd_corim
-            .as_ref()
-            .map(|corim| ServtdCorimAuthority::Borrowed(corim.as_ref()));
+    pub fn attach_verified_peer_servtd_corim(
+        &mut self,
+        peer_servtd_corim_cose: &[u8],
+    ) -> Result<(), PolicyError> {
+        let corim = ServtdCorim::decode_signed(peer_servtd_corim_cose, 0, &self.signer_anchor)?;
+        self.servtd_corim = Some(corim);
+        Ok(())
     }
 
     /// Check every retained servTD signer chain against an authoritative CRL.
@@ -304,9 +299,7 @@ impl<'a> VerifiedPolicy<'a> {
         }
         #[cfg(feature = "servtd_corim")]
         if let Some(corim) = self.servtd_corim.as_ref() {
-            corim
-                .as_ref()
-                .verify_signer_chain_not_revoked(authoritative_crl)?;
+            corim.verify_signer_chain_not_revoked(authoritative_crl)?;
         }
         Ok(())
     }
@@ -324,7 +317,7 @@ impl<'a> VerifiedPolicy<'a> {
     pub fn servtd_lookup_by_tdinfo_hash(&self, tdinfo_hash: &[u8]) -> Option<ServtdLookup> {
         #[cfg(feature = "servtd_corim")]
         if let Some(corim) = &self.servtd_corim {
-            return corim.as_ref().lookup_by_tdinfo_hash(tdinfo_hash);
+            return corim.lookup_by_tdinfo_hash(tdinfo_hash);
         }
         // JSON path — hash -> SVN via the one-hash TCB mapping, then optional
         // SVN -> (date, status) via the TD Identity when it is shipped.
@@ -1595,6 +1588,186 @@ mod test {
         let hit = verified.servtd_lookup_by_tdinfo_hash(&corim_hash);
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().isvsvn, 1);
+    }
+
+    // Peer SVN must be resolved through the peer TCB-mapping CoRIM.
+    #[cfg(feature = "servtd_corim")]
+    const CORIM_KNOWN_HASH_HEX: &str = "347c6170a91341351937962e08a7695703e7b87984b1c69216372c380302ac420d42381e4585007057b20b2579286384";
+
+    #[cfg(feature = "servtd_corim")]
+    fn base_verified_policy() -> VerifiedPolicy<'static> {
+        let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
+        let issuer_chain =
+            include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
+        let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
+        policy.verify(issuer_chain).unwrap()
+    }
+
+    /// Recover the RTMR1 signer anchor embedded in a signed COSE CoRIM
+    /// sample's own `x5chain`, running the real ES384 signature + chain
+    /// verification on the way. Mirrors the private
+    /// `servtd_corim::test::signer_anchor_from_sample` helper, which is
+    /// not reachable from this module.
+    #[cfg(feature = "servtd_corim")]
+    fn signer_anchor_from_cose_sample(cose: &[u8]) -> [u8; SHA384_DIGEST_SIZE] {
+        use crate::v2::compute_signer_anchor;
+
+        let env = corim::types::signed::decode_signed_corim(cose).expect("decode COSE");
+        let tbs = env.to_be_signed(&[]).expect("tbs");
+        let chain = env.protected.x5chain.as_ref().expect("x5chain");
+        let certs = chain.certs();
+        let (root_der, leaf_eku_oids_der) =
+            crypto::verify_cose_sign1_es384_x5chain(&certs, &tbs, &env.signature)
+                .expect("verify signature");
+        let leaf_eku_oid_der = leaf_eku_oids_der.first().expect("leaf asserts >= 1 EKU");
+        compute_signer_anchor(&root_der, leaf_eku_oid_der).expect("anchor")
+    }
+
+    /// Scenario 1: an older destination whose OWN local mapping does not
+    /// know a newer source's `tdinfo_hash` still accepts the source once
+    /// the source's own authenticated CoRIM (verified against the
+    /// SOURCE's own resolved signer anchor) is attached to the source's
+    /// `VerifiedPolicy`. The destination's local ignorance of the hash is
+    /// irrelevant: only the peer's own mapping is consulted.
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn peer_corim_resolves_hash_missing_from_destination_local_mapping() {
+        use crate::v2::hex_string_to_bytes;
+
+        let corim_hash = hex_string_to_bytes(CORIM_KNOWN_HASH_HEX).unwrap();
+
+        // The destination's own local enrolled policy never saw this
+        // source release, so its own (legacy JSON) mapping does not know
+        // the hash.
+        let verified_dest = base_verified_policy();
+        assert!(verified_dest
+            .servtd_lookup_by_tdinfo_hash(&corim_hash)
+            .is_none());
+
+        // The source's own `VerifiedPolicy`: attach the source's own
+        // signed CoRIM after verifying it against the SOURCE's own
+        // resolved signer anchor (never the destination's).
+        let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cose");
+        let mut verified_peer = base_verified_policy();
+        verified_peer.signer_anchor = signer_anchor_from_cose_sample(tcb);
+        verified_peer
+            .attach_verified_peer_servtd_corim(tcb)
+            .expect("peer corim verifies against the peer's own anchor");
+
+        let hit = verified_peer.servtd_lookup_by_tdinfo_hash(&corim_hash);
+        assert_eq!(
+            hit.expect("peer's own CoRIM resolves its own release")
+                .isvsvn,
+            1
+        );
+    }
+
+    /// Scenario 2: once a peer's authenticated CoRIM is attached, a
+    /// `tdinfo_hash` it does not endorse fails closed (`None`), never
+    /// falling back to the destination's local mapping or any default
+    /// acceptance. `servtd_lookup_by_tdinfo_hash` is the single lookup
+    /// primitive shared by BOTH the current-release lookup
+    /// (`setup_evaluation_data`/`setup_evaluation_data_with_tdreport`, via
+    /// `servtd_lookup_by_report`) and the initial-release lookup
+    /// (`mig_policy::verify_init_servtd_svn_order`), so exercising it
+    /// here covers a missing hash at either call site.
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn peer_corim_missing_hash_fails_closed() {
+        let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cose");
+        let mut verified_peer = base_verified_policy();
+        verified_peer.signer_anchor = signer_anchor_from_cose_sample(tcb);
+        verified_peer
+            .attach_verified_peer_servtd_corim(tcb)
+            .unwrap();
+
+        // Neither the peer's CoRIM (single endorsed release) nor any
+        // fallback resolves an unrelated hash.
+        let unknown_hash = [0xAAu8; SHA384_DIGEST_SIZE];
+        assert!(verified_peer
+            .servtd_lookup_by_tdinfo_hash(&unknown_hash)
+            .is_none());
+    }
+
+    /// Scenario 3a: a peer CoRIM signed under a root/EKU anchor that does
+    /// not match the peer's own resolved RTMR1 signer anchor is rejected
+    /// outright and never attached.
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn attach_peer_corim_rejects_wrong_signer_anchor() {
+        let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cose");
+        let mut wrong_anchor = signer_anchor_from_cose_sample(tcb);
+        wrong_anchor[0] ^= 0xFF;
+
+        let mut verified_peer = base_verified_policy();
+        verified_peer.signer_anchor = wrong_anchor;
+
+        assert!(verified_peer
+            .attach_verified_peer_servtd_corim(tcb)
+            .is_err());
+    }
+
+    /// Scenario 3b: after attaching, the peer CoRIM's signer chain is
+    /// still checked against the LOCAL authoritative servTD CRL (never a
+    /// peer-supplied one), and a revoked signer is rejected.
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn attach_peer_corim_then_local_crl_rejects_revoked_signer() {
+        let tcb = include_bytes!("../../test/policy_v2/corim/revocation/tcb_mapping.cose");
+        let mut verified_peer = base_verified_policy();
+        verified_peer.signer_anchor = signer_anchor_from_cose_sample(tcb);
+        verified_peer
+            .attach_verified_peer_servtd_corim(tcb)
+            .unwrap();
+
+        let local_crl =
+            include_bytes!("../../test/policy_v2/corim/revocation/crl_leaf_revoked.pem");
+        assert!(matches!(
+            verified_peer.verify_signer_chains_not_revoked(local_crl),
+            Err(PolicyError::SignerRevoked)
+        ));
+    }
+
+    /// Scenario 4 (best-effort proxy — see final report): bidirectional
+    /// signer-leaf rotation. `signer_a.pem`/`signer_b.pem` are two
+    /// independently rotated leaf keys under the SAME root + dedicated
+    /// signer EKU and resolve to the identical RTMR1 signer anchor
+    /// (`measurement::signer_anchor_from_chain_ignores_leaf_subject_and_key`).
+    /// This proves the property `attach_verified_peer_servtd_corim`'s
+    /// accept/reject decision depends on: anchor equality alone, not which
+    /// specific leaf-key generation produced the peer's transported
+    /// chain. A genuinely independent two-signer-key end-to-end CoRIM
+    /// rotation could not be exercised locally: this repository ships
+    /// only one signed CoRIM COSE sample key, and no tooling to mint a
+    /// second one was available in this environment.
+    #[cfg(feature = "servtd_corim")]
+    #[test]
+    fn rotated_leaf_keys_resolve_to_the_same_signer_anchor() {
+        let anchor_old = compute_signer_anchor_from_chain_pem(include_bytes!(
+            "../../../crypto/test/eku/signer_a.pem"
+        ))
+        .unwrap();
+        let anchor_new = compute_signer_anchor_from_chain_pem(include_bytes!(
+            "../../../crypto/test/eku/signer_b.pem"
+        ))
+        .unwrap();
+        assert_eq!(
+            anchor_old, anchor_new,
+            "rotated leaf keys under the same root+EKU must resolve to the \
+             same anchor, so attach_verified_peer_servtd_corim's decision \
+             never depends on which generation produced the peer's chain"
+        );
+
+        // A rotated-generation anchor that happens NOT to match this
+        // CoRIM sample's real signer (unrelated key material) still fails
+        // closed: rotation alone never grants acceptance, the anchor must
+        // genuinely match the CoRIM's own signer.
+        let tcb = include_bytes!("../../test/policy_v2/corim/tcb_mapping.cose");
+        let mut verified_after_rotation = base_verified_policy();
+        verified_after_rotation.signer_anchor = anchor_new;
+        assert!(verified_after_rotation
+            .attach_verified_peer_servtd_corim(tcb)
+            .is_err());
     }
 
     #[test]
