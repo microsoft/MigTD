@@ -6,18 +6,21 @@ repo_root="$(cd "$script_dir/../.." && pwd -P)"
 prune_script="$script_dir/prune-unused-linux-sgx.sh"
 test_root="$repo_root/target/prune-unused-linux-sgx-tests"
 
-unused_paths=(
-    "external/cbor"
-    "external/dcap_source/QuoteGeneration/pccs"
-    "external/dcap_source/QuoteVerification/QuoteVerificationService"
-    "external/dcap_source/external/jwt-cpp"
-    "external/dcap_source/external/wasm-micro-runtime"
-    "external/dnnl"
-    "external/ippcp_internal"
-    "external/openmp"
-    "external/protobuf"
-    "SampleCode/SampleAttestedTLS"
+# Read the paths under test from the prune script rather than restating them,
+# so a change there cannot leave the fixtures covering a different set.
+mapfile -t unused_paths < <(
+    sed -n '/^unused_paths=(/,/^)/p' "$prune_script" |
+        sed -n 's/^[[:space:]]*"\([^"]\+\)".*/\1/p'
 )
+if [[ ${#unused_paths[@]} -eq 0 ]]; then
+    echo "error: could not read unused_paths from $prune_script" >&2
+    exit 1
+fi
+
+# Fixtures that need one specific target. Any entry works, so take them from
+# the list to keep the test independent of the upstream directory layout.
+dirty_target="${unused_paths[0]}"
+nested_target_path="${unused_paths[1]}"
 
 cleanup() {
     rm -rf -- "$test_root"
@@ -68,7 +71,7 @@ mkdir -p "$test_root"
 
 dirty_fixture="$test_root/dirty-checkout"
 create_git_fixture "$dirty_fixture"
-echo dirty >> "$dirty_fixture/external/cbor/input.txt"
+echo dirty >> "$dirty_fixture/$dirty_target/input.txt"
 if run_prune --git-checkout "$dirty_fixture" >"$test_root/dirty.log" 2>&1; then
     echo "error: pruning accepted a dirty checkout" >&2
     exit 1
@@ -81,7 +84,7 @@ grep -q "contains local changes" "$test_root/dirty.log" || {
 
 untracked_fixture="$test_root/untracked-checkout"
 create_git_fixture "$untracked_fixture"
-echo untracked > "$untracked_fixture/external/cbor/untracked.txt"
+echo untracked > "$untracked_fixture/$dirty_target/untracked.txt"
 if run_prune --git-checkout "$untracked_fixture" >"$test_root/untracked.log" 2>&1; then
     echo "error: pruning accepted an untracked file" >&2
     exit 1
@@ -94,7 +97,7 @@ grep -q "contains local changes" "$test_root/untracked.log" || {
 
 nested_fixture="$test_root/nested-untracked-checkout"
 create_fixture "$nested_fixture"
-nested_target="$nested_fixture/external/dcap_source/QuoteVerification/QuoteVerificationService"
+nested_target="$nested_fixture/$nested_target_path"
 git -C "$nested_target" init -q
 git -C "$nested_target" config user.name "MigTD pruning test"
 git -C "$nested_target" config user.email "migtd-pruning-test@example.invalid"

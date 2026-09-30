@@ -47,17 +47,23 @@ esac
 # These trees are absent from the traced servtd_attest build inputs. Removing
 # them before compilation turns every build into a regression test for that
 # dependency boundary.
+#
+# Paths follow the sgx_2.30 layout, which moved the SDK and its external trees
+# into the nested sdk submodule. A path that stops matching the tree makes the
+# entry a silent no-op here, so the parent repository's verify-cgmanifest.sh
+# derives its exclusions from this list and reports anything that is neither
+# pruned nor registered.
 unused_paths=(
-    "external/cbor"
     "external/dcap_source/QuoteGeneration/pccs"
-    "external/dcap_source/QuoteVerification/QuoteVerificationService"
+    "external/dcap_source/external/gtest"
     "external/dcap_source/external/jwt-cpp"
     "external/dcap_source/external/wasm-micro-runtime"
-    "external/dnnl"
-    "external/ippcp_internal"
-    "external/openmp"
-    "external/protobuf"
-    "SampleCode/SampleAttestedTLS"
+    "external/dcap_source/tools/PoeTools"
+    "sdk/SampleCode/SampleAttestedTLS"
+    "sdk/external/cbor"
+    "sdk/external/ippcp_internal"
+    "sdk/external/openmp"
+    "sdk/external/protobuf"
 )
 
 for relative_path in "${unused_paths[@]}"; do
