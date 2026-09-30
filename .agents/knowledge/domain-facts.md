@@ -90,7 +90,7 @@ bypassed under which build feature.
 
 - `ATTEST_HEAP_SIZE` is currently **2 MiB**. It was bumped from 512 KiB after
   commit `3c44ea9` removed the `LOCAL_TCB_INFO` cache, raising per-migration
-  `verify_quote_integrity_ex` calls from 2 → 4 in TiP loopback; the 3rd call
+  `verify_quote_integrity_ex` calls from 2 → 4 in loopback migration; the 3rd call
   exhausted the old heap (#UD inside the C verifier).
 - The C verifier (`verify_quote_integrity_ex` from Intel DCAP `servtd_attest`)
   uses **SgxSSL libcrypto** internally — host-glibc-libcrypto repro tools

@@ -385,7 +385,7 @@ while [[ $# -gt 0 ]]; do
             echo "                               measurements into the signed tcb_mapping/policy."
             echo "  --measured-manifest FILE     Manifest used to measure --measured-image (default:"
             echo "                               config/Azure/servtd_info.json)"
-            echo "  --policy-svn SVN             Override policySvn before signing (TiP/release staging)"
+            echo "  --policy-svn SVN             Override policySvn before signing (test/release staging)"
             echo "  --tcb-mapping FILE           Previous authority-maintained mapping to extend"
             echo "                               (default: existing output, then config/Azure)"
             echo "  --revoke-tdinfo-hash HASH    Explicitly remove a historical tdinfo_hash"
