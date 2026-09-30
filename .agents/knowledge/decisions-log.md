@@ -3,7 +3,7 @@ type: Reference
 title: Engineering Decisions Log
 description: Concrete, non-obvious engineering decisions (feature/commit kept vs. dropped, and why) with commit SHAs and verification steps. Append-only; grows over time.
 tags: [decisions-log, living-document]
-timestamp: 2026-07-10T19:26:55+00:00
+timestamp: 2026-07-26T00:14:16+00:00
 ---
 
 # Engineering Decisions Log
@@ -53,9 +53,12 @@ timestamp: 2026-07-10T19:26:55+00:00
   `servtd_lookup_by_tdinfo_hash(init_tdinfo)` gate in migration or rebind.
   An older destination cannot be expected to list future MigTD releases or
   signer-key rotations; requiring that entry breaks bidirectional migration
-  between independently issued images. The final one-hash implementation
-  still verifies Init_TDINFO integrity against
-  `ServtdExt.init_servtd_info_hash` and checks its
-  MROWNER/MROWNERCONFIG continuity against that same peer's authenticated
-  current report. The authenticated **current** peer image is still resolved
-  through the peer's verified JSON TCB mapping or CoRIM for policy evaluation.
+  between independently issued images.
+
+- **Clarified the required one-hash init/current SVN check.** Removing the
+  destination-local allowlist does not remove the init-hash lookup. The
+  verifier must use the authenticated source's verified JSON mapping or CoRIM
+  to resolve both `ServtdExt.init_servtd_info_hash` and the source's current
+  report `tdinfo_hash`, then reject `init SVN > current SVN`. The current code
+  only performs the current-hash lookup and still uses transitional
+  Init_TDINFO `MROWNERCONFIG` continuity for the ordering check.
