@@ -31,6 +31,10 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain"
+      - "src/attestation/build.rs"
+      - "src/attestation/prune-unused-linux-sgx.sh"
+      - "src/attestation/test-prune-unused-linux-sgx.sh"
+      - "deps/linux-sgx"
 
 permissions:
   contents: read
@@ -68,6 +72,9 @@ jobs:
         # docker_build_igvm.sh local mode builds an already-prepared tree; the
         # actual IGVM build (clang/rust/nasm) happens inside the container.
         run: bash sh_script/preparation.sh
+
+      - name: Test linux-sgx pruning safety
+        run: bash src/attestation/test-prune-unused-linux-sgx.sh
 
       - name: Build Azure IGVM in the pinned container (run 1)
         run: ./sh_script/Azure/docker_build_igvm.sh -t build-igvm -o "$RUNNER_TEMP/out1"
