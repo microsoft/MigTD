@@ -3,7 +3,7 @@ type: Playbook
 title: Policy v2 Generation Workflow
 description: End-to-end tool chain for one-hash Policy v2 artifacts, JSON or CoRIM servTD endorsements, signer-anchor enrollment, and hash-stable updates.
 tags: [policy-v2, tools, signing, tcb-mapping]
-timestamp: 2026-07-26T00:14:16+00:00
+timestamp: 2026-08-25T22:12:55+00:00
 ---
 
 # Policy v2 Generation Workflow
@@ -47,9 +47,10 @@ At boot, MigTD:
 1. Resolves the signer anchor
    `A = SHA384(tag || H(rootDER) || leafEkuOidDER)` from a PEM chain or the
    direct anchor slot and extends `SHA384(A)` into RTMR1.
-2. Extends canonical `policyData` into RTMR2 after redacting the JSON TCB
-   mapping, its issuer chain, and optional TD Identity + issuer chain. A
-   CoRIM-only policy has no `servtdCollateral` and is measured as-is.
+2. Extends canonical `policyData` into RTMR2. JSON packaging redacts only the
+   TCB mapping and mapping issuer chain; JSON TD Identity and its issuer chain
+   remain measured. A CoRIM-only policy has no `servtdCollateral` and is
+   measured as-is.
 3. Verifies JSON/CoRIM signatures and binds their signer root+EKU to `A`.
 
 ## Updating mappings and rotating signer leaves
@@ -64,24 +65,34 @@ At boot, MigTD:
 - That comparison is against the **source peer's verified mapping**, not the
   destination's local mapping. This preserves reverse migration because an
   older destination does not need to predict future source releases.
-- Re-issuing a JSON mapping, CoRIM, or optional TD Identity is measurement
-  neutral because those bytes are outside RTMR2.
+- Re-issuing a JSON mapping or CoRIM is measurement-neutral. Re-issuing JSON
+  TD Identity or its issuer chain changes RTMR2 and requires a new
+  `tdinfo_hash` endorsement.
+- Images built with `use-mock-quote` need two current-release mapping entries:
+  the synthetic mock-report `tdinfo_hash` used by peer policy evaluation and
+  the final image `SERVTD_INFO_HASH` used by `SERVTD_EXT` continuity checks.
+  Generate measured-image policy collateral with
+  `build_azure_mock_test.sh --retain-mock-report-mapping`.
 - Rotating leaf or intermediate keys is measurement neutral only when the root
   and signer-anchor EKU are unchanged; the new chain must still validate
   and pass signer revocation checks.
 - When a CoRIM is enrolled it is the sole TCB lookup authority. Do not expect
   JSON fallback on a CoRIM miss.
+- MigTD has no trusted clock or persistent mapping-generation state. Mapping
+  publication order and rollback prevention remain release-authority and
+  deployment responsibilities; do not describe signed mapping replacement as
+  an independently enforced in-guest freshness guarantee.
 - After enrollment, recompute the image hash with `migtd-hash` and require it
   to equal the pre-enrollment value. A mismatch means measured policy content,
   root, or signer EKU changed.
 
 ## Implementation status
 
-The current runtime resolves the authenticated source's current report hash
-through its verified mapping, but does not yet resolve
-`ServtdExt.init_servtd_info_hash` for the ordering check. It still uses the
-transitional full Init_TDINFO `MROWNERCONFIG` comparison. Do not treat that
-transitional check as the completed one-hash design.
+The runtime enforces the completed design in both migration and rebinding:
+it resolves `ServtdExt.init_servtd_info_hash` and the authenticated source's
+current report hash through the source's verified mapping, fails closed on
+either miss, and rejects `init SVN > current SVN`. The legacy wire
+Init_TDINFO is ignored.
 
 ## Gotcha
 
@@ -90,3 +101,8 @@ Legacy scripts still use `config/templates/policy_v2_signed.json` and
 `servtdCollateral`, the 48-byte anchor file, and the signed `.cose` mapping.
 Do not mix the direct-anchor and PEM-chain inputs accidentally: the direct
 anchor takes precedence when both CFV slots are populated.
+
+GitHub `cargo image` matrix jobs are compile checks, not publishable release
+artifacts. A deployable image must go through either the release CoRIM
+generation/enrollment gates or a measured-image JSON mapping flow; never ship a
+matrix image with the static template mapping.
