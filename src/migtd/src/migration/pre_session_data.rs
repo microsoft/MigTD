@@ -203,6 +203,25 @@ pub(super) async fn receive_pre_session_data_packet<T: AsyncRead + AsyncWrite + 
     }
 
     let pre_session_data_payload_size = header.length as usize;
+
+    // T17: bound the VMM-supplied payload length before allocating.
+    // `header` is read from a VMM-controlled transport and `header.length`
+    // is a `u32`, so without this check a malicious VMM can request a
+    // ~4 GiB heap allocation. With `panic = "abort"`, the resulting
+    // `handle_alloc_error` permanently kills MigTD on every migration
+    // attempt. 1 MiB is well above any real policy/issuer-chain blob
+    // (production collateral JSON ≈ 200–500 KB; chain PEM ≈ 5–15 KB).
+    // See docs/threat_model/T17-presession-unbounded-alloc.md.
+    const MAX_PRE_SESSION_PAYLOAD_SIZE: usize = 1 * 1024 * 1024;
+    if pre_session_data_payload_size > MAX_PRE_SESSION_PAYLOAD_SIZE {
+        log::error!(
+            "receive_pre_session_data_packet: payload length {} exceeds max {}\n",
+            pre_session_data_payload_size,
+            MAX_PRE_SESSION_PAYLOAD_SIZE
+        );
+        return Err(MigrationResult::InvalidParameter);
+    }
+
     let mut pre_session_data_payload = vec![0u8; pre_session_data_payload_size];
     receive_pre_session_data(transport, &mut pre_session_data_payload)
         .await

@@ -74,7 +74,7 @@ fn dump_td_info_and_hash() {
     hasher.update(td_report.td_info.as_bytes());
 
     let hash = hasher.finalize();
-    debug!("TD Info Hash: {:x}\n", hash);
+    info!("TD Info Hash: {:x}\n", hash);
 }
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -140,7 +140,7 @@ pub fn runtime_main() {
     #[cfg(feature = "vmcall-raw")]
     {
         log::info!("log::max_level() = {}\n", log::max_level());
-        if log::max_level() >= Level::Debug {
+        if log::log_enabled!(Level::Info) {
             dump_td_info_and_hash();
         }
     }
@@ -292,19 +292,44 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
 
     let event_data = version.as_bytes();
 
-    // Measure and extend the migration policy to RTMR
+    // Per docs/tcb_mapping_redesign.md: RTMR2 is extended ONCE with the
+    // canonical bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
+    // removed. The redaction is what makes `servtdTcbMapping` updateable
+    // after the IGVM is published; every other `policyData` field — including
+    // `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
+    // `backwardPolicy`, `collaterals`, and the rest of `servtdCollateral`
+    // (with the signed `servtdIdentity` and both issuer chains) — is
+    // protected by virtue of being inside the canonical object bytes. The
+    // event-log entry's `tagged_event_data` payload stays small
+    // (`version.as_bytes()`) to keep CCEL bounded; the full canonical bytes
+    // are only fed into the digest.
+    //
+    // The buffer hashed here MUST be byte-identical to what
+    // `policy::v2::policy::check_policy_integrity` and `migtd-hash` (offline
+    // RTMR2 simulator) compute, otherwise valid peers fail event-log
+    // integrity verification.
+    let policy_data_bytes = match migtd::policy::extract_canonical_policy_data_bytes(policy) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            log::error!("Failed to extract canonical policyData bytes: {:?}\n", e);
+            panic_with_guest_crash_reg_report(
+                MigrationResult::InvalidPolicyError as u64,
+                b"Failed to extract canonical policyData bytes",
+            );
+        }
+    };
     let _ = event_log::write_tagged_event_log(
         event_log,
         MR_INDEX_POLICY,
-        policy,
-        TAGGED_EVENT_ID_POLICY,
+        &policy_data_bytes,
+        TAGGED_EVENT_ID_POLICY_DATA,
         event_data,
     )
     .map_err(|e| {
-        log::error!("Failed to log migration policy: {:?}\n", e);
+        log::error!("Failed to log policyData: {:?}\n", e);
         panic_with_guest_crash_reg_report(
             MigrationResult::InitializationError as u64,
-            b"Failed to log migration policy",
+            b"Failed to log policyData",
         );
     });
 }
@@ -323,11 +348,30 @@ fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
         }
     };
 
-    // Measure and extend the policy issuer chain to RTMR
+    // Per docs/tcb_mapping_redesign.md: RTMR1 is extended with the SHA384 of
+    // the *signer anchor* A, NOT the entire PEM blob. A is derived from the
+    // root CA DER and the leaf certificate's tbsCertificate.subject DER, with
+    // a domain-separation tag, so the value is stable across rotations of
+    // PEM whitespace/ordering and across reissuance of intermediates.
+    let signer_anchor =
+        match migtd::policy::compute_signer_anchor_from_chain_pem(policy_issuer_chain) {
+            Ok(a) => a,
+            Err(e) => {
+                log::error!("Failed to compute signer anchor: {:?}\n", e);
+                panic_with_guest_crash_reg_report(
+                    MigrationResult::InvalidPolicyError as u64,
+                    b"Failed to compute policy signer anchor",
+                );
+            }
+        };
+
+    // `write_tagged_event_log` hashes the supplied bytes (signer_anchor) and
+    // extends RTMR1 with that digest. The recorded event still carries the
+    // full PEM as `tagged_event_data` so a verifier can re-derive A.
     let _ = event_log::write_tagged_event_log(
         event_log,
         MR_INDEX_POLICY_ISSUER_CHAIN,
-        policy_issuer_chain,
+        &signer_anchor,
         TAGGED_EVENT_ID_POLICY_ISSUER_CHAIN,
         policy_issuer_chain,
     )

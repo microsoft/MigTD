@@ -189,6 +189,15 @@ pub enum EventName {
     MigTdPolicy,
     SgxRootKey,
     MigTdPolicySigner,
+    /// Single RTMR2 extend for v2 policy: canonical bytes of `policyData`
+    /// with `servtdCollateral.servtdTcbMapping` removed
+    /// (see `docs/tcb_mapping_redesign.md`). Tag ID
+    /// `TAGGED_EVENT_ID_POLICY_DATA = 0x9`. Replaces the prior six per-field
+    /// extends; protects every `policyData` field (including
+    /// `forwardPolicy` / `backwardPolicy` and the issuer chains) by
+    /// construction, while keeping `servtdTcbMapping` updateable
+    /// post-IGVM-build.
+    MigTdPolicyData,
     Unknown,
 }
 
@@ -201,6 +210,7 @@ impl From<&str> for EventName {
             "Digest.MigTdCoreSvn" => Self::MigTdCoreSvn,
             "Digest.MigTdPolicy" => Self::MigTdPolicy,
             "Digest.MigTdSgxRootKey" => Self::SgxRootKey,
+            "Digest.MigTdPolicyData" => Self::MigTdPolicyData,
             _ => Self::Unknown,
         }
     }
