@@ -10,21 +10,22 @@
 //!
 //! ## RTMR2 measurement scheme
 //!
-//! RTMR2 (`mr_index = 0x3`) is extended **once** with the canonical JSON bytes
-//! of `policyData` with `servtdCollateral.servtdTcbMapping` **and**
-//! `servtdCollateral.servtdTcbMappingIssuerChain` removed.
+//! RTMR2 (`mr_index = 0x3`) is extended **once** with canonical `policyData`.
+//! When `servtdCollateral` is present, its `servtdTcbMapping` and
+//! `servtdTcbMappingIssuerChain` fields are removed. CoRIM-only `policyData`
+//! omits `servtdCollateral` and is measured in full.
 //!
 //! | # | Field | Helper | Tag ID | EventName |
 //! |---|-------|--------|--------|-----------|
 //! | 1 | `policyData` (redacted: `servtdTcbMapping` + `servtdTcbMappingIssuerChain` omitted) | `extract_canonical_policy_data_bytes` | `0x9` | `MigTdPolicyData` |
 //!
-//! Two fields are excluded, for two different reasons:
+//! JSON packaging excludes two fields, for two different reasons:
 //! * `servtdCollateral.servtdTcbMapping` — must remain updateable after the
 //!   IGVM is published (re-signed by the issuer without re-releasing the
 //!   image); it also carries the circular `tdinfo_hash`.
-//! * `servtdCollateral.servtdTcbMappingIssuerChain` — already measured into
-//!   **RTMR1** (the signer anchor), so measuring it again here would be
-//!   redundant and would re-couple TCB-mapping-signer key rotation to
+//! * `servtdCollateral.servtdTcbMappingIssuerChain` — its root+EKU identity is
+//!   already bound by the **RTMR1 signer anchor**, so measuring the chain bytes
+//!   again here would re-couple TCB-mapping-signer key rotation to
 //!   `tdinfo_hash`.
 //!
 //! Every other field of `policyData` — including `version`, `id`, `policySvn`,
@@ -79,8 +80,9 @@ use serde_json::Value;
 
 use crate::PolicyError;
 
-/// Domain-separation tag for the RTMR1 signer anchor (per redesign §RTMR1
-/// signer-anchor formula). Bumped on any breaking change.
+/// Domain-separation tag for the RTMR1 signer anchor (see
+/// `doc/rtmr1_signer_anchor_proposal.md`, "Anchor formula"). Bumped on any
+/// breaking change.
 pub const SIGNER_ANCHOR_DOMAIN_TAG: &[u8] = b"MIGTD-RTMR1-ANCHOR-V1";
 
 /// Single byte separator (`0x00`) between domain tag, R, and the EKU OID.
@@ -197,9 +199,10 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
     Ok(policy_data)
 }
 
-/// Canonical JSON bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
-/// **and** `servtdCollateral.servtdTcbMappingIssuerChain` removed, INCLUDING
-/// the outer `{` / `}`.
+/// Canonical JSON bytes of `policyData`, INCLUDING the outer `{` / `}`.
+/// JSON packaging removes `servtdCollateral.servtdTcbMapping` and
+/// `servtdCollateral.servtdTcbMappingIssuerChain`; CoRIM-only `policyData`
+/// omits `servtdCollateral` and is measured in full.
 ///
 /// This is the single buffer extended into RTMR2 by the runtime and by
 /// `migtd-hash` (tag `TAGGED_EVENT_ID_POLICY_DATA = 0x9`, event name
@@ -209,14 +212,14 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 /// the canonical object bytes, so the measurement automatically protects future
 /// field additions without manual whitelist maintenance.
 ///
-/// Two fields are redacted:
+/// JSON packaging redacts two fields:
 /// * `servtdCollateral.servtdTcbMapping` (**strict** — its absence is an error)
 ///   because the release pipeline must re-issue (re-sign) the TCB mapping with
 ///   updated `svnMappings[]` entries without rebuilding the IGVM image, and it
 ///   carries the circular `tdinfo_hash`.
 /// * `servtdCollateral.servtdTcbMappingIssuerChain` (**non-strict** — removed
-///   if present) because it is already measured into RTMR1 (the signer anchor);
-///   measuring it again here would be redundant and would re-couple
+///   if present) because its root+EKU identity is bound by the RTMR1 signer
+///   anchor; measuring the chain bytes again here would re-couple
 ///   TCB-mapping-signer rotation to `tdinfo_hash`.
 ///
 /// Every other field — `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
@@ -227,19 +230,13 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 ///
 /// ## Strict redaction (schema-drift defense)
 ///
-/// The redaction is **structurally strict**: it requires
-/// `servtdCollateral` to be present as a JSON object, AND
-/// `servtdTcbMapping` to be one of its direct children. Any input that
-/// violates either condition (missing `servtdCollateral`, non-object
-/// `servtdCollateral`, or missing `servtdTcbMapping`) is rejected with
-/// `PolicyError::InvalidPolicy`. A silent no-op on a malformed shape
-/// would let a future schema change (e.g. moving `servtdTcbMapping`
-/// under a new wrapper, making `servtdCollateral` optional, or
-/// type-confusing it to null/string/array) silently land the mapping
-/// bytes — or zero redaction at all — in the RTMR2 extend,
-/// re-introducing the circular dependency this scheme exists to break.
-/// The runtime extender already panics on extraction failure, so the
-/// stricter error path is fail-closed.
+/// A missing `servtdCollateral` selects the CoRIM-only form: no JSON
+/// endorsement bytes need redaction, so all of `policyData` is measured.
+/// When `servtdCollateral` is present, redaction is **structurally strict**:
+/// it must be an object with `servtdTcbMapping` as a direct child. A malformed
+/// object or missing mapping is rejected with `PolicyError::InvalidPolicy`.
+/// This prevents schema drift from silently moving mapping bytes into RTMR2
+/// and re-introducing the circular dependency.
 pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
     let mut policy_data = parse_policy_data(policy_input)?;
 
@@ -255,10 +252,10 @@ pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8
                 return Err(PolicyError::InvalidPolicy);
             }
 
-            // Also redact `servtdTcbMappingIssuerChain`: it is already measured
-            // into RTMR1 (the signer anchor), so measuring it again here would
-            // be redundant AND would re-couple leaf/intermediate-CA rotation of
-            // the TCB-mapping signer to `tdinfo_hash`.
+            // Also redact `servtdTcbMappingIssuerChain`: its root+EKU identity
+            // is bound by the RTMR1 signer anchor, so measuring the chain bytes
+            // again would re-couple leaf/intermediate-CA rotation to
+            // `tdinfo_hash`.
             //
             // Non-strict (remove if present): the security binding does not rest
             // on this redaction: `RawPolicyData::verify` separately requires the

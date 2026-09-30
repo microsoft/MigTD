@@ -54,11 +54,10 @@ pub enum PolicyError {
     QuoteGeneration,
     GetTdxReport,
     PeerCertChainValidation,
-    /// The `servtdTcbMappingIssuerChain` does not hash to the RTMR1 signer
-    /// anchor derived from the CFV policy issuer chain. Because that chain is
-    /// redacted from the RTMR2 measurement, this binding is what keeps it
-    /// measured (via RTMR1); a mismatch means the mapping signer is not the
-    /// measured root-of-trust.
+    /// The `servtdTcbMappingIssuerChain` does not resolve to the RTMR1 signer
+    /// anchor enrolled directly or derived from the CFV policy issuer chain.
+    /// Because the chain bytes are redacted from RTMR2, this root+EKU binding
+    /// ensures the mapping signer matches the measured root of trust.
     SignerAnchorMismatch,
     /// A certificate in the servtd signer chain (TCB mapping or identity) is
     /// listed in the authoritative signer CRL (`servtdCrl`), or that CRL
@@ -199,12 +198,13 @@ pub enum EventName {
     MigTdPolicy,
     SgxRootKey,
     MigTdPolicySigner,
-    /// Single RTMR2 extend for v2 policy: canonical bytes of `policyData`
-    /// with `servtdCollateral.servtdTcbMapping` removed
+    /// Single RTMR2 extend for v2 policy: canonical bytes of `policyData`.
+    /// JSON packaging removes the TCB mapping and mapping issuer chain;
+    /// CoRIM-only policyData is measured in full
     /// (see `doc/tcb_mapping_design_proposal.md`). Tag ID
     /// `TAGGED_EVENT_ID_POLICY_DATA = 0x9`. Replaces the prior six per-field
-    /// extends; protects every `policyData` field (including
-    /// `forwardPolicy` / `backwardPolicy` and the issuer chains) by
+    /// extends; protects every retained `policyData` field (including
+    /// `forwardPolicy` / `backwardPolicy` and the identity issuer chain) by
     /// construction, while keeping `servtdTcbMapping` updateable
     /// post-IGVM-build.
     MigTdPolicyData,

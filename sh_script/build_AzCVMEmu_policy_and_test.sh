@@ -982,9 +982,9 @@ echo
 # Step 11: Copying Certificate Chains to output directory
 #
 echo -e "${BLUE}=== Step 11: Copying Certificate Chains ===${NC}"
-# The CFV MIGTD_POLICY_ISSUER_CHAIN slot now carries the **TCB-mapping** issuer
-# chain (per doc/tcb_mapping_design_proposal.md: "RTMR1 = TCBMapping issuer cert
-# chain"). RTMR1 measures its signer anchor and RawPolicyData::verify() binds
+# The CFV MIGTD_POLICY_ISSUER_CHAIN slot carries the **TCB-mapping** issuer
+# chain. RTMR1 measures the root+leaf-EKU signer anchor derived from that chain,
+# and RawPolicyData::verify() binds
 # the embedded servtdTcbMappingIssuerChain to that same anchor, so the CFV chain
 # and the embedded mapping chain MUST share root + leaf signer EKU. The old
 # policy_signing family only signed the (now-removed) outer policy signature and

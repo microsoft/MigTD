@@ -3,12 +3,14 @@ type: Reference
 title: MigTD Boot Measurements — Who Measures What, When, and How
 description: Mechanics of how each TDX measurement register (MRTD, RTMR0-3) is populated during a MigTD launch, with file-line citations.
 tags: [attestation, tdx, measurements, mrtd, rtmr]
-timestamp: 2026-07-22T22:32:31+00:00
+timestamp: 2026-08-25T22:12:55+00:00
 ---
 
 # MigTD Boot Measurements — Who Measures What, When, and How
 
-*Companion summary to `docs/One_Hash_Endorsement.md`. Focuses on the
+*Companion summary to
+[doc/tcb_mapping_design_proposal.md](../../doc/tcb_mapping_design_proposal.md).
+Focuses on the
 **mechanics** of how each TDX measurement register gets populated for a
 MigTD launch, with file-line citations. The "what the values mean for
 attestation" question is covered in the One-Hash doc.*
@@ -27,14 +29,14 @@ attestation" question is covered in the One-Hash doc.*
 | **MRTD** | td-shim BFV pages **+** MigTD payload pages **+** GPA layout of every region | IGVM loader (host) / TDX module | TD launch, **before any TD code runs** | `TDH.MEM.PAGE.ADD` (all pages) + `TDH.MR.EXTEND` (pages without `unmeasured` flag); sealed by `TDH.MR.FINALIZE` |
 | **RTMR0** | `EV_SEPARATOR` = `SHA384(0x00000000)` extended once from zero | td-shim | Inside `boot_builtin_payload`, just before jumping to MigTD entry | `tdcall_extend_rtmr(rtmr_index=0)` |
 | **RTMR1** | `EV_SEPARATOR`, then the digest of signer anchor `A` (root fingerprint + enrolled signer-purpose EKU) | td-shim (separator) → MigTD (anchor) | td-shim runtime, then MigTD `do_measurements()` | `tdcall_extend_rtmr(rtmr_index=1)` |
-| **RTMR2** | **One extend**: canonical `policyData` with the JSON TCB mapping, its issuer chain, and optional TD Identity + issuer chain redacted; a CoRIM-only policy has no `servtdCollateral` to redact | MigTD | MigTD `do_measurements()`, before any migration handling | `tdcall_extend_rtmr(rtmr_index=2)` |
+| **RTMR2** | **One extend**: canonical `policyData`; JSON packaging redacts only the TCB mapping and mapping issuer chain, while CoRIM-only policyData is measured in full | MigTD | MigTD `do_measurements()`, before any migration handling | `tdcall_extend_rtmr(rtmr_index=2)` |
 | **RTMR3** | Unused (always zero) in production builds | — | — | — |
 
 Test/debug variant: when `test_disable_ra_and_accept_all` is on,
 `do_measurements()` short-circuits and extends **only**
 `TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT` into RTMR2; no policy / issuer
-chain measurements are made. (`src/migtd/src/bin/migtd/main.rs:155-158,
-183-186`)
+chain measurements are made. See `do_measurements()` in
+`src/migtd/src/bin/migtd/main.rs`.
 
 ---
 
@@ -237,20 +239,18 @@ uses leaf Subject Name as signer identity.
 ### policy_v2 build (current default)
 
 **One extension** over canonical `policyData`. For the JSON-collateral path,
-the extractor removes:
+the extractor removes only:
 
 - `servtdCollateral.servtdTcbMapping` (strictly required when
   `servtdCollateral` is present),
-- `servtdTcbMappingIssuerChain`,
-- optional `servtdIdentity`, and
-- optional `servtdIdentityIssuerChain`.
+- `servtdTcbMappingIssuerChain`.
 
-The mapping and optional identity can therefore be re-issued without changing
-`tdinfo_hash`; their signer chains are separately bound to the RTMR1 anchor.
+The mapping and mapping-chain bytes can be re-issued without changing
+`tdinfo_hash`; the mapping signer chain must resolve to the RTMR1 anchor.
 Every other `policyData` field remains measured, including migration rules,
-platform collaterals, `policySvn`, servTD collateral version fields, and
-`servtdCrl`. A CoRIM-only policy omits `servtdCollateral`, so its entire
-`policyData` object is measured as-is.
+platform collaterals, `policySvn`, JSON `servtdIdentity` and its issuer chain,
+servTD collateral version fields, and `servtdCrl`. A CoRIM-only policy omits
+`servtdCollateral`, so its entire `policyData` object is measured as-is.
 
 | # | Bytes hashed | Tag ID constant | EventName |
 |---|--------------|-----------------|-----------|
@@ -282,7 +282,7 @@ event_log::write_tagged_event_log(
 );
 ```
 
-Why one redacted-policyData extend instead of either (a) a single
+Why one canonical-policyData extend instead of either (a) a single
 signed-blob hash or (b) per-field whitelist:
 
 - A signed-blob hash would re-introduce the original circularity (the
@@ -291,9 +291,9 @@ signed-blob hash or (b) per-field whitelist:
   reviewer discipline to remember to add every new `policyData` field to
   the measurement code path. The single-extend redacted scheme
   automatically binds every newly added field unless it is deliberately
-  added to the explicit redaction set. The mapping and identity issuer chains
-  are intentionally redacted from RTMR2 and must instead resolve to the same
-  RTMR1 anchor; a swapped root/EKU fails closed during policy verification.
+  added to the explicit redaction set. The mapping issuer chain is redacted
+  from RTMR2 and must resolve to the RTMR1 anchor; the identity issuer chain
+  remains measured.
 - The dummy policy embedded in the base IGVM's CFV pre-computes the same
   RTMR2 as the final enrolled policy as long as the canonical
   measured `policyData` agrees byte-for-byte after the same redaction helper.
@@ -307,12 +307,12 @@ pipeline's `tdinfo_hash` matches the runtime RTMR2 exactly.
 ### Legacy `not(policy_v2)` build
 
 Two extensions in order: `policy` then `root_ca`
-(`MigTD/src/migtd/src/bin/migtd/main.rs:329-348`,
+(`get_policy_and_measure()` in `src/migtd/src/bin/migtd/main.rs`;
 `MR_INDEX_ROOT_CA = 0x3` → RTMR2). Not used in current production.
 
 ### Test mode
 
-`measure_test_feature()` (`MigTD/src/migtd/src/bin/migtd/main.rs:194-210`)
+`measure_test_feature()` in `src/migtd/src/bin/migtd/main.rs`
 extends RTMR2 (`MR_INDEX_TEST_FEATURE = 0x3`) with the literal bytes
 `b"test_disable_ra_and_accept_all"` and returns early, replacing the
 normal policy / signer-anchor measurements. **Only present when the
@@ -375,8 +375,9 @@ rtmr3  = 0                                                       [unused]
 
 ## 6. Why this matters for endorsement
 
-(See `docs/One_Hash_Endorsement.md` for the full story; this is the
-one-paragraph summary.)
+(See
+[doc/tcb_mapping_design_proposal.md](../../doc/tcb_mapping_design_proposal.md)
+for the full story; this is the one-paragraph summary.)
 
 - The JSON TCB mapping and signed CoRIM both map the complete 48-byte
   `tdinfo_hash` / `SERVTD_INFO_HASH` to SVN. That hash is

@@ -294,13 +294,12 @@ fn get_policy_and_measure(event_log: &mut [u8]) {
     let event_data = version.as_bytes();
 
     // Per doc/tcb_mapping_design_proposal.md: RTMR2 is extended ONCE with the
-    // canonical bytes of `policyData` with `servtdCollateral.servtdTcbMapping`
-    // removed. The redaction is what makes `servtdTcbMapping` updateable
-    // after the IGVM is published; every other `policyData` field — including
-    // `version`, `id`, `policySvn`, `policy`, `forwardPolicy`,
-    // `backwardPolicy`, `collaterals`, and the rest of `servtdCollateral`
-    // (with the signed `servtdIdentity` and both issuer chains) — is
-    // protected by virtue of being inside the canonical object bytes. The
+    // canonical bytes of `policyData`. For JSON collateral, only
+    // `servtdCollateral.servtdTcbMapping` and its issuer chain are removed.
+    // The redaction makes the mapping updateable after the IGVM is published;
+    // every other `policyData` field — including the signed `servtdIdentity`
+    // and its issuer chain — is protected by the canonical object bytes.
+    // CoRIM-only policyData omits `servtdCollateral` and is measured in full. The
     // event-log entry's `tagged_event_data` payload stays small
     // (`version.as_bytes()`) to keep CCEL bounded; the full canonical bytes
     // are only fed into the digest.
