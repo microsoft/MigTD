@@ -76,8 +76,7 @@ TCP port 8001, pins to `taskset -c 0`, and writes a shared `target/release/migtd
 artefact.
 
 See [AzCVMEmu build & run](azcvmemu-build-and-run.md) for feature-flag details
-and [integration testing](integration-testing.md) for the QEMU/vsock and Azure
-TiP test layers.
+and [integration testing](integration-testing.md) for the QEMU/vsock test layer.
 
 ## Quick checklist before "I'm done"
 

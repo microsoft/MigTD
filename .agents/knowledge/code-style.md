@@ -28,7 +28,7 @@ timestamp: 2026-07-10T19:26:55+00:00
   - INFO level should be sparse.
   - **Never dump full quotes / certs / large blobs at INFO/DEBUG.** Log
     first 8 bytes + last 8 bytes + length. Excessive quote dump has caused
-    multi-second stalls on TiP.
+    multi-second stalls during real-hardware migration tests.
   - When adding diagnostic logs, gate behind explicit verbosity OR commit
     them as a clearly-named debug/diag commit that can be dropped later.
 - **Don't fix code that "looks redundant" without proving it.** Canonical
