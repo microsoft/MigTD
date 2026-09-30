@@ -18,14 +18,28 @@ use td_payload::arch::idt::InterruptStack;
 use td_payload::mm::shared::SharedMemory;
 use tdx_tdcall::tdx;
 
-pub(crate) const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 16;
+/// Migration data-channel buffer size (send and receive) used for a single
+/// `Service.MigTD.Send` / `Service.MigTD.Receive` VMCALL.
+///
+/// The GHCI spec only requires a compliant VMM to support *at least* a 64KB
+/// buffer (`0x1000 * 16`), which is the portable floor used upstream. The
+/// Azure host provisions a larger buffer — 1MB by default and never below
+/// 512KB — so this Azure build raises the value to 512KB. That lets the
+/// policy_v2 pre-session blob (signed policy + issuer chain, ~180KB) ride in
+/// a single VMCALL instead of several 64KB round-trips.
+///
+/// Constraints: this MUST NOT exceed the smallest send/receive buffer the
+/// host guarantees (512KB on Azure), both migration peers must use the same
+/// value, and one receive buffer of this size must fit in the shared-memory
+/// pool (`migtd::SHARED_MEMORY_SIZE`, 1.75MB).
+pub(crate) const MAX_VMCALL_RAW_STREAM_MTU: usize = 0x1000 * 128;
 /// GHCI 1.5 buffer header overhead (8-byte status + 4-byte length) prepended
 /// by `vmcall_raw_transport_enqueue` to each VMCALL payload.
 pub(crate) const VMCALL_RAW_GHCI_HEADER_LEN: usize = 12;
-/// Largest payload that can ride in a single `Service.MigTD.Send` VMCALL.
-/// The VMM-side buffer for the migration data channel matches the MTU the
-/// receive side advertises; sending more than this in one VMCALL fails with
-/// TDX_VMCALL_STATUS != SUCCESS.
+/// Largest payload that can ride in a single `Service.MigTD.Send` VMCALL: the
+/// buffer size minus the GHCI header. The send path chunks to this so a write
+/// never exceeds the host buffer (exceeding it fails with
+/// TDX_VMCALL_STATUS != SUCCESS).
 pub(crate) const VMCALL_RAW_SEND_PAYLOAD_MTU: usize =
     MAX_VMCALL_RAW_STREAM_MTU - VMCALL_RAW_GHCI_HEADER_LEN;
 const VMCALL_VECTOR: u8 = 0x52;
@@ -202,5 +216,24 @@ async fn vmcall_service_migtd_receive(
 fn vmcall_raw_intr_notification(_: &mut InterruptStack) {
     for (_key, flag) in VMCALL_MIG_CONTEXT_FLAGS.lock().iter() {
         flag.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_chunk_plus_header_exactly_fills_receive_buffer() {
+        // A single send chunk plus the GHCI header must fit in exactly one
+        // peer receive buffer; otherwise a chunked send could overflow the
+        // receiver's fixed MTU-sized buffer (which would truncate the packet).
+        assert_eq!(
+            VMCALL_RAW_SEND_PAYLOAD_MTU + VMCALL_RAW_GHCI_HEADER_LEN,
+            MAX_VMCALL_RAW_STREAM_MTU
+        );
+        // The receive buffer is allocated as a whole number of pages.
+        assert_eq!(MAX_VMCALL_RAW_STREAM_MTU % PAGE_SIZE, 0);
+        assert!(VMCALL_RAW_SEND_PAYLOAD_MTU > 0);
     }
 }
