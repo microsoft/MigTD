@@ -67,8 +67,6 @@ origin   https://github.com/<personal>/MigTD.git   # personal fork (push target)
   that commit's diff before re-implementing.
 - **Resume from a previous session checkpoint**: the session_store DB has
   `checkpoints` keyed by session title — search there.
-- **TiP logs come from Windows**: paths like `C:\Users\<user>\Downloads\…`
-  translate to `/mnt/c/Users/<user>/Downloads/…` under WSL.
 
 ## Issue / PR filing
 

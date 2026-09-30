@@ -2,8 +2,7 @@
 # ==============================================================================
 # One-shot MigTD build-environment setup for a fresh Debian/Ubuntu host.
 #
-# Installs everything needed to build MigTD IGVM images (including the Azure TiP
-# package built by sh_script/Azure/tip/build_tip_package.sh):
+# Installs everything needed to build MigTD IGVM images:
 #
 #   * System build toolchain + libraries via a SINGLE `sudo apt-get install`
 #     (C/C++ compilers, LLVM/clang, nasm, autotools, OCaml for the vendored
@@ -21,10 +20,10 @@
 #   ./sh_script/setup_build_env.sh --print-apt     # print the apt one-liner only
 #   ./sh_script/setup_build_env.sh -h | --help
 #
-# After running this once, a typical build is just:
+# After running this once, initialize the source tree:
 #   source "$HOME/.cargo/env"
 #   export CC=clang AR=llvm-ar
-#   ./sh_script/Azure/tip/build_tip_package.sh --os-root ... --hcstest-dir ...
+#   ./sh_script/preparation.sh
 # (On GCC >= 14, src/attestation/build.rs auto-demotes the legacy linux-sgx DCAP
 #  errors, so no manual CFLAGS override is needed.)
 # ==============================================================================
@@ -140,6 +139,5 @@ cat <<'EOF'
   # Initialize submodules + apply patches (first time only):
   git submodule update --init --recursive deps/td-shim deps/spdm-rs deps/linux-sgx
   ./sh_script/preparation.sh
-  # Then, e.g., the TiP package:
-  ./sh_script/Azure/tip/build_tip_package.sh --os-root <OS_ROOT> --hcstest-dir <HCSTEST_DIR> --fetch-collaterals
+  # Then run the build or test command for your target.
 EOF
