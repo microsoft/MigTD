@@ -59,6 +59,6 @@ timestamp: 2026-07-26T00:14:16+00:00
   destination-local allowlist does not remove the init-hash lookup. The
   verifier must use the authenticated source's verified JSON mapping or CoRIM
   to resolve both `ServtdExt.init_servtd_info_hash` and the source's current
-  report `tdinfo_hash`, then reject `init SVN > current SVN`. The current code
-  only performs the current-hash lookup and still uses transitional
-  Init_TDINFO `MROWNERCONFIG` continuity for the ordering check.
+  report `tdinfo_hash`, then reject `init SVN > current SVN`. This is now
+  enforced in both migration and rebinding; the legacy wire Init_TDINFO is
+  retained only for protocol compatibility and ignored.

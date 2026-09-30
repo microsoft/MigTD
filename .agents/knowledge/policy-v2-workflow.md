@@ -77,11 +77,11 @@ At boot, MigTD:
 
 ## Implementation status
 
-The current runtime resolves the authenticated source's current report hash
-through its verified mapping, but does not yet resolve
-`ServtdExt.init_servtd_info_hash` for the ordering check. It still uses the
-transitional full Init_TDINFO `MROWNERCONFIG` comparison. Do not treat that
-transitional check as the completed one-hash design.
+The runtime enforces the completed design in both migration and rebinding:
+it resolves `ServtdExt.init_servtd_info_hash` and the authenticated source's
+current report hash through the source's verified mapping, fails closed on
+either miss, and rejects `init SVN > current SVN`. The legacy wire
+Init_TDINFO is ignored.
 
 ## Gotcha
 

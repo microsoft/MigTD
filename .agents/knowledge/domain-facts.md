@@ -33,9 +33,8 @@ timestamp: 2026-07-26T00:14:16+00:00
   `ServtdExt.init_servtd_info_hash` to init SVN, map the source's authenticated
   current-report `tdinfo_hash` to current SVN, and require
   `init SVN <= current SVN`. Do not query the destination's local mapping.
-- Current implementation gap: only the current source hash is mapped today.
-  Init/current ordering still comes from full Init_TDINFO
-  `MROWNERCONFIG` compared with the source report's `MROWNERCONFIG`.
+- Migration and rebinding both enforce this mapped-SVN ordering. A missing
+  init or current mapping fails closed; the legacy wire Init_TDINFO is ignored.
 
 ## Rebind vs Migration attestation — DIFFERENT verifiers
 

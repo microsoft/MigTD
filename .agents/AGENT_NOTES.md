@@ -49,9 +49,8 @@ leaf-Subject trust, or an outer policy-signature dependency.
 Init/current SVN ordering must use the authenticated source's verified
 one-hash mapping: resolve `ServtdExt.init_servtd_info_hash`, resolve the
 source's current report `tdinfo_hash`, and require `init SVN <= current SVN`.
-This is not a destination-local allowlist lookup. The current code has not
-fully completed this transition: it maps the current source hash but still
-derives init/current ordering from full Init_TDINFO `MROWNERCONFIG`.
+This is not a destination-local allowlist lookup. Migration and rebinding
+both enforce this check; the legacy wire Init_TDINFO is ignored.
 
 ## Mandatory post-push CI monitoring
 
