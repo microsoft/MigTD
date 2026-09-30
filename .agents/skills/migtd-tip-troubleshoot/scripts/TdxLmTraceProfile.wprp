@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="MigTD">
+  <Profiles>
+    <EventCollector Id="TdxLmCollector" Name="TDX live migration">
+      <BufferSize Value="512" />
+      <Buffers Value="128" />
+    </EventCollector>
+
+    <EventProvider Id="Vmms" Name="4DDF50D0-75DE-4FBE-8F08-F8936638E7A1" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="Worker" Name="06C601B3-6957-4F8C-A15F-74875B24429D" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="VidWpp" Name="1111450B-DACC-40A3-84AB-F7DBA4A6E63A" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="VidTraceLogging" Name="5931D877-4860-4EE7-A95C-610A5F0D1407" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="Hypervisor" Name="6C5F119B-5B29-46A7-8E4A-282F8D935AE6" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="HypervisorDiagnostics" Name="F1C134A0-5523-5865-1AFF-B9F82E911CC3" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="WinHv" Name="D5927B1A-BC52-4D10-865A-7BF6A4DBFFFA" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="HypervisorEtw" Name="52FC89F8-995E-434C-A91E-199986449890" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="HypervisorEvents" Name="910C653D-A4EB-4719-B909-4588E3BAEC91" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="HyperVHcl" Name="DAA13987-7A63-5100-C6DB-A8701C0B29C4" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="HyperVHclKm" Name="6ADDD204-DF33-57C1-3793-F59543C0E590" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="GuestEmulationDevice" Name="42D1A745-54B2-5871-DB90-5F5804B1DC3B" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+    <EventProvider Id="GhciVDev" Name="AEFC8638-19A2-553A-06CB-C3984FFC7EE8" NonPagedMemory="true">
+      <Keywords><Keyword Value="0xFFFFFFFFFFFFFFFF" /></Keywords>
+    </EventProvider>
+
+    <Profile Id="TdxLm.Verbose.File" Name="TdxLm" Description="Focused TDX live migration trace" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <EventCollectorId Value="TdxLmCollector">
+          <EventProviders>
+            <EventProviderId Value="Vmms" />
+            <EventProviderId Value="Worker" />
+            <EventProviderId Value="VidWpp" />
+            <EventProviderId Value="VidTraceLogging" />
+            <EventProviderId Value="Hypervisor" />
+            <EventProviderId Value="HypervisorDiagnostics" />
+            <EventProviderId Value="WinHv" />
+            <EventProviderId Value="HypervisorEtw" />
+            <EventProviderId Value="HypervisorEvents" />
+            <EventProviderId Value="HyperVHcl" />
+            <EventProviderId Value="HyperVHclKm" />
+            <EventProviderId Value="GuestEmulationDevice" />
+            <EventProviderId Value="GhciVDev" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile Id="GhciVDev.Verbose.File" Name="GhciVDev" Description="Microsoft.Windows.HyperV.GhciVDev trace" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <EventCollectorId Value="TdxLmCollector">
+          <EventProviders>
+            <EventProviderId Value="GhciVDev" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>
