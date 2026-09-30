@@ -72,7 +72,6 @@ pub enum EmuMigRequest {
     },
     GetTDReport {
         request_id: u64,
-        reportdata: [u8; 64],
     },
     EnableLogArea {
         request_id: u64,
@@ -120,14 +119,9 @@ pub fn set_emulated_start_migration(
         log_max_level: 3,
     });
 
-    // Step 2: Queue GetTDReport with default reportdata
-    let mut reportdata = [0u8; 64];
-    reportdata[0..8].copy_from_slice(&request_id.to_le_bytes());
-    reportdata[8..23].copy_from_slice(b"MIGTD_MIGRATION"); // 15 bytes
-    reportdata[23] = 0; // Null terminator
+    // Step 2: Queue GetTDReport
     set_emulated_mig_request(EmuMigRequest::GetTDReport {
         request_id: get_report_request_id,
-        reportdata,
     });
 
     // Step 3: Queue the StartMigration request with original request_id
@@ -146,7 +140,7 @@ pub fn set_emulated_start_migration(
 /// Helper: Set a GetTDReport request
 /// Automatically queues EnableLogArea request first, then the report request
 /// Uses request_id for report, and request_id | 0x8000_0000_0000_0000 for EnableLogArea
-pub fn set_emulated_get_report_data(request_id: u64, reportdata: [u8; 64]) {
+pub fn set_emulated_get_td_report(request_id: u64) {
     // Use high-bit set for EnableLogArea to distinguish from main request
     let enable_log_request_id = request_id | 0x8000_0000_0000_0000;
 
@@ -157,10 +151,7 @@ pub fn set_emulated_get_report_data(request_id: u64, reportdata: [u8; 64]) {
     });
 
     // Then queue the GetTDReport request with original request_id
-    set_emulated_mig_request(EmuMigRequest::GetTDReport {
-        request_id,
-        reportdata,
-    });
+    set_emulated_mig_request(EmuMigRequest::GetTDReport { request_id });
 }
 
 /// Helper: Set an EnableLogArea request
@@ -569,7 +560,8 @@ pub fn tdvmcall_migtd_waitforrequest(
 
     const HEADER_LEN: usize = 12; // GHCI 1.5 header: 8-byte status + 4-byte length
     const START_MIGRATION_PAYLOAD_LEN: usize = 56; // MigtdMigrationInformation size
-    const REPORT_DATA_PAYLOAD_LEN: usize = 72; // ReportInfo size (8 + 64)
+    const GET_TD_REPORT_PAYLOAD_LEN: usize = 8; // ReportInfo size (request ID only)
+    const MIGTD_DATA_PAYLOAD_LEN: usize = 72; // MigtdDataInfo size (8 + 64)
     const ENABLE_LOG_AREA_PAYLOAD_LEN: usize = 16; // EnableLogAreaInfo size (8 + 1 + 7 reserved)
 
     // Take the first emulated request from the queue; if none, do not signal and let caller poll again
@@ -633,19 +625,16 @@ pub fn tdvmcall_migtd_waitforrequest(
                     migration_source
                 );
             }
-            EmuMigRequest::GetTDReport {
-                request_id,
-                reportdata,
-            } => {
+            EmuMigRequest::GetTDReport { request_id } => {
                 // DataStatusOperation::GetTDReport = 3
                 let status = 0x0000_0000_0000_0301u64; // byte[0]=1 (success), byte[1]=3 (GetTDReport)
-                let length = REPORT_DATA_PAYLOAD_LEN as u32;
+                let length = GET_TD_REPORT_PAYLOAD_LEN as u32;
 
-                if data_buffer.len() < HEADER_LEN + REPORT_DATA_PAYLOAD_LEN {
+                if data_buffer.len() < HEADER_LEN + GET_TD_REPORT_PAYLOAD_LEN {
                     error!(
                         "waitforrequest buffer too small for GetTDReport: have={} need={}",
                         data_buffer.len(),
-                        HEADER_LEN + REPORT_DATA_PAYLOAD_LEN
+                        HEADER_LEN + GET_TD_REPORT_PAYLOAD_LEN
                     );
                     return Err(TdVmcallError::Other);
                 }
@@ -654,16 +643,14 @@ pub fn tdvmcall_migtd_waitforrequest(
                 data_buffer[8..12].copy_from_slice(&length.to_le_bytes());
 
                 // Fill ReportInfo payload
-                let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + REPORT_DATA_PAYLOAD_LEN];
+                let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + GET_TD_REPORT_PAYLOAD_LEN];
 
                 // mig_request_id
                 payload[0..8].copy_from_slice(&request_id.to_le_bytes());
-                // reportdata [u8; 64]
-                payload[8..72].copy_from_slice(&reportdata);
 
                 log::info!(
-                    "tdvmcall_migtd_waitforrequest: GetTDReport request_id={} reportdata[0..8]={:02x?}",
-                    request_id, &reportdata[0..8]
+                    "tdvmcall_migtd_waitforrequest: GetTDReport request_id={}",
+                    request_id
                 );
             }
             EmuMigRequest::EnableLogArea {
@@ -774,13 +761,13 @@ pub fn tdvmcall_migtd_waitforrequest(
             } => {
                 // DataStatusOperation::GetMigtdData = 5
                 let status = 0x0000_0000_0000_0501u64; // byte[0]=1 (success), byte[1]=5 (GetMigtdData)
-                let length = REPORT_DATA_PAYLOAD_LEN as u32;
+                let length = MIGTD_DATA_PAYLOAD_LEN as u32;
 
-                if data_buffer.len() < HEADER_LEN + REPORT_DATA_PAYLOAD_LEN {
+                if data_buffer.len() < HEADER_LEN + MIGTD_DATA_PAYLOAD_LEN {
                     error!(
                         "waitforrequest buffer too small for GetMigtdData: have={} need={}",
                         data_buffer.len(),
-                        HEADER_LEN + REPORT_DATA_PAYLOAD_LEN
+                        HEADER_LEN + MIGTD_DATA_PAYLOAD_LEN
                     );
                     return Err(TdVmcallError::Other);
                 }
@@ -788,7 +775,7 @@ pub fn tdvmcall_migtd_waitforrequest(
                 data_buffer[0..8].copy_from_slice(&status.to_le_bytes());
                 data_buffer[8..12].copy_from_slice(&length.to_le_bytes());
 
-                let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + REPORT_DATA_PAYLOAD_LEN];
+                let payload = &mut data_buffer[HEADER_LEN..HEADER_LEN + MIGTD_DATA_PAYLOAD_LEN];
 
                 // mig_request_id
                 payload[0..8].copy_from_slice(&request_id.to_le_bytes());
