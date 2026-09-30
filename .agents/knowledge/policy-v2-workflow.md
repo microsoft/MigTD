@@ -3,7 +3,7 @@ type: Playbook
 title: Policy v2 Generation Workflow
 description: End-to-end tool chain for one-hash Policy v2 artifacts, JSON or CoRIM servTD endorsements, signer-anchor enrollment, and hash-stable updates.
 tags: [policy-v2, tools, signing, tcb-mapping]
-timestamp: 2026-07-22T22:32:31+00:00
+timestamp: 2026-07-26T00:14:16+00:00
 ---
 
 # Policy v2 Generation Workflow
@@ -56,6 +56,14 @@ At boot, MigTD:
 
 - `svnMappings[].tdMeasurements.tdinfo_hash` and CoRIM digest selectors use
   the complete 48-byte `SERVTD_INFO_HASH`, not individual MRTD/RTMR fields.
+- A deployable mapping must cover both current MigTD releases and any initial
+  MigTD hashes that can appear in target-TD `SERVTD_EXT` state. During
+  migration/rebinding, the verifier uses the authenticated source's mapping
+  to resolve both `init_servtd_info_hash` and the source's current report
+  hash, then requires `init SVN <= current SVN`.
+- That comparison is against the **source peer's verified mapping**, not the
+  destination's local mapping. This preserves reverse migration because an
+  older destination does not need to predict future source releases.
 - Re-issuing a JSON mapping, CoRIM, or optional TD Identity is measurement
   neutral because those bytes are outside RTMR2.
 - Rotating leaf or intermediate keys is measurement neutral only when the root
@@ -66,6 +74,14 @@ At boot, MigTD:
 - After enrollment, recompute the image hash with `migtd-hash` and require it
   to equal the pre-enrollment value. A mismatch means measured policy content,
   root, or signer EKU changed.
+
+## Implementation status
+
+The current runtime resolves the authenticated source's current report hash
+through its verified mapping, but does not yet resolve
+`ServtdExt.init_servtd_info_hash` for the ordering check. It still uses the
+transitional full Init_TDINFO `MROWNERCONFIG` comparison. Do not treat that
+transitional check as the completed one-hash design.
 
 ## Gotcha
 

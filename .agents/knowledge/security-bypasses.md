@@ -3,7 +3,7 @@ type: Reference
 title: MigTD Security Bypasses — Feature Comparison
 description: Catalogue of verification checks bypassed under AzCVMEmu/test_mock_report/use-mock-quote build features, and why each is bypassed.
 tags: [security, build-features, attestation, spdm, tls]
-timestamp: 2026-07-22T22:32:31+00:00
+timestamp: 2026-07-26T00:14:16+00:00
 ---
 
 # MigTD Security Bypasses — Feature Comparison
@@ -63,6 +63,13 @@ development/test build features, and explains **why** each is bypassed.
 > is **enforced in all build modes** (the AzCVMEmu emulation populates the
 > SERVTD_EXT fields so the hash matches). Only the cross-check is TEST MODE.
 
+> **One-hash design status:** the intended ordering check does not need full
+> Init_TDINFO. It resolves `ServtdExt.init_servtd_info_hash` and the
+> authenticated source's current `tdinfo_hash` through the source's verified
+> mapping and requires `init SVN <= current SVN`. That mapping-based init
+> lookup is not implemented yet, so the table above describes only the
+> transitional MROWNERCONFIG check currently present in code.
+
 ---
 
 ## TLS Path (non-SPDM)
@@ -92,6 +99,6 @@ All of the above, **plus**:
 
 `use-mock-quote` bypasses quote-derived migration REPORTDATA and migration
 Init_TDINFO checks. There is no destination-local Init_TDINFO mapping
-allowlist in the one-hash design; current peer TCB metadata is resolved from
-the peer's authenticated `tdinfo_hash` through its verified JSON mapping or
-CoRIM.
+allowlist in the one-hash design. Both init and current SVNs should be
+resolved through the authenticated source peer's verified JSON mapping or
+CoRIM; today only the current peer lookup is wired.
