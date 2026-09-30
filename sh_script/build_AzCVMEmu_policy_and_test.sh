@@ -409,6 +409,8 @@ MOCK_QUOTE_FILE=""
 FETCH_COLLATERALS=false
 AZURE_REGION="useast"
 EXTRA_FEATURES=""
+REVOKE_TDINFO_HASHES=()
+TCB_MAPPING_INPUT=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -448,6 +450,14 @@ while [[ $# -gt 0 ]]; do
             EXTRA_FEATURES="$2"
             shift 2
             ;;
+        --tcb-mapping)
+            TCB_MAPPING_INPUT="$2"
+            shift 2
+            ;;
+        --revoke-tdinfo-hash)
+            REVOKE_TDINFO_HASHES+=("$2")
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo
@@ -460,6 +470,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --azure-region REGION        Azure region for THIM (useast, westus, northeurope)"
             echo "                               (default: useast, applies with --fetch-collaterals)"
             echo "  --extra-features FEATURES    Extra cargo features to add (e.g., 'igvm-attest')"
+            echo "  --tcb-mapping FILE           Previous authority-maintained mapping to extend"
+            echo "                               (default: existing output, then config/AzCVMEmu)"
+            echo "  --revoke-tdinfo-hash HASH    Explicitly remove a historical tdinfo_hash"
+            echo "                               from the cumulative mapping (repeatable)"
             echo "  -h, --help                   Show this help message"
             echo
             echo "Examples:"
@@ -508,14 +522,27 @@ echo "  Fetch collaterals: $FETCH_COLLATERALS"
 if [ "$FETCH_COLLATERALS" = true ]; then
     echo "  Azure region: $AZURE_REGION"
 fi
+if [ "${#REVOKE_TDINFO_HASHES[@]}" -gt 0 ]; then
+    echo "  Explicit mapping revocations: ${REVOKE_TDINFO_HASHES[*]}"
+fi
 echo
 
 # Ensure output directory exists
 mkdir -p "$OUTPUT_DIR"
 mkdir -p "$CERT_DIR"
 
+if [[ -n "$TCB_MAPPING_INPUT" && "$TCB_MAPPING_INPUT" != /* ]]; then
+    TCB_MAPPING_INPUT="$PROJECT_ROOT/$TCB_MAPPING_INPUT"
+fi
+TCB_MAPPING_SOURCE="$TCB_MAPPING_TEMPLATE"
+if [ -n "$TCB_MAPPING_INPUT" ]; then
+    TCB_MAPPING_SOURCE="$TCB_MAPPING_INPUT"
+elif [ -f "$OUTPUT_DIR/tcb_mapping.json" ]; then
+    TCB_MAPPING_SOURCE="$OUTPUT_DIR/tcb_mapping.json"
+fi
+
 # Verify input files exist
-for file in "$POLICY_DATA_RAW" "$TD_IDENTITY_TEMPLATE" "$TCB_MAPPING_TEMPLATE"; do
+for file in "$POLICY_DATA_RAW" "$TD_IDENTITY_TEMPLATE" "$TCB_MAPPING_SOURCE"; do
     if [ ! -f "$file" ]; then
         echo -e "${RED}Error: Required input file not found: $file${NC}" >&2
         exit 1
@@ -740,31 +767,35 @@ echo -e "${GREEN}✓ TD Identity updated: $TD_IDENTITY_UPDATED${NC}"
 echo
 
 #
-# Step 4: Update tcb_mapping.json with the v2 tdinfo_hash
+# Step 4: Update the cumulative tcb_mapping.json with the v2 tdinfo_hash
 # Make sure no ending newline is added (important for signing)
 #
-# Per doc/tcb_mapping_design_proposal.md, the v2 schema uses a single
-# `tdinfo_hash = SHA384(SHA384(unmasked_TDINFO_512) || u16_LE(0) || u64_LE(0))`.
-# We delegate the hash computation to the `migtd-hash --from-report` mode so
-# the math stays in one place (tools/migtd-hash/src/lib.rs::calculate_tdinfo_hash)
-# and the AzCVMEmu mock-report flow is guaranteed byte-identical to the
-# release pipeline.
+# The Rust helper retains all supported historical hashes, replaces the
+# current hash by key, rejects conflicting duplicates, applies only explicit
+# revocations, and emits deterministic compact JSON for signing. The
+# --from-report path remains byte-identical to the release pipeline.
 #
-echo -e "${BLUE}=== Step 4: Updating TCB Mapping Template ===${NC}"
+echo -e "${BLUE}=== Step 4: Updating Cumulative TCB Mapping ===${NC}"
 
 TDINFO_HASH_FILE="$TEMP_DIR/tdinfo_hash.hex"
+MAPPING_UPDATE_ARGS=(
+    --update-tcb-mapping "$TCB_MAPPING_SOURCE"
+    --output-tcb-mapping "$TCB_MAPPING_UPDATED"
+    --mapping-isvsvn "$ISVSVN"
+)
+for hash in "${REVOKE_TDINFO_HASHES[@]}"; do
+    MAPPING_UPDATE_ARGS+=(--revoke-tdinfo-hash "$hash")
+done
 "$TOOLS_DIR/migtd-hash" \
     --policy-v2 \
     --from-report "$REPORT_DATA_FILE" \
-    --output-tdinfo-hash "$TDINFO_HASH_FILE"
+    --output-tdinfo-hash "$TDINFO_HASH_FILE" \
+    "${MAPPING_UPDATE_ARGS[@]}"
 # Uppercase to match the convention used by signed policies.
 TDINFO_HASH=$(tr 'a-z' 'A-Z' < "$TDINFO_HASH_FILE")
 
-jq -c ".svnMappings[0].tdMeasurements = {\"tdinfo_hash\": \"$TDINFO_HASH\"} | \
-.svnMappings[0].isvsvn = $ISVSVN" \
-"$TCB_MAPPING_TEMPLATE" | tr -d '\n' > "$TCB_MAPPING_UPDATED"
-
 echo -e "${GREEN}✓ TCB Mapping updated: $TCB_MAPPING_UPDATED${NC}"
+echo -e "  history source = $TCB_MAPPING_SOURCE"
 echo -e "  tdinfo_hash = $TDINFO_HASH"
 echo
 

@@ -113,17 +113,29 @@ cargo build
 popd
 ```
 
-### Generate new measurement with updated TCB mapping
+### Generate new measurement with cumulative TCB mapping
+
+Use the previous release's authority-maintained mapping signing payload as the
+history source. `config/templates/tcb_mapping_seed.json` is only a
+first-release seed.
+
 ```
 ./target/debug/migtd-hash --manifest config/servtd_info.json \
  --image target/release/migtd.bin \
  --policy-v2 \
- --update-tcb-mapping config/templates/tcb_mapping.json
+ --update-tcb-mapping release-N-1/tcb_mapping.json \
+ --output-tcb-mapping release-N/tcb_mapping.json \
+ --mapping-isvsvn <release-N-isvsvn>
 ```
+
+The updater preserves historical hashes, replaces the current hash by key,
+rejects conflicting duplicates, and sorts entries deterministically before
+signing. Remove an unsupported release only with the reviewed
+`--revoke-tdinfo-hash <hash>` operation.
 
 ### Resign policy with generated keys
 ```
-bash sh_script/build_policy_v2.sh [preprod/prod]
+bash sh_script/build_policy_v2.sh [preprod/prod] release-N/tcb_mapping.json
 ```
 ### Rebuild migtd with new policy
 ```

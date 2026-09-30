@@ -32,10 +32,35 @@ popd
   ./target/debug/migtd-hash --manifest config/servtd_info.json --image <migtd.bin> --verbose
   ```
 
-  - Calculate migtd SERVTD_INFO_HASH and update tcb_mapping.json (For policy v2)
+  - Calculate the current `tdinfo_hash` and add it to a cumulative policy-v2
+    TCB mapping:
   ```
-  ./target/debug/migtd-hash --manifest config/servtd_info.json --image <migtd.bin> --update-tcb-mapping <tcb_mapping.json> --policy-v2 --verbose
+  ./target/debug/migtd-hash \
+    --manifest config/servtd_info.json \
+    --image <migtd.bin> \
+    --policy-v2 \
+    --update-tcb-mapping <previous-release-tcb_mapping.json> \
+    --output-tcb-mapping <new-release-tcb_mapping.json> \
+    --mapping-isvsvn <svn> \
+    --verbose
   ```
+
+  Existing hashes are retained, the current hash is replaced by key, and
+  entries are sorted by uppercase hash for stable signing input. Conflicting
+  duplicate hashes are rejected. Use
+  `config/templates/tcb_mapping_seed.json` only when no prior release exists.
+
+  - Explicitly revoke a historical hash without measuring an image:
+  ```
+  ./target/debug/migtd-hash \
+    --policy-v2 \
+    --update-tcb-mapping <previous-release-tcb_mapping.json> \
+    --output-tcb-mapping <new-release-tcb_mapping.json> \
+    --revoke-tdinfo-hash <96-hex-character-hash>
+  ```
+
+  Revoking an unknown hash is an error. Omitting a historical entry from a new
+  release is not a supported removal mechanism.
 
   - Generate migtd SERVTD_HASH with debug infomation:
   ```
