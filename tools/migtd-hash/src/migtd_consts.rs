@@ -52,6 +52,17 @@ pub const MIGTD_POLICY_ISSUER_CHAIN_FFS_GUID: Guid = Guid::from_fields(
     &[0xD3, 0xEA, 0xB3, 0x9F, 0x8A, 0xEB],
 );
 
+/// FFS GUID of the 48-byte RTMR1 signer anchor (CoRIM-only enrollment form).
+/// Mirrors `migtd::config::MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID`.
+pub const MIGTD_SERVTD_SIGNER_ANCHOR_FFS_GUID: Guid = Guid::from_fields(
+    0x2B9D5A84,
+    0x6F3C,
+    0x4E71,
+    0x8A,
+    0x2D,
+    &[0x0C, 0x7E, 0x1F, 0x4B, 0x6A, 0x93],
+);
+
 /// Marker event written into the event log when MigTD is built with the
 /// `test_disable_ra_and_accept_all` feature.
 /// Mirrors `migtd::event_log::TEST_DISABLE_RA_AND_ACCEPT_ALL_EVENT`.

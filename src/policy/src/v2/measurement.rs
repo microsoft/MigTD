@@ -250,36 +250,34 @@ fn parse_policy_data(policy_input: &[u8]) -> Result<Value, PolicyError> {
 pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8>, PolicyError> {
     let mut policy_data = parse_policy_data(policy_input)?;
 
-    let coll = policy_data
-        .get_mut("servtdCollateral")
-        .and_then(|v| v.as_object_mut())
-        .ok_or(PolicyError::InvalidPolicy)?;
+    // Redact the servtd collateral sub-fields when a `servtdCollateral` object
+    // is present. A CoRIM-only policy omits `servtdCollateral` entirely; there
+    // is then nothing to redact and the whole `policyData` is measured as-is.
+    match policy_data.get_mut("servtdCollateral") {
+        None => {}
+        Some(value) => {
+            let coll = value.as_object_mut().ok_or(PolicyError::InvalidPolicy)?;
 
-    if coll.remove("servtdTcbMapping").is_none() {
-        return Err(PolicyError::InvalidPolicy);
+            if coll.remove("servtdTcbMapping").is_none() {
+                return Err(PolicyError::InvalidPolicy);
+            }
+
+            // Also redact `servtdTcbMappingIssuerChain`: it is already measured
+            // into RTMR1 (the signer anchor), so measuring it again here would
+            // be redundant AND would re-couple leaf/intermediate-CA rotation of
+            // the TCB-mapping signer to `tdinfo_hash`.
+            //
+            // Non-strict (remove if present): the security binding does not rest
+            // on this redaction: `RawPolicyData::verify` separately requires the
+            // chain that verifies `servtdTcbMapping` to hash to the RTMR1 signer
+            // anchor, so a swapped/absent chain fails closed there.
+            coll.remove("servtdTcbMappingIssuerChain");
+
+            // Redact the optional TD Identity and its issuer chain (non-strict).
+            coll.remove("servtdIdentity");
+            coll.remove("servtdIdentityIssuerChain");
+        }
     }
-
-    // Also redact `servtdTcbMappingIssuerChain`: it is already measured into
-    // RTMR1 (the signer anchor), so measuring it again here would be redundant
-    // AND would re-couple leaf/intermediate-CA rotation of the TCB-mapping
-    // signer to `tdinfo_hash`, defeating the rotation-stability the anchor
-    // exists to provide.
-    //
-    // Non-strict (remove if present): unlike `servtdTcbMapping` — whose
-    // presence is enforced because it carries the circular `tdinfo_hash` — a
-    // policy without an issuer chain simply has nothing to double-measure. The
-    // security binding does not rest on this redaction: `RawPolicyData::verify`
-    // separately requires the chain that verifies `servtdTcbMapping` to hash to
-    // the RTMR1 signer anchor, so a swapped/absent chain fails closed there.
-    coll.remove("servtdTcbMappingIssuerChain");
-
-    // Redact the optional TD Identity and its issuer chain (non-strict). Like
-    // the TCB mapping, the optional TD Identity must stay re-issuable by the
-    // signer without re-releasing the image; its issuer chain is bound into
-    // RTMR1 (the signer anchor) instead, and `RawPolicyData::verify` binds it
-    // there fail-closed when present.
-    coll.remove("servtdIdentity");
-    coll.remove("servtdIdentityIssuerChain");
 
     canonical_value_bytes(&policy_data)
 }
@@ -323,6 +321,28 @@ pub fn compute_signer_anchor_from_chain_pem(
     let leaf_eku_oid = extract_leaf_eku_oid_der_from_chain_pem(chain_pem)
         .map_err(|_| PolicyError::InvalidPolicy)?;
     compute_signer_anchor(&root_der, &leaf_eku_oid)
+}
+
+/// Resolve a signer anchor from either representation carried in the CFV /
+/// exchanged with a peer:
+///
+/// * a **precomputed 48-byte anchor** (exactly `SHA384_DIGEST_SIZE` bytes) —
+///   returned as-is (the CoRIM-only enrollment form, which does not carry a
+///   full PEM), or
+/// * a **PEM issuer chain** (leaf-first) — the anchor is derived via
+///   [`compute_signer_anchor_from_chain_pem`] (the legacy JSON form).
+///
+/// This lets the runtime accept either enrollment/exchange form and bind the
+/// same RTMR1 anchor. A PEM is never 48 bytes, so the discriminator is
+/// unambiguous.
+pub fn resolve_signer_anchor(input: &[u8]) -> Result<[u8; SHA384_DIGEST_SIZE], PolicyError> {
+    if input.len() == SHA384_DIGEST_SIZE {
+        let mut anchor = [0u8; SHA384_DIGEST_SIZE];
+        anchor.copy_from_slice(input);
+        Ok(anchor)
+    } else {
+        compute_signer_anchor_from_chain_pem(input)
+    }
 }
 
 #[cfg(test)]
@@ -548,14 +568,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_rejects_missing_servtd_collateral() {
-        // Schema-drift defense (fix for scenario 10): a policy without
-        // servtdCollateral MUST NOT silently succeed with no redaction —
-        // such a policy is malformed at this layer, and accepting it
-        // would let a future schema change (servtdCollateral made
-        // optional) silently bypass the redaction scheme.
+    fn extract_allows_missing_servtd_collateral() {
+        // CoRIM-only policies omit `servtdCollateral` entirely: there is nothing
+        // to redact, so the whole `policyData` is measured as-is (Ok). The
+        // servtd endorsement is delivered as a separately-enrolled CoRIM.
         let input = br#"{"version":"2.0","id":"X","policySvn":1,"policy":[],"collaterals":{}}"#;
-        assert!(extract_canonical_policy_data_bytes(input).is_err());
+        assert!(extract_canonical_policy_data_bytes(input).is_ok());
     }
 
     #[test]
