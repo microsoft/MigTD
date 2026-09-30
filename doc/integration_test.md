@@ -6,6 +6,11 @@ git clone https://github.com/intel/MigTD.git
 git submodule update --init --recursive
 ./sh_script/preparation.sh
 ```
+
+The preparation step patches the ring source selected by the MigTD workspace.
+See [Dependency Preparation](dependency_preparation.md) for why this is
+required.
+
 ## Setup pytest environment
 Please use recommend configuration in [integration_test.py](../sh_script/test/integration_test.py).
 
