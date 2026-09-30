@@ -123,3 +123,97 @@ impl VmcallRaw {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::future::Future;
+    use core::pin::pin;
+    use core::task::{Context, Poll, Waker};
+
+    /// Drive a future expected to resolve without ever yielding `Pending`.
+    /// `recv` satisfies this once `data_queue` is pre-populated, because it
+    /// then performs no VMCALL. Panics if the future would block.
+    fn run_ready<F: Future>(fut: F) -> F::Output {
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut fut = pin!(fut);
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => v,
+            Poll::Pending => panic!("future unexpectedly pending (unexpected VMCALL?)"),
+        }
+    }
+
+    fn stream_with(packets: &[&[u8]]) -> VmcallRaw {
+        let mut s = VmcallRaw::new().unwrap();
+        for p in packets {
+            s.data_queue.push_back(p.to_vec());
+        }
+        s
+    }
+
+    #[test]
+    fn recv_drains_single_queued_packet() {
+        let mut s = stream_with(&[b"hello"]);
+        let mut buf = [0u8; 16];
+        let n = run_ready(s.recv(&mut buf, 0)).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..n], b"hello");
+        assert!(s.data_queue.is_empty());
+    }
+
+    #[test]
+    fn recv_concatenates_queued_packets_when_buf_is_large() {
+        let mut s = stream_with(&[b"abc", b"de", b"fghi"]);
+        let mut buf = [0u8; 16];
+        let n = run_ready(s.recv(&mut buf, 0)).unwrap();
+        assert_eq!(n, 9);
+        assert_eq!(&buf[..n], b"abcdefghi");
+        assert!(s.data_queue.is_empty());
+    }
+
+    #[test]
+    fn recv_preserves_leftover_when_buf_smaller_than_packet() {
+        // A packet larger than the caller's buffer must not lose bytes: the
+        // remainder stays queued for the next recv.
+        let mut s = stream_with(&[b"abcdef"]);
+        let mut buf = [0u8; 4];
+
+        let n1 = run_ready(s.recv(&mut buf, 0)).unwrap();
+        assert_eq!(n1, 4);
+        assert_eq!(&buf[..n1], b"abcd");
+
+        let n2 = run_ready(s.recv(&mut buf, 0)).unwrap();
+        assert_eq!(n2, 2);
+        assert_eq!(&buf[..n2], b"ef");
+        assert!(s.data_queue.is_empty());
+    }
+
+    #[test]
+    fn caller_loop_reassembles_multi_packet_message() {
+        // Models the receiver of a chunked send: a large logical message
+        // arrives as several MTU-sized packets. A caller that loops `recv`
+        // into a fixed (deliberately misaligned) buffer must recover the exact
+        // original bytes across packet boundaries -- the property the
+        // higher-level readers (pre_session / SPDM / rustls) depend on, given
+        // that `recv` returns at most one packet's worth per call.
+        const TOTAL: usize = 180 * 1024;
+        const PACKET: usize = 64 * 1024; // simulate a 64KB-MTU peer
+        let original: Vec<u8> = (0..TOTAL).map(|i| (i % 251) as u8).collect();
+
+        let mut s = VmcallRaw::new().unwrap();
+        for chunk in original.chunks(PACKET) {
+            s.data_queue.push_back(chunk.to_vec());
+        }
+
+        let mut got: Vec<u8> = Vec::with_capacity(TOTAL);
+        let mut app = [0u8; 5000]; // not a divisor of PACKET -> crosses boundaries
+        while got.len() < TOTAL {
+            let n = run_ready(s.recv(&mut app, 0)).unwrap();
+            assert!(n > 0, "recv must make forward progress");
+            got.extend_from_slice(&app[..n]);
+        }
+
+        assert_eq!(got, original);
+        assert!(s.data_queue.is_empty());
+    }
+}
