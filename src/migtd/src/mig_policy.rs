@@ -170,10 +170,23 @@ mod v2 {
         policy_peer: &[u8],
         event_log_peer: &[u8],
     ) -> Result<Vec<u8>, PolicyError> {
+        log::info!(
+            "BC> POL-AR-01 authenticate_remote is_src={} quote.len={} policy.len={} event_log.len={}\n",
+            is_src,
+            quote_peer.len(),
+            policy_peer.len(),
+            event_log_peer.len()
+        );
         let (policy_peer, peer_issuer_chain, peer_servtd_corim) =
             crate::migration::pre_session_data::decode_peer_data(policy_peer)
                 .ok_or(PolicyError::InvalidParameter)?;
+        log::info!(
+            "BC> POL-AR-02 decode_peer_data ok policy.len={} issuer_chain.len={}\n",
+            policy_peer.len(),
+            peer_issuer_chain.len()
+        );
         if is_src {
+            log::info!("BC> POL-AR-03 -> authenticate_migration_dest\n");
             authenticate_migration_dest(
                 quote_peer,
                 event_log_peer,
@@ -182,6 +195,7 @@ mod v2 {
                 peer_servtd_corim,
             )
         } else {
+            log::info!("BC> POL-AR-03 -> evaluate_migration_source\n");
             evaluate_migration_source(
                 quote_peer,
                 event_log_peer,
@@ -199,6 +213,7 @@ mod v2 {
         policy_issuer_chain: &[u8],
         peer_servtd_corim: Option<&[u8]>,
     ) -> Result<Vec<u8>, PolicyError> {
+        log::info!("BC> POL-DST-01 authenticate_remote_common BEGIN\n");
         let (evaluation_data_dst, verified_policy_dst, suppl_data) = authenticate_remote_common(
             quote_dst,
             event_log_dst,
@@ -206,7 +221,12 @@ mod v2 {
             policy_issuer_chain,
             peer_servtd_corim,
         )?;
+        log::info!(
+            "BC> POL-DST-02 authenticate_remote_common ok suppl_data.len={}\n",
+            suppl_data.len()
+        );
         let relative_reference = get_local_tcb_evaluation_info()?;
+        log::info!("BC> POL-DST-03 get_local_tcb_evaluation_info ok\n");
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
         policy.policy_data.evaluate_policy_common(
@@ -214,16 +234,19 @@ mod v2 {
             &relative_reference,
             false,
         )?;
+        log::info!("BC> POL-DST-04 evaluate_policy_common ok\n");
         policy.policy_data.evaluate_policy_forward(
             &evaluation_data_dst,
             &relative_reference,
             false,
         )?;
+        log::info!("BC> POL-DST-05 evaluate_policy_forward ok\n");
 
         // Verify the destination's policy against local policy
         verified_policy_dst
             .policy_data
             .evaluate_against_policy(&policy.policy_data)?;
+        log::info!("BC> POL-DST-06 evaluate_against_policy ok\n");
 
         Ok(suppl_data)
     }
@@ -235,6 +258,7 @@ mod v2 {
         policy_issuer_chain: &[u8],
         peer_servtd_corim: Option<&[u8]>,
     ) -> Result<Vec<u8>, PolicyError> {
+        log::info!("BC> POL-SRC-01 authenticate_remote_common BEGIN\n");
         let (evaluation_data_src, _verified_policy_src, suppl_data) = authenticate_remote_common(
             quote_src,
             event_log_src,
@@ -242,7 +266,12 @@ mod v2 {
             policy_issuer_chain,
             peer_servtd_corim,
         )?;
+        log::info!(
+            "BC> POL-SRC-02 authenticate_remote_common ok suppl_data.len={}\n",
+            suppl_data.len()
+        );
         let relative_reference = get_local_tcb_evaluation_info()?;
+        log::info!("BC> POL-SRC-03 get_local_tcb_evaluation_info ok\n");
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
         policy.policy_data.evaluate_policy_common(
@@ -250,11 +279,13 @@ mod v2 {
             &relative_reference,
             false,
         )?;
+        log::info!("BC> POL-SRC-04 evaluate_policy_common ok\n");
         policy.policy_data.evaluate_policy_backward(
             &evaluation_data_src,
             &relative_reference,
             false,
         )?;
+        log::info!("BC> POL-SRC-05 evaluate_policy_backward ok\n");
 
         Ok(suppl_data)
     }
@@ -355,8 +386,16 @@ mod v2 {
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
         // 1. Verify quote & get supplemental data
+        log::info!(
+            "BC> POL-CMN-01 verify_quote begin quote.len={}\n",
+            quote.len()
+        );
         let (fmspc, suppl_data) = verify_quote(quote, policy.get_collaterals())
             .map_err(|_| PolicyError::QuoteVerification)?;
+        log::info!(
+            "BC> POL-CMN-02 verify_quote ok suppl_data.len={}\n",
+            suppl_data.len()
+        );
 
         // 2. Verify the signature of the provided policy and the integrity of the event log
         let verified_policy = verify_policy_and_event_log(
@@ -366,6 +405,7 @@ mod v2 {
             peer_servtd_corim,
             &get_rtmrs_from_suppl_data(&suppl_data)?,
         )?;
+        log::info!("BC> POL-CMN-03 verify_policy_and_event_log ok\n");
 
         // 3. Get TCB evaluation info from the collaterals
         let evaluation_data = setup_evaluation_data(
@@ -374,6 +414,7 @@ mod v2 {
             &verified_policy,
             policy.get_collaterals(),
         )?;
+        log::info!("BC> POL-CMN-04 setup_evaluation_data ok\n");
 
         Ok((evaluation_data, verified_policy, suppl_data))
     }
