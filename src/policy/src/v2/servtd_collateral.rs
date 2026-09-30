@@ -34,10 +34,9 @@ pub struct ServtdCollateral<'a> {
     /// `doc/corim_attestation_design.md` §3.2.
     #[serde(borrow, default, skip_serializing_if = "Option::is_none")]
     pub servtd_identity: Option<RawServtdIdentity<'a>>,
-    /// Optional PEM CRL for the servTD signer chain (TCB-mapping / identity
-    /// issuers). When present it is enforced fail-closed in
-    /// `RawPolicyData::verify`, and its CRL number feeds the `servtd_crl_num`
-    /// anti-rollback floor.
+    /// Legacy location for the optional PEM CRL covering the servTD signer
+    /// chain. New policies use top-level `servtdCrl` so CoRIM-only enrollment
+    /// can carry the same authoritative CRL without a JSON TCB mapping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub servtd_crl: Option<String>,
 }

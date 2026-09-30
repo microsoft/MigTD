@@ -316,17 +316,18 @@ enforce it fail-closed, reusing the existing platform-CRL machinery (`src/crypto
 
 | Concern | Mechanism |
 |---------|-----------|
-| **Delivery** | `servtdCollateral.servtdCrl` — an optional PEM CRL co-located with the signers it revokes. Optional for backward compatibility: a policy without it skips the check. |
+| **Delivery** | Top-level `servtdCrl` — an optional measured PEM CRL that works for JSON and CoRIM-only enrollment. The legacy `servtdCollateral.servtdCrl` location remains accepted. Optional for backward compatibility: a policy without either form skips the check. |
 | **Authentication** | The CRL signature is verified against the issuing CA in the RTMR1-anchored signer chain before its contents are trusted; only a CA (`cA=TRUE`) may issue it, so a peer cannot forge one without the shared root key. |
 | **Enforcement** | Every certificate in the policy-signer and identity-signer chains is checked against the CRL; a revoked serial fails closed. |
 | **Anti-rollback** | A monotonic `servtd_crl_num` policy floor rejects a CRL older than required, mirroring `pck_crl_num` / `root_ca_crl_num`. |
 
 **Enforcement points.** The local policy's CRL is checked at boot (during policy verification)
-against both signer chains — a MigTD whose own policy revokes its signer refuses to start — and,
-during migration, against the *peer's* chains. The peer check uses the **local** CRL (the peer's
-chain root is already bound to the local root by `validate_peer_cert_chain`), so a peer cannot
-launder a revocation-free CRL of its own. Production policies should therefore always ship a
-`servtdCrl`, empty if nothing is revoked.
+against every JSON signer chain and the CoRIM `x5chain` — a MigTD whose own policy revokes its
+signer refuses to start — and, during migration, against the peer JSON chains plus the local CoRIM
+authority used for peer TCB lookup. The peer check uses the **local** CRL (the peer's chain root is
+already bound to the local root by `validate_peer_cert_chain`), so a peer cannot launder a
+revocation-free CRL of its own. Production policies should therefore always ship a `servtdCrl`,
+empty if nothing is revoked.
 
 **No trusted clock.** Guest time is VMM-supplied, so the CRL `nextUpdate` window cannot be
 enforced in-guest; freshness relies on the `servtd_crl_num` floor. Time-window checks are left to

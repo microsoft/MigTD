@@ -89,6 +89,9 @@ pub const MIGRATION_TD_INSTANCE_BYTES: &[u8] = b"migration-td";
 pub struct ServtdCorim {
     /// CoMID tags from the TCB Mapping CoRIM (digest-selecting CES).
     tcb_mapping: Vec<ComidTag>,
+    /// Verified leaf-first COSE `x5chain`, retained so callers can apply the
+    /// locally authoritative servTD CRL after signature/anchor verification.
+    signer_chain: Option<Vec<Vec<u8>>>,
 }
 
 impl ServtdCorim {
@@ -101,7 +104,10 @@ impl ServtdCorim {
     pub fn decode(tcb_mapping_cbor: &[u8], now_epoch_secs: i64) -> Result<Self, PolicyError> {
         let (_c1, tcb_mapping) = decode_and_validate_at(tcb_mapping_cbor, now_epoch_secs)
             .map_err(|_| PolicyError::InvalidServtdTcbMapping)?;
-        Ok(Self { tcb_mapping })
+        Ok(Self {
+            tcb_mapping,
+            signer_chain: None,
+        })
     }
 
     /// Decode from the **signed** TCB Mapping CoRIM document
@@ -123,9 +129,26 @@ impl ServtdCorim {
         now_epoch_secs: i64,
         expected_signer_anchor: &[u8; SHA384_DIGEST_SIZE],
     ) -> Result<Self, PolicyError> {
-        let tcb_payload = verify_and_extract_payload(tcb_mapping_cose, expected_signer_anchor)
-            .map_err(|_| PolicyError::InvalidServtdTcbMapping)?;
-        Self::decode(&tcb_payload, now_epoch_secs)
+        let (tcb_payload, signer_chain) =
+            verify_and_extract_payload(tcb_mapping_cose, expected_signer_anchor)
+                .map_err(|_| PolicyError::InvalidServtdTcbMapping)?;
+        let mut corim = Self::decode(&tcb_payload, now_epoch_secs)?;
+        corim.signer_chain = Some(signer_chain);
+        Ok(corim)
+    }
+
+    /// Apply an authenticated servTD CRL to the verified COSE signer chain.
+    ///
+    /// The CRL must come from the local measured policy. Peer-supplied CRLs
+    /// must never be passed here as authority.
+    pub fn verify_signer_chain_not_revoked(&self, servtd_crl: &[u8]) -> Result<(), PolicyError> {
+        let signer_chain = self
+            .signer_chain
+            .as_ref()
+            .ok_or(PolicyError::SignatureVerificationFailed)?;
+        let signer_chain: Vec<&[u8]> = signer_chain.iter().map(|cert| cert.as_slice()).collect();
+        crypto::verify_signer_chain_not_revoked(crypto::SignerChain::Der(&signer_chain), servtd_crl)
+            .map_err(|_| PolicyError::SignerRevoked)
     }
 
     /// Resolve `SERVTD_INFO_HASH -> isvsvn` via the TCB Mapping CES triples.
@@ -172,9 +195,11 @@ impl ServtdCorim {
 // ---- COSE_Sign1 envelope + signature verification --------------------------
 
 /// Verify a signed `COSE_Sign1-corim` (`#6.18`) and return its attached CoRIM
-/// payload bytes (`bstr .cbor #6.501(corim-map)`).
+/// payload bytes (`bstr .cbor #6.501(corim-map)`) plus the verified `x5chain`.
 ///
-/// The full trust check is performed before any byte is returned:
+/// The signature and RTMR1-anchor checks are performed before any byte is
+/// returned. The caller retains the returned chain and applies the locally
+/// authoritative servTD CRL before trusting the CoRIM:
 /// 1. Parse the COSE envelope; require an **attached** payload.
 /// 2. Require the protected `alg` to be ES384/ESP384 (ECDSA-P384/SHA-384) and
 ///    an RFC 9360 `x5chain` to be present.
@@ -188,7 +213,7 @@ impl ServtdCorim {
 fn verify_and_extract_payload(
     cose: &[u8],
     expected_signer_anchor: &[u8; SHA384_DIGEST_SIZE],
-) -> Result<Vec<u8>, PolicyError> {
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), PolicyError> {
     let envelope =
         decode_signed_corim(cose).map_err(|_| PolicyError::SignatureVerificationFailed)?;
 
@@ -232,9 +257,11 @@ fn verify_and_extract_payload(
         return Err(PolicyError::SignatureVerificationFailed);
     }
 
-    envelope
+    let payload = envelope
         .payload
-        .ok_or(PolicyError::SignatureVerificationFailed)
+        .ok_or(PolicyError::SignatureVerificationFailed)?;
+    let signer_chain = certs.iter().map(|cert| cert.to_vec()).collect();
+    Ok((payload, signer_chain))
 }
 
 // ---- Environment matching --------------------------------------------------
@@ -492,6 +519,58 @@ mod test {
         wrong[0] ^= 0xFF; // any anchor other than the signer's
 
         assert!(ServtdCorim::decode_signed(tcb, 1_735_689_600, &wrong).is_err());
+    }
+
+    #[test]
+    fn signed_cose_accepts_non_revoked_signer_chain() {
+        let tcb = include_bytes!("../../test/policy_v2/corim/revocation/tcb_mapping.cose");
+        let crl = include_bytes!("../../test/policy_v2/corim/revocation/crl_empty.pem");
+        let anchor = signer_anchor_from_sample(tcb);
+
+        let provider = ServtdCorim::decode_signed(tcb, 0, &anchor).expect("decode signed COSE");
+        provider
+            .verify_signer_chain_not_revoked(crl)
+            .expect("non-revoked CoRIM signer should be accepted");
+    }
+
+    #[test]
+    fn signed_cose_rejects_revoked_leaf() {
+        let tcb = include_bytes!("../../test/policy_v2/corim/revocation/tcb_mapping.cose");
+        let crl = include_bytes!("../../test/policy_v2/corim/revocation/crl_leaf_revoked.pem");
+        let anchor = signer_anchor_from_sample(tcb);
+
+        let provider = ServtdCorim::decode_signed(tcb, 0, &anchor).expect("decode signed COSE");
+        assert!(matches!(
+            provider.verify_signer_chain_not_revoked(crl),
+            Err(PolicyError::SignerRevoked)
+        ));
+    }
+
+    #[test]
+    fn signed_cose_rejects_revoked_intermediate() {
+        let tcb = include_bytes!("../../test/policy_v2/corim/revocation/tcb_mapping.cose");
+        let crl =
+            include_bytes!("../../test/policy_v2/corim/revocation/crl_intermediate_revoked.pem");
+        let anchor = signer_anchor_from_sample(tcb);
+
+        let provider = ServtdCorim::decode_signed(tcb, 0, &anchor).expect("decode signed COSE");
+        assert!(matches!(
+            provider.verify_signer_chain_not_revoked(crl),
+            Err(PolicyError::SignerRevoked)
+        ));
+    }
+
+    #[test]
+    fn signed_cose_rejects_crl_from_wrong_authority() {
+        let tcb = include_bytes!("../../test/policy_v2/corim/revocation/tcb_mapping.cose");
+        let wrong_crl = include_bytes!("../../../crypto/test/crl/crl_empty.pem");
+        let anchor = signer_anchor_from_sample(tcb);
+
+        let provider = ServtdCorim::decode_signed(tcb, 0, &anchor).expect("decode signed COSE");
+        assert!(matches!(
+            provider.verify_signer_chain_not_revoked(wrong_crl),
+            Err(PolicyError::SignerRevoked)
+        ));
     }
 
     /// Recover a signer anchor `A = compute_signer_anchor(root, leaf-EKU)`

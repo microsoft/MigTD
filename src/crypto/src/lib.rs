@@ -242,11 +242,11 @@ pub fn verify_cert_chain_and_signature(
     Ok(())
 }
 
-/// Verify a signer certificate chain (leaf-first PEM) against a CRL and fail
-/// **closed** if any certificate in the chain has been revoked.
+/// Verify a leaf-first signer certificate chain (PEM or DER) against a CRL and
+/// fail **closed** if any certificate in the chain has been revoked.
 ///
 /// Steps:
-/// 1. Locate the CA certificate in `chain_pem` whose `subject` matches the
+/// 1. Locate the CA certificate in `signer_chain` whose `subject` matches the
 ///    CRL's `issuer`, and verify the CRL's ECDSA-P384/SHA-384 signature with
 ///    that CA's public key. An unauthenticated CRL (issuer not in the chain, or
 ///    bad signature) is rejected — it can neither add nor drop revocations.
@@ -258,8 +258,31 @@ pub fn verify_cert_chain_and_signature(
 /// cannot, by design, distinguish a still-valid certificate from a revoked one
 /// under the same root + signer EKU). Freshness/anti-rollback (monotonic CRL
 /// number) is enforced by the policy layer, not here.
-pub fn verify_signer_chain_not_revoked(chain_pem: &[u8], crl_pem: &[u8]) -> Result<()> {
-    let chain_der = extract_cert_chain_from_pem(chain_pem)?;
+pub enum SignerChain<'a> {
+    /// Leaf-first PEM certificate chain.
+    Pem(&'a [u8]),
+    /// Leaf-first DER certificate chain, as carried by a COSE `x5chain`.
+    Der(&'a [&'a [u8]]),
+}
+
+pub fn verify_signer_chain_not_revoked(
+    signer_chain: SignerChain<'_>,
+    crl_pem: &[u8],
+) -> Result<()> {
+    let chain_der = match signer_chain {
+        SignerChain::Pem(chain_pem) => extract_cert_chain_from_pem(chain_pem)?,
+        SignerChain::Der(chain_der) => {
+            if chain_der.is_empty() {
+                return Err(Error::CertChainVerification(
+                    "No certificates found in chain".into(),
+                ));
+            }
+            chain_der
+                .iter()
+                .map(|der| CertificateDer::from(der.to_vec()))
+                .collect()
+        }
+    };
     let chain = chain_der
         .iter()
         .map(|der| x509::Certificate::from_der(der.as_ref()).map_err(|_| Error::ParseCertificate))
@@ -999,14 +1022,14 @@ mdG27TBGsOS6KzfZ7avUDurwwFx++58HjoLq68p8jvKQBQJjco9bcwUFAjEA7otq
     fn signer_chain_not_revoked_passes_for_empty_crl() {
         let chain = include_bytes!("../test/crl/signer_chain.pem");
         let crl = include_bytes!("../test/crl/crl_empty.pem");
-        assert!(verify_signer_chain_not_revoked(chain, crl).is_ok());
+        assert!(verify_signer_chain_not_revoked(SignerChain::Pem(chain), crl).is_ok());
     }
 
     #[test]
     fn signer_chain_not_revoked_fails_closed_for_revoked_leaf() {
         let chain = include_bytes!("../test/crl/signer_chain.pem");
         let crl = include_bytes!("../test/crl/crl_revoked.pem");
-        match verify_signer_chain_not_revoked(chain, crl) {
+        match verify_signer_chain_not_revoked(SignerChain::Pem(chain), crl) {
             Err(Error::CertChainVerification(msg)) => {
                 assert!(msg.contains("revoked"), "unexpected message: {msg}");
             }
@@ -1025,7 +1048,7 @@ mdG27TBGsOS6KzfZ7avUDurwwFx++58HjoLq68p8jvKQBQJjco9bcwUFAjEA7otq
         // revocation.
         let chain = include_bytes!("../test/crl/nonca_leaf_chain.pem");
         let crl = include_bytes!("../test/crl/crl_leaf_issued.pem");
-        match verify_signer_chain_not_revoked(chain, crl) {
+        match verify_signer_chain_not_revoked(SignerChain::Pem(chain), crl) {
             Err(Error::CertChainVerification(msg)) => {
                 assert!(msg.contains("CRL issuer"), "unexpected message: {msg}");
             }

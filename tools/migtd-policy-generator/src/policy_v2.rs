@@ -10,6 +10,7 @@ pub fn build_v2_policy_data(
     base_policy_data: &Path,
     collaterals: &Path,
     servtd_collateral: Option<&Path>,
+    servtd_crl: Option<&Path>,
 ) -> Result<Vec<u8>> {
     let policy_data_bytes = read_file(base_policy_data)?;
     let collateral_bytes = read_file(collaterals)?;
@@ -32,6 +33,11 @@ pub fn build_v2_policy_data(
             let servtd_val: Value = serde_json::from_slice(&servtd_collateral_bytes)
                 .with_context(|| "Failed to parse servtd_collaterals JSON")?;
             map.insert("servtdCollateral".to_string(), servtd_val);
+        }
+        if let Some(servtd_crl_path) = servtd_crl {
+            let servtd_crl = String::from_utf8(read_file(servtd_crl_path)?)
+                .with_context(|| "servtd CRL is not UTF-8 PEM")?;
+            map.insert("servtdCrl".to_string(), Value::String(servtd_crl));
         }
     }
 
