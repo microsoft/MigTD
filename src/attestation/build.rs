@@ -5,6 +5,48 @@
 use std::env;
 use std::process::Command;
 
+/// Detect the major version of the system `cc` when it is GCC.
+///
+/// Returns `None` for clang or when detection fails.
+fn system_gcc_major() -> Option<u32> {
+    let version = Command::new("cc").arg("--version").output().ok()?;
+    let banner = String::from_utf8_lossy(&version.stdout).to_lowercase();
+    if banner.contains("clang") {
+        return None;
+    }
+    let dumped = Command::new("cc").arg("-dumpversion").output().ok()?;
+    String::from_utf8_lossy(&dumped.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse::<u32>()
+        .ok()
+}
+
+/// CFLAGS to pass to the vendored linux-sgx DCAP `make`.
+///
+/// GCC >= 14 promotes `-Wincompatible-pointer-types`, `-Wimplicit-function-declaration`,
+/// and `-Wint-conversion` to hard errors by default, which breaks the older DCAP C code
+/// (e.g. tdx_verify.c). Demote them back to warnings so the attestation lib builds on
+/// modern toolchains. Any user-supplied CFLAGS are preserved and take precedence.
+fn attestation_make_cflags() -> Option<String> {
+    let mut cflags = env::var("CFLAGS").unwrap_or_default();
+    if system_gcc_major().is_some_and(|major| major >= 14) {
+        for flag in [
+            "-Wno-error=incompatible-pointer-types",
+            "-Wno-error=implicit-function-declaration",
+            "-Wno-error=int-conversion",
+        ] {
+            if !cflags.contains(flag) {
+                cflags.push(' ');
+                cflags.push_str(flag);
+            }
+        }
+    }
+    let cflags = cflags.trim().to_string();
+    (!cflags.is_empty()).then_some(cflags)
+}
+
 fn main() {
     // Skip the compilation of attestation library when the remote attestation is not enabled or
     // running unit test.
@@ -28,9 +70,17 @@ fn main() {
         .display()
         .to_string();
 
+    // GCC >= 14 turns several legacy DCAP warnings into hard errors; demote them so
+    // the vendored linux-sgx attestation lib still builds. Preserves user CFLAGS.
+    let make_cflags = attestation_make_cflags();
+
     // make servtd_attest_preparation
-    let status = Command::new("make")
-        .args(["-C", &lib_path, "servtd_attest_preparation"])
+    let mut prep = Command::new("make");
+    prep.args(["-C", &lib_path, "servtd_attest_preparation"]);
+    if let Some(cflags) = &make_cflags {
+        prep.env("CFLAGS", cflags);
+    }
+    let status = prep
         .status()
         .expect("failed to run make servtd_attest_preparation for attestation library!");
     assert!(
@@ -39,8 +89,12 @@ fn main() {
     );
 
     // make servtd_attest
-    let status = Command::new("make")
-        .args(["-C", &lib_path, "servtd_attest"])
+    let mut build = Command::new("make");
+    build.args(["-C", &lib_path, "servtd_attest"]);
+    if let Some(cflags) = &make_cflags {
+        build.env("CFLAGS", cflags);
+    }
+    let status = build
         .status()
         .expect("failed to run make servtd_attest for attestation library!");
     assert!(status.success(), "failed to build servtd_attest: {status}");
