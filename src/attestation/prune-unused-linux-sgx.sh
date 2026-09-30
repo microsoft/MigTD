@@ -51,6 +51,7 @@ unused_paths=(
     "external/cbor"
     "external/dcap_source/QuoteGeneration/pccs"
     "external/dcap_source/QuoteVerification/QuoteVerificationService"
+    "external/dcap_source/external/jwt-cpp"
     "external/dcap_source/external/wasm-micro-runtime"
     "external/dnnl"
     "external/ippcp_internal"
