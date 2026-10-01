@@ -1744,33 +1744,64 @@ mod test {
                 }
                 _ => panic!("Expected GetTdReport, got unexpected variant"),
             }
+            assert!(pending.is_none());
             cleanup_request(request_id);
         }
 
         #[test]
-        fn test_parse_get_td_report_legacy_report_data_rejected() {
+        fn test_parse_get_td_report_legacy_report_data_ignored() {
+            assert_eq!(size_of::<ReportInfo>(), size_of::<u64>());
             let request_id: u64 = 0xCC00_0000_0000_0003;
-            let mut payload = vec![0xCC; 72];
-            payload[0..8].copy_from_slice(&request_id.to_le_bytes());
-            let buf = build_request_buffer(3, &payload);
-            let mut pending = None;
-            let result = parse_request(&buf, HDR_LEN, &mut pending);
-            assert!(matches!(
-                result,
-                Poll::Ready(Err(MigrationResult::InvalidParameter))
-            ));
+            for report_data_byte in [0x00, 0x5a, 0xff] {
+                let mut payload = vec![report_data_byte; 72];
+                payload[0..8].copy_from_slice(&request_id.to_le_bytes());
+                let buf = build_request_buffer(3, &payload);
+                let mut pending = None;
+                let result = parse_request(&buf, HDR_LEN, &mut pending);
+                match result {
+                    Poll::Ready(Ok(WaitForRequestResponse::GetTdReport(info))) => {
+                        assert_eq!(info.mig_request_id, request_id);
+                    }
+                    _ => panic!("Expected GetTdReport for legacy payload"),
+                }
+                assert!(pending.is_none());
+                cleanup_request(request_id);
+            }
         }
 
         #[test]
         fn test_parse_get_td_report_wrong_size_rejected() {
-            // Only the exact 8-byte request ID is accepted.
-            let buf = build_request_buffer(3, &[0u8; 16]);
-            let mut pending = None;
-            let result = parse_request(&buf, HDR_LEN, &mut pending);
-            assert!(matches!(
-                result,
-                Poll::Ready(Err(MigrationResult::InvalidParameter))
-            ));
+            for payload_size in 0..=80 {
+                if payload_size == 8 || payload_size == 72 {
+                    continue;
+                }
+                let buf = build_request_buffer(3, &vec![0u8; payload_size]);
+                let mut pending = None;
+                let result = parse_request(&buf, HDR_LEN, &mut pending);
+                assert!(matches!(
+                    result,
+                    Poll::Ready(Err(MigrationResult::InvalidParameter))
+                ));
+            }
+        }
+
+        #[test]
+        fn test_parse_get_td_report_truncated_declared_payload_rejected() {
+            for data_length in [8, 72] {
+                for payload_size in 0..data_length as usize {
+                    let payload = vec![0u8; payload_size];
+                    assert!(matches!(
+                        ReportInfo::read_from_bytes(data_length, &payload),
+                        Err(MigrationResult::InvalidParameter)
+                    ));
+                    let buf = build_raw_buffer(0x0301, data_length, &payload);
+                    let mut pending = None;
+                    assert!(matches!(
+                        parse_request(&buf, HDR_LEN, &mut pending),
+                        Poll::Ready(Err(MigrationResult::InvalidParameter))
+                    ));
+                }
+            }
         }
 
         #[test]
