@@ -1153,6 +1153,7 @@ pub fn handle_exchange_rebind_attest_info_req(
 
         // Verify that the peer's REPORTDATA is bound to this SPDM session's TH1
         let verified_report_peer = policy_check_result.unwrap();
+        #[cfg(not(any(feature = "AzCVMEmu", feature = "test_mock_report")))]
         if verify_tdreport_data_binding(&verified_report_peer, b"MigTDReq", &th1).is_err() {
             error!("Rebind peer REPORTDATA does not match expected TH1 binding!\n");
             let session = responder_context
@@ -1162,6 +1163,8 @@ pub fn handle_exchange_rebind_attest_info_req(
             session.teardown();
             return Err(SpdmStatus::from(MigrationResult::MutualAttestationError));
         }
+        #[cfg(any(feature = "AzCVMEmu", feature = "test_mock_report"))]
+        let _ = (&th1, &verified_report_peer);
     }
 
     unsafe {
