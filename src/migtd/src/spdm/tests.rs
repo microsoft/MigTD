@@ -148,30 +148,49 @@ fn responder_rebind_app_context_is_wiped_on_cancellation_and_error() {
 
 fn assert_teardown_clears_sessions(context: &mut SpdmContext) {
     for last_session_id in [Some(1), None] {
-        for (index, session) in context.session.iter_mut().enumerate() {
-            session.setup(u32::try_from(index + 1).unwrap()).unwrap();
-            session.set_session_state(if last_session_id.is_some() {
-                SpdmSessionState::SpdmSessionHandshaking
-            } else {
-                SpdmSessionState::SpdmSessionEstablished
-            });
-            let mut secret = session.get_application_secret();
-            secret.request_direction.encryption_key.data.fill(0xa5);
-            secret.request_direction.encryption_key.data_size = 32;
-            session.set_application_secret(secret);
-        }
-        // FINISH clears this field without removing the established session.
-        context.runtime_info.set_last_session_id(last_session_id);
+        for cancel in [false, true] {
+            context.app_context_data_buffer.fill(0xa5);
+            for (index, session) in context.session.iter_mut().enumerate() {
+                session.setup(u32::try_from(index + 1).unwrap()).unwrap();
+                session.set_session_state(if last_session_id.is_some() {
+                    SpdmSessionState::SpdmSessionHandshaking
+                } else {
+                    SpdmSessionState::SpdmSessionEstablished
+                });
+                let mut secret = session.get_application_secret();
+                secret.request_direction.encryption_key.data.fill(0xa5);
+                secret.request_direction.encryption_key.data_size = 32;
+                session.set_application_secret(secret);
+            }
+            // FINISH clears this field without removing the established session.
+            context.runtime_info.set_last_session_id(last_session_id);
 
-        for _ in 0..2 {
-            teardown_sessions(context);
-            for session in &context.session {
-                assert_eq!(session.get_session_id(), INVALID_SESSION_ID);
-                assert_eq!(
-                    session.get_session_state(),
-                    SpdmSessionState::SpdmSessionNotStarted
-                );
-                assert_eq!(session.get_application_secret(), Default::default());
+            for _ in 0..2 {
+                let mut future = Box::pin(async {
+                    let _guard = AppContextGuard {
+                        context: &mut *context,
+                        common: |context| context,
+                    };
+                    if cancel {
+                        pending::<()>().await;
+                    }
+                });
+                let mut task_context = Context::from_waker(Waker::noop());
+                assert_eq!(future.as_mut().poll(&mut task_context).is_pending(), cancel);
+                drop(future);
+
+                assert!(context
+                    .app_context_data_buffer
+                    .iter()
+                    .all(|byte| *byte == 0));
+                for session in &context.session {
+                    assert_eq!(session.get_session_id(), INVALID_SESSION_ID);
+                    assert_eq!(
+                        session.get_session_state(),
+                        SpdmSessionState::SpdmSessionNotStarted
+                    );
+                    assert_eq!(session.get_application_secret(), Default::default());
+                }
             }
         }
     }

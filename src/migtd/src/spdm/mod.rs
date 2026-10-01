@@ -49,17 +49,18 @@ use crate::spdm::vmcall_msg::VMCALL_SPDM_MESSAGE_HEADER_SIZE;
 
 pub(crate) type SpdmDeviceIoArc<T> = Arc<Mutex<MigtdTransport<T>>>;
 
-// The raw application buffer holds the ephemeral signing key. Borrow the whole
-// context so the exchange can keep using it while the buffer is wiped on both
-// normal return and future cancellation.
+// Borrow the whole context so the exchange can keep using it while its session
+// keys and raw application-buffer signing key are cleared on return or cancellation.
 struct AppContextGuard<'a, T> {
     context: &'a mut T,
-    buffer: fn(&mut T) -> &mut [u8],
+    common: fn(&mut T) -> &mut SpdmContext,
 }
 
 impl<T> Drop for AppContextGuard<'_, T> {
     fn drop(&mut self) {
-        (self.buffer)(self.context).zeroize();
+        let common = (self.common)(self.context);
+        teardown_sessions(common);
+        common.app_context_data_buffer.zeroize();
     }
 }
 

@@ -27,7 +27,7 @@ pub async fn spdm_requester_rebind_old(
 ) -> Result<(), SpdmStatus> {
     let guard = super::AppContextGuard {
         context: spdm_requester,
-        buffer: |context| &mut context.common.app_context_data_buffer,
+        common: |context| &mut context.common,
     };
     spdm_requester_rebind_old_inner(guard.context, rebind_info, peer_data).await
 }
@@ -84,7 +84,7 @@ pub async fn spdm_responder_rebind_new<'a>(
 ) -> Result<(), SpdmStatus> {
     let guard = super::AppContextGuard {
         context: spdm_responder_ex,
-        buffer: |context| &mut context.responder_context.common.app_context_data_buffer,
+        common: |context| &mut context.responder_context.common,
     };
     let spdm_responder_ex = &mut *guard.context;
 
