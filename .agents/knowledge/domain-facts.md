@@ -68,6 +68,14 @@ bypassed under which build feature.
   because the host isn't ready to plumb them through; these are test-only
   and must be reverted before upstreaming.
 
+## Migration version roles
+
+- The source must call `exchange_info(..., true)` to read the TDX module's
+  EXPORT bounds; the destination uses `false` for IMPORT bounds. The SPDM
+  requester serializes its local range as `MigrationExportVersion`.
+- Equal import/export ranges hide a wrong source-role argument. Keep the
+  source role consistent through `exchange_info` and `cal_mig_version`.
+
 ## vmcall / transport invariants
 
 - `vmcall-raw` **never returns `Ok(0)` / EOF**. It blocks until data or
