@@ -42,7 +42,7 @@
 //! measured from the CFV policy issuer chain. [`ServtdCorim::decode`] takes
 //! already-verified inner payload bytes and performs decode + match only.
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::convert::TryFrom;
 
 use corim::{
@@ -104,6 +104,7 @@ impl ServtdCorim {
     pub fn decode(tcb_mapping_cbor: &[u8], now_epoch_secs: i64) -> Result<Self, PolicyError> {
         let (_c1, tcb_mapping) = decode_and_validate_at(tcb_mapping_cbor, now_epoch_secs)
             .map_err(|_| PolicyError::InvalidServtdTcbMapping)?;
+        validate_unique_hash_svns(&tcb_mapping)?;
         Ok(Self {
             tcb_mapping,
             signer_chain: None,
@@ -333,6 +334,42 @@ fn svn_exact(m: &MeasurementMap) -> Option<u64> {
     }
 }
 
+fn validate_unique_hash_svns(tcb_mapping: &[ComidTag]) -> Result<(), PolicyError> {
+    let mut mappings = BTreeMap::<Vec<u8>, u16>::new();
+
+    for comid in tcb_mapping {
+        let Some(ces_list) = comid.triples.conditional_endorsement_series.as_ref() else {
+            continue;
+        };
+        for ces in ces_list {
+            if !is_migration_td_environment(&ces.condition().environment) {
+                continue;
+            }
+            for record in ces.series() {
+                let Some(hash) = record.selection().first().and_then(digest_value) else {
+                    continue;
+                };
+                let Some(svn) = record
+                    .addition()
+                    .first()
+                    .and_then(svn_exact)
+                    .and_then(|svn| u16::try_from(svn).ok())
+                else {
+                    continue;
+                };
+
+                if let Some(previous) = mappings.insert(hash.to_vec(), svn) {
+                    if previous != svn {
+                        return Err(PolicyError::InvalidServtdTcbMapping);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -448,6 +485,23 @@ mod test {
 
         let hit2 = provider.lookup_by_tdinfo_hash(&hash(0xBB)).expect("match");
         assert_eq!(hit2.isvsvn, 7);
+    }
+
+    #[test]
+    fn duplicate_hash_with_same_svn_is_valid() {
+        let tcb = build_tcb_mapping(&[(hash(0xAA), 5), (hash(0xAA), 5)]);
+        let provider = ServtdCorim::decode(&tcb, 0).expect("decode");
+        let hit = provider.lookup_by_tdinfo_hash(&hash(0xAA)).expect("match");
+        assert_eq!(hit.isvsvn, 5);
+    }
+
+    #[test]
+    fn conflicting_duplicate_hash_is_invalid() {
+        let tcb = build_tcb_mapping(&[(hash(0xAA), 5), (hash(0xAA), 7)]);
+        assert!(matches!(
+            ServtdCorim::decode(&tcb, 0),
+            Err(PolicyError::InvalidServtdTcbMapping)
+        ));
     }
 
     #[test]
