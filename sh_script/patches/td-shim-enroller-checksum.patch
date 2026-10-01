@@ -1,0 +1,28 @@
+diff --git a/td-shim-tools/src/enroller.rs b/td-shim-tools/src/enroller.rs
+index 138b3d4..a21baf9 100644
+--- a/td-shim-tools/src/enroller.rs
++++ b/td-shim-tools/src/enroller.rs
+@@ -55,7 +55,7 @@ fn update_checksum(data: &mut [u8]) {
+         }
+     }
+ 
+-    data[FFS_HEADER_HEADER_CHECKSUM_OFFSET] = u8::MAX - sum + 1;
++    data[FFS_HEADER_HEADER_CHECKSUM_OFFSET] = 0u8.wrapping_sub(sum);
+ }
+ // Used to construct a firmware file with a ffs header
+ // and FV_FILETYPE_RAW type
+@@ -408,6 +408,14 @@ mod test {
+         num
+     }
+ 
++    #[test]
++    fn test_update_checksum_zero_sum() {
++        let mut data = [0u8; size_of::<FvFfsFileHeader>()];
++
++        update_checksum(&mut data);
++        assert_eq!(data[FFS_HEADER_HEADER_CHECKSUM_OFFSET], 0);
++    }
++
+     #[test]
+     fn test_firmware_file() {
+         // {214D240F-77A3-441B-9DA8-C588E43192C1}
