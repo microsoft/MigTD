@@ -11,7 +11,7 @@
 ## Domain knowledge
 
 * [MigTD Domain Facts](domain-facts.md) - Trust model, one-hash/CoRIM lookup, signer-anchor and MROWNER semantics, verifiers, vmcall invariants, and heap sizing.
-* [MigTD Architecture Overview (Azure Build)](architecture-overview.md) - Layered/component diagrams, Azure boot sequence without a guest kernel, policy-v2 trust, and IGVM build.
+* [MigTD Architecture Overview (Azure Build)](architecture-overview.md) - Layered/component diagrams, kernel-free boot, dispatcher/migration/SPDM/rebind sequences, an alternate RA-TLS view, policy-v2 trust, and IGVM build.
 * [Azure WaitForRequest Error and ReportStatus Map](azure-waitforrequest-errors.md) - Azure IGVM vmcall-raw/SPDM request failures, logging coverage, and host-visible status codes.
 * [Security Bypasses](security-bypasses.md) - Which verification checks are bypassed under dev/test build features, and why.
 * [Boot Measurements](boot-measurements.md) - How MRTD/RTMR0-3 are populated, including the RTMR1 root+EKU anchor and redacted RTMR2 policyData.
