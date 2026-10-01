@@ -3,6 +3,7 @@
 preparation() {
     pushd deps/td-shim
     bash sh_script/preparation.sh
+    git apply ../../sh_script/patches/td-shim-enroller-checksum.patch
     popd
 
     # Apply spdm-rs ring patches to td-shim's ring (used via [patch.crates-io])
