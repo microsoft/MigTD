@@ -3,7 +3,7 @@ type: Reference
 title: MigTD Boot Measurements — Who Measures What, When, and How
 description: Mechanics of how each TDX measurement register (MRTD, RTMR0-3) is populated during a MigTD launch, with file-line citations.
 tags: [attestation, tdx, measurements, mrtd, rtmr]
-timestamp: 2026-08-25T22:12:55+00:00
+timestamp: 2026-09-23T01:39:15+00:00
 ---
 
 # MigTD Boot Measurements — Who Measures What, When, and How
@@ -13,7 +13,9 @@ timestamp: 2026-08-25T22:12:55+00:00
 Focuses on the
 **mechanics** of how each TDX measurement register gets populated for a
 MigTD launch, with file-line citations. The "what the values mean for
-attestation" question is covered in the One-Hash doc.*
+attestation" question is covered in the One-Hash doc. For the execution
+handoff from the host through TD-shim into MigTD, see the
+[Azure boot sequence](architecture-overview.md#azure-boot-sequence-without-a-guest-kernel).*
 
 > **Scope.** All addresses and section attributes shown here are for the
 > production **IGVM** build (Azure OS). TDVF builds differ only in how
@@ -62,8 +64,8 @@ content** of every "measured" region.
 | **CFV** | `0xFF000000`, `0xA0000` | `0x0` | **yes** (GPA-only) | Policy JSON, policy issuer cert chain (PEM), root CA — measured later into RTMR1/RTMR2 |
 | **TempMem** (stack, heap, mailbox, etc.) | various | `0x0` | yes (GPA-only) | Zero-fill at launch |
 | **PermMem** | `0x0`, `0x2000000` | `0x2` | yes (GPA-only) | Reserved memory for runtime use |
-| **Payload** | `0xFF0C1000`, `0xEE6000` (~15 MB) | `0x1` (EXTENDMR) | **no** — measured | The **MigTD binary** (PE/COFF, wrapped as a DXE_CORE FV file) |
-| **BFV** | `0xFFFA7000`, `0x59000` (~356 KB) | `0x1` (EXTENDMR) | **no** — measured | td-shim metadata + IPL + reset vector |
+| **Payload** | `0xFF0C1000`, `0xEE5000` (~15 MB) | `0x1` (EXTENDMR) | **no** — measured | The **MigTD ELF binary**, wrapped as a DXE_CORE FV file |
+| **BFV** | `0xFFFA6000`, `0x5A000` (360 KiB) | `0x1` (EXTENDMR) | **no** — measured | td-shim metadata + IPL + reset vector |
 
 ### The code path that emits these directives
 
@@ -117,9 +119,11 @@ instruction executes. TD-shim's runtime work:
 - Reads the payload from `SliceType::ShimPayload` (the read-only FV
   region the IGVM loader populated). `td-layout/src/memslice.rs:72-75`
   for the slice; `td-shim/src/bin/td-shim/main.rs:217-223` for the read.
-- Optionally PE-relocates into a **separate** writable region
-  `SliceType::Payload`
-  (`td-shim/src/bin/td-shim/main.rs:238-240`).
+- Detects the executable format and relocates the **ELF payload** into a
+  **separate** writable region `SliceType::Payload`
+  (`td-shim/src/bin/td-shim/main.rs:238-240`,
+  `td-shim/src/bin/td-shim/ipl.rs:36-50`). The FV section name `SECTION_PE32`
+  does not mean the contained MigTD executable is PE/COFF.
 - Jumps to the relocated entry point
   (`td-shim/src/bin/td-shim/main.rs:266-`).
 
@@ -146,7 +150,7 @@ rtmr_index=1).
 **For MigTD's IGVM build the Payload section has `attributes=0x1`, so
 `payload_extend_rtmr` is `false` → the payload is in MRTD only, NOT
 also in RTMR1.** This is what makes RTMR1 deterministic (separator +
-issuer chain only).
+signer anchor only).
 
 ---
 
