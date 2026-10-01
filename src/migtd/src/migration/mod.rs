@@ -330,10 +330,16 @@ impl ReportInfo {
         data_length: u32,
         payload: &[u8],
     ) -> core::result::Result<Self, MigrationResult> {
-        if data_length != core::mem::size_of::<Self>() as u32 {
+        let request_id_size = core::mem::size_of::<Self>() as u32;
+        let legacy_size =
+            request_id_size + tdx_tdcall::tdreport::TD_REPORT_ADDITIONAL_DATA_SIZE as u32;
+        // REVERT_ME: tolerate the retired REPORT_DATA tail during OS-transition testing.
+        if data_length != request_id_size && data_length != legacy_size {
             return Err(MigrationResult::InvalidParameter);
         }
         payload
+            .get(..data_length as usize)
+            .ok_or(MigrationResult::InvalidParameter)?
             .pread(0)
             .map_err(|_| MigrationResult::InvalidParameter)
     }
