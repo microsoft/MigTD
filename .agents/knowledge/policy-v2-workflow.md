@@ -59,12 +59,17 @@ At boot, MigTD:
   the complete 48-byte `SERVTD_INFO_HASH`, not individual MRTD/RTMR fields.
 - A deployable mapping must cover both current MigTD releases and any initial
   MigTD hashes that can appear in target-TD `SERVTD_EXT` state. During
-  migration/rebinding, the verifier uses the authenticated source's mapping
-  to resolve both `init_servtd_info_hash` and the source's current report
-  hash, then requires `init SVN <= current SVN`.
-- That comparison is against the **source peer's verified mapping**, not the
-  destination's local mapping. This preserves reverse migration because an
-  older destination does not need to predict future source releases.
+  migration/rebinding, the verifier resolves the current report hash only
+  through the authenticated source mapping. It resolves
+  `init_servtd_info_hash` through the source mapping, then the authenticated
+  local mapping as fallback, and requires `init SVN <= current SVN`.
+- The local lookup is not an allowlist: a source hit is sufficient. The
+  fallback supports returning to the originating or a later cumulative
+  release, while arbitrary historical multi-hop paths may fail when neither
+  endpoint knows the initial hash.
+- Mappings are cumulative and append-only. Existing hash-to-SVN assignments
+  are immutable, later release SVNs are non-decreasing, and leaf-signer CRLs
+  provide revocation.
 - Re-issuing a JSON mapping or CoRIM is measurement-neutral. Re-issuing JSON
   TD Identity or its issuer chain changes RTMR2 and requires a new
   `tdinfo_hash` endorsement.

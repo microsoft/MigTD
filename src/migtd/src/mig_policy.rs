@@ -346,6 +346,7 @@ mod v2 {
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
         verify_init_servtd_svn_order(
             &verified_policy_src,
+            policy,
             &evaluation_data_src,
             &servtd_ext_src_obj,
         )?;
@@ -438,21 +439,36 @@ mod v2 {
         Ok((evaluation_data, verified_policy, tdreport_verified))
     }
 
-    /// Compare the initial SVN from the source's verified mapping with
-    /// the current SVN derived from its authenticated report. The source mapping
-    /// allows an older destination to accept newer source releases.
+    fn resolve_init_servtd_svn(
+        source_init_svn: Option<u16>,
+        local_init_svn: Option<u16>,
+    ) -> Result<u16, PolicyError> {
+        match (source_init_svn, local_init_svn) {
+            (Some(source), Some(local)) if source != local => Err(PolicyError::SvnMismatch),
+            (Some(source), _) => Ok(source),
+            (None, Some(local)) => Ok(local),
+            (None, None) => Err(PolicyError::UnqualifiedMigTdInfo),
+        }
+    }
+
+    /// Resolve the initial SVN from authenticated source and local mappings,
+    /// while keeping the current SVN bound to authenticated source evidence.
     fn verify_init_servtd_svn_order(
         source_policy: &VerifiedPolicy,
+        local_policy: &VerifiedPolicy,
         source_evaluation: &PolicyEvaluationInfo,
         servtd_ext: &ServtdExt,
     ) -> Result<(), PolicyError> {
         if servtd_ext.init_attr != [0; 8] || servtd_ext.cur_servtd_attr != [0; 8] {
             return Err(PolicyError::UnqualifiedMigTdInfo);
         }
-        let init_svn = source_policy
+        let source_init_svn = source_policy
             .servtd_lookup_by_tdinfo_hash(&servtd_ext.init_servtd_info_hash)
-            .ok_or(PolicyError::UnqualifiedMigTdInfo)?
-            .isvsvn;
+            .map(|lookup| lookup.isvsvn);
+        let local_init_svn = local_policy
+            .servtd_lookup_by_tdinfo_hash(&servtd_ext.init_servtd_info_hash)
+            .map(|lookup| lookup.isvsvn);
+        let init_svn = resolve_init_servtd_svn(source_init_svn, local_init_svn)?;
         let current_svn = source_evaluation
             .migtd_isvsvn
             .ok_or(PolicyError::UnqualifiedMigTdInfo)?;
@@ -777,7 +793,12 @@ mod v2 {
 
         let servtd_ext =
             ServtdExt::read_from_bytes(servtd_ext_src).ok_or(PolicyError::InvalidParameter)?;
-        verify_init_servtd_svn_order(&verified_policy_src, &evaluation_data_src, &servtd_ext)?;
+        verify_init_servtd_svn_order(
+            &verified_policy_src,
+            policy,
+            &evaluation_data_src,
+            &servtd_ext,
+        )?;
 
         Ok(suppl_data)
     }
@@ -1349,7 +1370,7 @@ mod v2 {
                 .map(|entry| entry.isvsvn),
             ..Default::default()
         };
-        verify_init_servtd_svn_order(policy, &evaluation, &servtd_ext)
+        verify_init_servtd_svn_order(policy, policy, &evaluation, &servtd_ext)
     }
 
     #[test]
@@ -1393,13 +1414,13 @@ mod v2 {
         };
 
         assert!(matches!(
-            verify_init_servtd_svn_order(&mapping, &evaluation, &servtd_ext),
+            verify_init_servtd_svn_order(&mapping, &mapping, &evaluation, &servtd_ext),
             Err(PolicyError::SvnMismatch)
         ));
 
         evaluation.migtd_isvsvn = Some(2);
         servtd_ext.cur_servtd_info_hash = [0x33; SHA384_DIGEST_SIZE];
-        assert!(verify_init_servtd_svn_order(&mapping, &evaluation, &servtd_ext).is_ok());
+        assert!(verify_init_servtd_svn_order(&mapping, &mapping, &evaluation, &servtd_ext).is_ok());
     }
 
     #[test]
@@ -1411,7 +1432,33 @@ mod v2 {
         servtd_ext.cur_servtd_info_hash = [0x22; SHA384_DIGEST_SIZE];
 
         assert!(matches!(
-            verify_init_servtd_svn_order(&mapping, &PolicyEvaluationInfo::default(), &servtd_ext,),
+            verify_init_servtd_svn_order(
+                &mapping,
+                &mapping,
+                &PolicyEvaluationInfo::default(),
+                &servtd_ext,
+            ),
+            Err(PolicyError::UnqualifiedMigTdInfo)
+        ));
+    }
+
+    #[test]
+    fn init_svn_falls_back_to_authenticated_local_mapping() {
+        assert_eq!(resolve_init_servtd_svn(None, Some(5)).unwrap(), 5);
+    }
+
+    #[test]
+    fn conflicting_initial_hash_assignments_fail_closed() {
+        assert!(matches!(
+            resolve_init_servtd_svn(Some(5), Some(6)),
+            Err(PolicyError::SvnMismatch)
+        ));
+    }
+
+    #[test]
+    fn initial_hash_missing_from_both_mappings_fails_closed() {
+        assert!(matches!(
+            resolve_init_servtd_svn(None, None),
             Err(PolicyError::UnqualifiedMigTdInfo)
         ));
     }
