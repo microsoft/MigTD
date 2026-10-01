@@ -93,7 +93,7 @@ pub async fn spdm_requester_transfer_msk(
 ) -> Result<ExchangeInformation, SpdmStatus> {
     let guard = super::AppContextGuard {
         context: spdm_requester,
-        buffer: |context| &mut context.common.app_context_data_buffer,
+        common: |context| &mut context.common,
     };
     spdm_requester_transfer_msk_inner(
         guard.context,
