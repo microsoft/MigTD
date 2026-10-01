@@ -32,6 +32,15 @@ C="./config/AzCVMEmu/policy_issuer_chain.pem"
 PA="./config/AzCVMEmu/policy_v2_signed_a.json"; CA="./config/AzCVMEmu/policy_issuer_chain_a.pem"
 PB="./config/AzCVMEmu/policy_v2_signed_b.json"; CB="./config/AzCVMEmu/policy_issuer_chain_b.pem"
 
+echo "########## policy-generation ##########"
+if ! ./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report --skip-test \
+    >"$LOG_DIR/policy-generation.log" 2>&1; then
+    echo "FAIL: policy-generation -> $LOG_DIR/policy-generation.log"
+    tail -15 "$LOG_DIR/policy-generation.log"
+    exit 1
+fi
+echo "PASS: policy-generation"
+
 run() {  # name  timeout  cmd...
     local name="$1"; shift
     local to="$1";   shift
@@ -47,13 +56,13 @@ run() {  # name  timeout  cmd...
     fi
 }
 
-run skip-ra              300 ./migtdemu.sh --skip-ra --both --no-sudo --log-level info
+run skip-ra              300 ./migtdemu.sh --skip-ra --debug --both --no-sudo --log-level info
 run policy-v2            900 ./migtdemu.sh --policy-v2 --policy-file "$P" --policy-issuer-chain-file "$C" --mock-report --both --no-sudo --log-level info
 run policy-v2-igvm       900 ./migtdemu.sh --policy-v2 --policy-file "$P" --policy-issuer-chain-file "$C" --mock-report --features igvm-attest --both --no-sudo --log-level info
 run rebind-mock          900 ./migtdemu.sh --operation rebind-prepare --policy-file "$P" --policy-issuer-chain-file "$C" --mock-report --both --no-sudo --log-level info
-run spdm-skip-ra         300 ./migtdemu.sh --skip-ra --features spdm_attestation --both --no-sudo --log-level info
+run spdm-skip-ra         300 ./migtdemu.sh --skip-ra --debug --features spdm_attestation --both --no-sudo --log-level info
 run spdm-policy-v2       900 ./migtdemu.sh --policy-v2 --policy-file "$P" --policy-issuer-chain-file "$C" --mock-report --features spdm_attestation --both --no-sudo --log-level info
-run spdm-rebind-skip-ra  300 ./migtdemu.sh --operation rebind-prepare --policy-file "$P" --policy-issuer-chain-file "$C" --skip-ra --features spdm_attestation --both --no-sudo --log-level info
+run spdm-rebind-skip-ra  300 ./migtdemu.sh --operation rebind-prepare --policy-file "$P" --policy-issuer-chain-file "$C" --skip-ra --debug --features spdm_attestation --both --no-sudo --log-level info
 run policy-v2-key-rotation 900 ./migtdemu.sh --policy-v2 --src-policy-file "$PA" --src-policy-issuer-chain-file "$CA" --dst-policy-file "$PB" --dst-policy-issuer-chain-file "$CB" --mock-report --both --no-sudo --log-level info
 
 echo ""; echo "================ MILESTONE SUMMARY ================"
