@@ -59,3 +59,12 @@ timestamp: 2026-07-26T00:14:16+00:00
   report `tdinfo_hash`, then reject `init SVN > current SVN`. This is now
   enforced in both migration and rebinding; the legacy wire Init_TDINFO is
   retained only for protocol compatibility and ignored.
+
+- **Allowed an authenticated local fallback for the initial MigTD hash.**
+  The current source hash remains source-authoritative. When the source mapping
+  predates the initial release, migration and rebinding may resolve
+  `ServtdExt.init_servtd_info_hash` through the authenticated local cumulative
+  mapping; conflicting assignments fail closed. Arbitrary historical
+  multi-hop paths remain unsupported when neither endpoint knows the initial
+  hash. Mappings are append-only and release revocation is leaf-CRL based.
+  Design discussion: microsoft/MigTD#236.

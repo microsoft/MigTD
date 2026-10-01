@@ -27,13 +27,17 @@ timestamp: 2026-07-26T00:14:16+00:00
   `tdinfo_hash` / `SERVTD_INFO_HASH` directly to MigTD SVN. When a signed
   CoRIM is enrolled it is the sole lookup authority; a miss does not fall
   back to JSON collateral.
-- Init/current SVN continuity in the completed one-hash design uses the
-  authenticated source's verified mapping twice: map
-  `ServtdExt.init_servtd_info_hash` to init SVN, map the source's authenticated
-  current-report `tdinfo_hash` to current SVN, and require
-  `init SVN <= current SVN`. Do not query the destination's local mapping.
+- Init/current SVN continuity resolves the source's authenticated current-report
+  `tdinfo_hash` only through the source mapping. Resolve
+  `ServtdExt.init_servtd_info_hash` through the source mapping first, then the
+  authenticated destination mapping as a fallback. Conflicting assignments
+  fail closed; require `init SVN <= current SVN`.
 - Migration and rebinding both enforce this mapped-SVN ordering. A missing
-  init or current mapping fails closed; the legacy wire Init_TDINFO is ignored.
+  current mapping or an initial hash missing from both mappings fails closed;
+  the legacy wire Init_TDINFO is ignored.
+- MigTD hash mappings are cumulative and append-only. A hash's SVN is immutable,
+  later release SVNs are non-decreasing, and release revocation uses the
+  locally authoritative leaf-signer CRL rather than hash removal.
 
 ## Rebind vs Migration attestation — DIFFERENT verifiers
 

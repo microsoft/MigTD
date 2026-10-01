@@ -8,9 +8,10 @@ timestamp: 2026-07-26T00:14:16+00:00
 
 # Init_TDINFO and ServtdExt Usage Summary
 
-> Reflects the `one_hash` code. MigTD compares init and current SVNs by
-> resolving both hashes through the authenticated source's verified mapping.
-> The legacy Init_TDINFO wire field is accepted for framing but ignored.
+> Reflects the `one_hash` code. MigTD resolves the current SVN through the
+> authenticated source mapping and resolves the initial SVN through the source
+> mapping with an authenticated local fallback. The legacy Init_TDINFO wire
+> field is accepted for framing but ignored.
 
 ## Definitions
 
@@ -58,14 +59,16 @@ The enforced verification is:
 1. Verify the source quote/TDREPORT and measured policy.
 2. Compute the authenticated source's current `tdinfo_hash` and resolve it
    through that source policy's verified JSON mapping or CoRIM.
-3. Read `ServtdExt.init_servtd_info_hash` and resolve it through the same
-   verified source mapping.
-4. Require `init_lookup.isvsvn <= current_lookup.isvsvn`.
+3. Read `ServtdExt.init_servtd_info_hash` and resolve it through the verified
+   source mapping, falling back to the authenticated destination mapping.
+4. Reject conflicting source/local assignments for the initial hash.
+5. Require `init_lookup.isvsvn <= current_lookup.isvsvn`.
 
-Both mapping misses fail closed. The destination's local mapping is not used;
-an older destination must not be required to predict future source releases.
-Because the signed source mapping endorses both hashes, no VMM-provided full
-Init_TDINFO or MROWNER continuity check is needed for SVN ordering.
+A current-source miss or an initial hash missing from both mappings fails
+closed. This supports returning to the originating release or moving to a
+later cumulative release without requiring arbitrary historical multi-hop
+compatibility. No VMM-provided full Init_TDINFO or MROWNER continuity check is
+needed for SVN ordering.
 
 ---
 
@@ -82,9 +85,9 @@ sends it with the legacy Init_TDINFO VDM element.
    policy/event log, and signer anchor; it resolves the **current source
    TDINFO hash** through the source's verified JSON mapping or CoRIM to build
    `evaluation_data_src`.
-3. Resolves `ServtdExt.init_servtd_info_hash` through the same authenticated
-   source mapping and requires `init SVN <= current SVN`. Either mapping miss
-   fails closed.
+3. Resolves `ServtdExt.init_servtd_info_hash` through the authenticated source
+   mapping, then the authenticated local mapping as fallback. Conflicts and a
+   miss from both mappings fail closed; require `init SVN <= current SVN`.
 4. **Policy evaluation** — `evaluate_policy_common` + `evaluate_policy_backward` against `relative_reference = get_local_tcb_evaluation_info()` (the **local** MigTD's TCB, not Init_TDINFO).
 5. **SERVTD_ATTR check** (at MSK exchange, `session.rs::exchange_msk`): both sides call `verify_servtd_attr()` on their own bound target, checking `cur_servtd_attr == EXPECTED_SERVTD_ATTR` (hardcoded `0x0`). The historical `cur == init_attr` comparison was **removed** (it could falsely reject after a legitimate rebind).
 6. **Approved hash write**: destination computes `SHA384(ServtdExt with cur_servtd_info_hash + cur_servtd_attr zeroed)` and writes it to `APPROVED_SERVTD_EXT_HASH` (`write_approved_servtd_ext_hash`).
@@ -99,11 +102,11 @@ sends it with the legacy Init_TDINFO VDM element.
    **current TDINFO hash** through that verified policy's JSON mapping or
    CoRIM to build `evaluation_data_src`.
 2. Resolves `ServtdExt.init_servtd_info_hash` through the old MigTD's
-   authenticated mapping and requires `init SVN <= current SVN`. Either
-   mapping miss fails closed.
-3. **No local init-image allowlist.** Requiring the new MigTD's mapping to
-   contain the old init image would force an older release to predict future
-   rotations and would break bidirectional rebind.
+   authenticated mapping, then the authenticated local mapping as fallback.
+   Conflicts and a miss from both mappings fail closed; require
+   `init SVN <= current SVN`.
+3. **Local lookup is a fallback, not an allowlist.** A source hit remains
+   sufficient, so an older destination need not predict future releases.
 4. **Policy evaluation** — `evaluate_policy_backward` against `relative_reference = get_local_tcb_evaluation_info()` (local TCB, not Init_TDINFO).
 5. **Approved hash write** + **rebind attr write** (`write_servtd_rebind_attr`, rebinding-specific).
 
@@ -114,9 +117,9 @@ sends it with the legacy Init_TDINFO VDM element.
 | Aspect | Migration (destination) | Rebinding (new MigTD) |
 |---|---|---|
 | Peer attestation | Quote + supplemental data | TDREPORT |
-| Init/current SVN ordering | Source mapping; enforced | Source mapping; enforced |
+| Init/current SVN ordering | Source current + source/local initial; enforced | Source current + source/local initial; enforced |
 | Legacy Init_TDINFO | Ignored | Ignored |
-| Init image lookup in destination's local mapping | ❌ deliberately absent | ❌ deliberately absent |
+| Init image lookup in destination's local mapping | Fallback only | Fallback only |
 | Policy-eval relative reference | local TCB (`get_local_tcb_evaluation_info`) | local TCB (`get_local_tcb_evaluation_info`) |
 | Policy rules evaluated | common + backward | backward |
 | `write_approved_servtd_ext_hash` | ✅ | ✅ |
@@ -134,9 +137,9 @@ The two inputs serve different purposes:
 
 | Check | What it verifies | Input |
 |---|---|---|
-| init/current continuity | The initially bound release is no newer than the authenticated current source release | `init_servtd_info_hash` and current report `tdinfo_hash`, both resolved through the source's verified mapping |
+| init/current continuity | The initially bound release is no newer than the authenticated current source release | Current report hash through the source mapping; `init_servtd_info_hash` through source then authenticated-local fallback |
 | current-image TCB lookup | The authenticated current peer image resolves to SVN (and optional date/status) | Complete current `tdinfo_hash` via JSON mapping or CoRIM |
 | cross-peer signer trust | Source and destination belong to the same signer authority while allowing leaf/intermediate rotation | RTMR1 signer anchor: root fingerprint + enrolled signer-purpose EKU |
 
-Do not add a destination-local lookup of Init_TDINFO or restore dependence on
-its wire contents.
+Do not treat the destination mapping as authority for the current source hash
+or restore dependence on the legacy Init_TDINFO wire contents.
