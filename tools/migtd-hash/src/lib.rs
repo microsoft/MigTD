@@ -238,10 +238,11 @@ fn canonical_tdinfo_hash(hash: &str) -> Result<String> {
     Ok(hex::encode_upper(bytes))
 }
 
-/// Add or replace an entry in a v2 TCB mapping.
+/// Add an immutable release entry to a v2 TCB mapping.
 ///
 /// Existing mappings are retained by default. Duplicate hashes with the same
 /// SVN are collapsed, while conflicting duplicate hashes are rejected. The
+/// SVN for a newly added hash must be no lower than every historical SVN. The
 /// result is sorted by the canonical uppercase hash and serialized without a
 /// trailing newline so repeated updates produce stable signing input.
 pub fn update_tcb_mapping_v2(
@@ -298,10 +299,17 @@ pub fn update_tcb_mapping_v2(
         if let Some(previous_svn) = mappings.get(&hash) {
             if *previous_svn != svn {
                 return Err(anyhow!(
-                    "conflicting duplicate tdinfo_hash {hash}: SVN {previous_svn} and {svn}"
+                    "tdinfo_hash {hash} is immutable: existing SVN {previous_svn}, requested {svn}"
                 ));
             }
         } else {
+            if let Some(max_svn) = mappings.values().max() {
+                if svn < *max_svn {
+                    return Err(anyhow!(
+                        "new tdinfo_hash SVN {svn} is lower than historical maximum SVN {max_svn}"
+                    ));
+                }
+            }
             mappings.insert(hash, svn);
         }
     }
@@ -559,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn tcb_mapping_replace_same_hash_is_deterministic() {
+    fn tcb_mapping_repeat_same_assignment_is_deterministic() {
         let input = format!(
             r#"{{"svnMappings":[{{"isvsvn":1,"tdMeasurements":{{"tdinfo_hash":"{}"}}}}]}}"#,
             HASH_AA.to_ascii_lowercase()
@@ -580,19 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn tcb_mapping_rejects_conflicting_current_hash() {
-        let input = format!(
-            r#"{{"svnMappings":[{{"tdMeasurements":{{"tdinfo_hash":"{HASH_AA}"}},"isvsvn":1}}]}}"#
-        );
-        let current = [0xAAu8; 48];
-
-        let error = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 2))).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("conflicting duplicate tdinfo_hash"));
-    }
-
-    #[test]
     fn tcb_mapping_rejects_conflicting_duplicate_hashes() {
         let input = format!(
             r#"{{"svnMappings":[
@@ -606,5 +601,28 @@ mod tests {
         assert!(error
             .to_string()
             .contains("conflicting duplicate tdinfo_hash"));
+    }
+    #[test]
+    fn tcb_mapping_rejects_reassigning_existing_hash() {
+        let input = format!(
+            r#"{{"svnMappings":[{{"tdMeasurements":{{"tdinfo_hash":"{HASH_AA}"}},"isvsvn":1}}]}}"#
+        );
+        let current = [0xAAu8; 48];
+
+        let error = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 2))).unwrap_err();
+        assert!(error.to_string().contains("is immutable"));
+    }
+
+    #[test]
+    fn tcb_mapping_rejects_lower_svn_for_new_release() {
+        let input = format!(
+            r#"{{"svnMappings":[{{"tdMeasurements":{{"tdinfo_hash":"{HASH_AA}"}},"isvsvn":2}}]}}"#
+        );
+        let current = [0x11u8; 48];
+
+        let error = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 1))).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("lower than historical maximum SVN"));
     }
 }

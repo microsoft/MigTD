@@ -37,6 +37,27 @@
 5. Create branch `v<major>.<minor>`.
 6. Upload the release content to branch `v<major>.<minor>`.
 
+### Cumulative MigTD SVN mapping
+
+The prior release's `tcb_mapping.json` signing payload is the
+authority-maintained source of truth for supported MigTD releases. Generate
+the next mapping with
+`migtd-hash --update-tcb-mapping <prior> --output-tcb-mapping <next>
+--mapping-isvsvn <svn>` so the new `tdinfo_hash` is added without dropping
+historical hashes. The tool canonicalizes ordering for reproducible signing
+input, rejects conflicting duplicate hashes, rejects attempts to reassign an
+existing hash, and requires each new release SVN to be no lower than the
+historical maximum.
+
+Historical hash assignments are never removed. Revoke a release by revoking
+the mapping's leaf signer certificate through the servTD CRL. Never create a
+release from `tcb_mapping_seed.json` after the first release, and never remove
+an old mapping by replacing array index zero.
+
+The Azure and AzCVMEmu policy builders accept
+`--tcb-mapping <prior-release-file>` and reuse an existing output mapping by
+default.
+
 ## Release Test Feature:
 
 1. Migration Flow
