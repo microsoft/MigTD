@@ -419,7 +419,6 @@ MOCK_QUOTE_FILE=""
 FETCH_COLLATERALS=false
 AZURE_REGION="useast"
 EXTRA_FEATURES=""
-REVOKE_TDINFO_HASHES=()
 TCB_MAPPING_INPUT=""
 GENERATE_CORIM_ONLY=false
 
@@ -472,10 +471,6 @@ while [[ $# -gt 0 ]]; do
             TCB_MAPPING_INPUT="$2"
             shift 2
             ;;
-        --revoke-tdinfo-hash)
-            REVOKE_TDINFO_HASHES+=("$2")
-            shift 2
-            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo
@@ -491,8 +486,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --extra-features FEATURES    Extra cargo features to add (e.g., 'igvm-attest')"
             echo "  --tcb-mapping FILE           Previous authority-maintained mapping to extend"
             echo "                               (default: existing output, then config/AzCVMEmu)"
-            echo "  --revoke-tdinfo-hash HASH    Explicitly remove a historical tdinfo_hash"
-            echo "                               from the cumulative mapping (repeatable)"
             echo "  -h, --help                   Show this help message"
             echo
             echo "Examples:"
@@ -544,9 +537,6 @@ fi
 echo "  Fetch collaterals: $FETCH_COLLATERALS"
 if [ "$FETCH_COLLATERALS" = true ]; then
     echo "  Azure region: $AZURE_REGION"
-fi
-if [ "${#REVOKE_TDINFO_HASHES[@]}" -gt 0 ]; then
-    echo "  Explicit mapping revocations: ${REVOKE_TDINFO_HASHES[*]}"
 fi
 echo
 
@@ -802,8 +792,8 @@ echo
 # Make sure no ending newline is added (important for signing)
 #
 # The Rust helper retains all supported historical hashes, replaces the
-# current hash by key, rejects conflicting duplicates, applies only explicit
-# revocations, and emits deterministic compact JSON for signing. The
+# current hash by key, rejects conflicting duplicates and non-monotonic SVN
+# assignments, and emits deterministic compact JSON for signing. The
 # --from-report path remains byte-identical to the release pipeline.
 #
 echo -e "${BLUE}=== Step 4: Updating Cumulative TCB Mapping ===${NC}"
@@ -814,9 +804,6 @@ MAPPING_UPDATE_ARGS=(
     --output-tcb-mapping "$TCB_MAPPING_UPDATED"
     --mapping-isvsvn "$ISVSVN"
 )
-for hash in "${REVOKE_TDINFO_HASHES[@]}"; do
-    MAPPING_UPDATE_ARGS+=(--revoke-tdinfo-hash "$hash")
-done
 "$TOOLS_DIR/migtd-hash" \
     --policy-v2 \
     --from-report "$REPORT_DATA_FILE" \

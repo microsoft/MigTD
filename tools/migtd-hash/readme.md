@@ -45,22 +45,15 @@ popd
     --verbose
   ```
 
-  Existing hashes are retained, the current hash is replaced by key, and
-  entries are sorted by uppercase hash for stable signing input. Conflicting
-  duplicate hashes are rejected. Use
+  Existing hashes are retained with immutable SVN assignments, new release
+  SVNs must be no lower than the historical maximum, and entries are sorted by
+  uppercase hash for stable signing input. Conflicting duplicate hashes are
+  rejected. Use
   `config/templates/tcb_mapping_seed.json` only when no prior release exists.
 
-  - Explicitly revoke a historical hash without measuring an image:
-  ```
-  ./target/debug/migtd-hash \
-    --policy-v2 \
-    --update-tcb-mapping <previous-release-tcb_mapping.json> \
-    --output-tcb-mapping <new-release-tcb_mapping.json> \
-    --revoke-tdinfo-hash <96-hex-character-hash>
-  ```
-
-  Revoking an unknown hash is an error. Omitting a historical entry from a new
-  release is not a supported removal mechanism.
+  Historical hash assignments are append-only and are never removed. Revoke
+  a release by revoking the mapping's leaf signer certificate through the
+  locally authoritative servTD CRL.
 
   - Generate migtd SERVTD_HASH with debug infomation:
   ```

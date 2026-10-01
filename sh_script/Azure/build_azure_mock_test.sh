@@ -303,7 +303,6 @@ MEASURED_IMAGE=""
 MEASURED_MANIFEST="$PROJECT_ROOT/config/Azure/servtd_info.json"
 RETAIN_MOCK_REPORT_MAPPING=false
 POLICY_SVN_OVERRIDE=""
-REVOKE_TDINFO_HASHES=()
 TCB_MAPPING_INPUT=""
 
 while [[ $# -gt 0 ]]; do
@@ -366,10 +365,6 @@ while [[ $# -gt 0 ]]; do
             TCB_MAPPING_INPUT="$2"
             shift 2
             ;;
-        --revoke-tdinfo-hash)
-            REVOKE_TDINFO_HASHES+=("$2")
-            shift 2
-            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo
@@ -408,8 +403,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --policy-svn SVN             Override policySvn before signing (test/release staging)"
             echo "  --tcb-mapping FILE           Previous authority-maintained mapping to extend"
             echo "                               (default: existing output, then config/Azure)"
-            echo "  --revoke-tdinfo-hash HASH    Explicitly remove a historical tdinfo_hash"
-            echo "                               from the cumulative mapping (repeatable)"
             echo "  -h, --help                   Show this help message"
             echo
             echo "Examples:"
@@ -443,9 +436,6 @@ echo "  Allow-all policy: $ALLOW_ALL"
 echo "  Fetch collaterals: $FETCH_COLLATERALS"
 if [ "$FETCH_COLLATERALS" = true ]; then
     echo "  Azure region: $AZURE_REGION"
-fi
-if [ "${#REVOKE_TDINFO_HASHES[@]}" -gt 0 ]; then
-    echo "  Explicit mapping revocations: ${REVOKE_TDINFO_HASHES[*]}"
 fi
 if [ -n "$POLICY_SVN_OVERRIDE" ]; then
     echo "  Policy SVN override: $POLICY_SVN_OVERRIDE"
@@ -720,9 +710,6 @@ MAPPING_UPDATE_ARGS=(
     --output-tcb-mapping "$TCB_MAPPING_UPDATED"
     --mapping-isvsvn "$ISVSVN"
 )
-for hash in "${REVOKE_TDINFO_HASHES[@]}"; do
-    MAPPING_UPDATE_ARGS+=(--revoke-tdinfo-hash "$hash")
-done
 "$TOOLS_DIR/migtd-hash" \
     --policy-v2 \
     "${MAPPING_MEASUREMENT_ARGS[@]}" \

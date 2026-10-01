@@ -80,11 +80,10 @@ fn update_tcb_mapping_file_v2(
     input_path: &Path,
     output_path: &Path,
     current_mapping: Option<(&[u8], u16)>,
-    revoked_hashes: &[String],
 ) -> anyhow::Result<()> {
     let manifest =
         fs::read(input_path).with_context(|| format!("Failed to read {}", input_path.display()))?;
-    let serialized = update_tcb_mapping_v2(&manifest, current_mapping, revoked_hashes)
+    let serialized = update_tcb_mapping_v2(&manifest, current_mapping)
         .with_context(|| format!("Failed to update {}", input_path.display()))?;
     fs::write(output_path, serialized).with_context(|| {
         format!(
@@ -217,10 +216,6 @@ struct Config {
     /// `--policy-v2` updates a mapping from an image or report.
     #[clap(long, requires = "update_tcb_mapping")]
     pub mapping_isvsvn: Option<u16>,
-    /// Explicitly remove a previously supported v2 `tdinfo_hash`. May be
-    /// repeated. Revoking an unknown hash is an error.
-    #[clap(long, requires = "update_tcb_mapping")]
-    pub revoke_tdinfo_hash: Vec<String>,
 }
 
 fn main() {
@@ -242,48 +237,15 @@ fn main() {
     let servtd_attr = config.servtd_attr.unwrap_or(0);
     debug!("ServTD attributes: {:#x}", servtd_attr);
 
-    if !config.policy_v2
-        && (config.mapping_isvsvn.is_some() || !config.revoke_tdinfo_hash.is_empty())
-    {
-        eprintln!("mapping SVN and revocation options require --policy-v2");
+    if !config.policy_v2 && config.mapping_isvsvn.is_some() {
+        eprintln!("mapping SVN requires --policy-v2");
         exit(1);
     }
 
     let has_measurement_input = config.from_report.is_some() || config.image.is_some();
-    if !has_measurement_input
-        && config.policy_v2
-        && config.update_tcb_mapping.is_some()
-        && !config.revoke_tdinfo_hash.is_empty()
-    {
-        if config.mapping_isvsvn.is_some() {
-            eprintln!("--mapping-isvsvn requires --image or --from-report");
-            exit(1);
-        }
-        if config.manifest.is_some()
-            || config.output_file.is_some()
-            || config.output_td_info.is_some()
-            || config.output_tdinfo_hash.is_some()
-            || config.servtd_attr.is_some()
-            || config.calc_servtd_hash
-            || config.json
-            || config.test_disable_ra_and_accept_all
-        {
-            eprintln!("measurement and hash options require --image or --from-report");
-            exit(1);
-        }
-
-        let input_path = config.update_tcb_mapping.as_ref().unwrap();
-        let output_path = config
-            .output_tcb_mapping
-            .as_deref()
-            .unwrap_or(input_path.as_path());
-        if let Err(e) =
-            update_tcb_mapping_file_v2(input_path, output_path, None, &config.revoke_tdinfo_hash)
-        {
-            eprintln!("Failed to update tcb_mapping file: {}", e);
-            exit(1);
-        }
-        return;
+    if !has_measurement_input && config.update_tcb_mapping.is_some() {
+        eprintln!("--update-tcb-mapping requires --image or --from-report");
+        exit(1);
     }
 
     // Branch 1: --from-report mode. Build TDINFO from the saved report JSON
@@ -432,12 +394,7 @@ fn main() {
                 eprintln!("--mapping-isvsvn is required with --policy-v2 --update-tcb-mapping");
                 exit(1);
             });
-            update_tcb_mapping_file_v2(
-                tcb_mapping_path,
-                output_path,
-                Some((hash, isvsvn)),
-                &config.revoke_tdinfo_hash,
-            )
+            update_tcb_mapping_file_v2(tcb_mapping_path, output_path, Some((hash, isvsvn)))
         } else {
             update_tcb_mapping_file_v1(
                 tcb_mapping_path,

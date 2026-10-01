@@ -153,10 +153,10 @@ first-release seed.
  --mapping-isvsvn <release-N-isvsvn>
 ```
 
-The updater preserves historical hashes, replaces the current hash by key,
-rejects conflicting duplicates, and sorts entries deterministically before
-signing. Remove an unsupported release only with the reviewed
-`--revoke-tdinfo-hash <hash>` operation.
+The updater preserves every historical hash, rejects attempts to reassign an
+existing hash or lower the SVN for a new release, and sorts entries
+deterministically before signing. Release revocation uses the servTD leaf
+signer CRL; individual hash mappings are never removed.
 
 ### Resign policy with generated keys
 ```

@@ -7,7 +7,7 @@ use crypto::{hash::digest_sha384, SHA384_DIGEST_SIZE};
 use igvm::{IgvmDirectiveHeader, IgvmFile};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::File,
     io::{Read, Seek, SeekFrom},
     mem::size_of,
@@ -237,16 +237,16 @@ fn canonical_tdinfo_hash(hash: &str) -> Result<String> {
     Ok(hex::encode_upper(bytes))
 }
 
-/// Add, replace, or explicitly revoke entries in a v2 TCB mapping.
+/// Add an immutable release entry to a v2 TCB mapping.
 ///
 /// Existing mappings are retained by default. Duplicate hashes with the same
 /// SVN are collapsed, while conflicting duplicate hashes are rejected. The
+/// SVN for a newly added hash must be no lower than every historical SVN. The
 /// result is sorted by the canonical uppercase hash and serialized without a
 /// trailing newline so repeated updates produce stable signing input.
 pub fn update_tcb_mapping_v2(
     input: &[u8],
     current_mapping: Option<(&[u8], u16)>,
-    revoked_hashes: &[String],
 ) -> Result<Vec<u8>> {
     let mut document: Value =
         serde_json::from_slice(input).map_err(|e| anyhow!("invalid TCB mapping JSON: {e}"))?;
@@ -281,14 +281,6 @@ pub fn update_tcb_mapping_v2(
         }
     }
 
-    let mut revocations = BTreeSet::new();
-    for hash in revoked_hashes {
-        revocations.insert(
-            canonical_tdinfo_hash(hash)
-                .map_err(|e| anyhow!("invalid revoked tdinfo_hash '{hash}': {e}"))?,
-        );
-    }
-
     let current_mapping = current_mapping
         .map(|(hash, svn)| {
             if hash.len() != SHA384_DIGEST_SIZE {
@@ -302,24 +294,23 @@ pub fn update_tcb_mapping_v2(
         })
         .transpose()?;
 
-    if let Some((hash, _)) = &current_mapping {
-        if revocations.contains(hash) {
-            return Err(anyhow!(
-                "tdinfo_hash {hash} cannot be added and revoked in the same update"
-            ));
-        }
-    }
-
-    for hash in revocations {
-        if mappings.remove(&hash).is_none() {
-            return Err(anyhow!(
-                "cannot revoke unknown tdinfo_hash {hash}; no mapping was removed"
-            ));
-        }
-    }
-
     if let Some((hash, svn)) = current_mapping {
-        mappings.insert(hash, svn);
+        if let Some(previous_svn) = mappings.get(&hash) {
+            if *previous_svn != svn {
+                return Err(anyhow!(
+                    "tdinfo_hash {hash} is immutable: existing SVN {previous_svn}, requested {svn}"
+                ));
+            }
+        } else {
+            if let Some(max_svn) = mappings.values().max() {
+                if svn < *max_svn {
+                    return Err(anyhow!(
+                        "new tdinfo_hash SVN {svn} is lower than historical maximum SVN {max_svn}"
+                    ));
+                }
+            }
+            mappings.insert(hash, svn);
+        }
     }
 
     *svn_mappings = mappings
@@ -574,7 +565,7 @@ mod tests {
         );
         let current = [0x11u8; 48];
 
-        let output = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 2)), &[]).unwrap();
+        let output = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 2))).unwrap();
         let value: Value = serde_json::from_slice(&output).unwrap();
         let mappings = value["svnMappings"].as_array().unwrap();
 
@@ -592,7 +583,7 @@ mod tests {
         );
         let current = [0x11u8; 48];
 
-        let output = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 1)), &[]).unwrap();
+        let output = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 1))).unwrap();
         let value: Value = serde_json::from_slice(&output).unwrap();
         let mappings = value["svnMappings"].as_array().unwrap();
 
@@ -615,8 +606,7 @@ mod tests {
         let mock_hash = [0x33u8; 48];
         let real_hash = [0x44u8; 48];
 
-        let phase_one =
-            update_tcb_mapping_v2(authority.as_bytes(), Some((&mock_hash, 2)), &[]).unwrap();
+        let phase_one = update_tcb_mapping_v2(authority.as_bytes(), Some((&mock_hash, 2))).unwrap();
         let phase_one: Value = serde_json::from_slice(&phase_one).unwrap();
         assert!(phase_one["svnMappings"]
             .as_array()
@@ -627,7 +617,7 @@ mod tests {
         // The measured-image phase must restart from the authority input, not
         // from phase one's generated output containing the transient mock hash.
         let final_mapping =
-            update_tcb_mapping_v2(authority.as_bytes(), Some((&real_hash, 2)), &[]).unwrap();
+            update_tcb_mapping_v2(authority.as_bytes(), Some((&real_hash, 2))).unwrap();
         let final_mapping: Value = serde_json::from_slice(&final_mapping).unwrap();
         let mappings = final_mapping["svnMappings"].as_array().unwrap();
 
@@ -644,15 +634,15 @@ mod tests {
     }
 
     #[test]
-    fn tcb_mapping_replace_same_hash_is_deterministic() {
+    fn tcb_mapping_repeat_same_assignment_is_deterministic() {
         let input = format!(
             r#"{{"svnMappings":[{{"isvsvn":1,"tdMeasurements":{{"tdinfo_hash":"{}"}}}}]}}"#,
             HASH_AA.to_ascii_lowercase()
         );
         let current = [0xAAu8; 48];
 
-        let first = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 7)), &[]).unwrap();
-        let second = update_tcb_mapping_v2(&first, Some((&current, 7)), &[]).unwrap();
+        let first = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 1))).unwrap();
+        let second = update_tcb_mapping_v2(&first, Some((&current, 1))).unwrap();
         let value: Value = serde_json::from_slice(&first).unwrap();
 
         assert_eq!(first, second);
@@ -661,7 +651,7 @@ mod tests {
             value["svnMappings"][0]["tdMeasurements"]["tdinfo_hash"],
             HASH_AA
         );
-        assert_eq!(value["svnMappings"][0]["isvsvn"], 7);
+        assert_eq!(value["svnMappings"][0]["isvsvn"], 1);
     }
 
     #[test]
@@ -674,22 +664,33 @@ mod tests {
             HASH_AA.to_ascii_lowercase()
         );
 
-        let error = update_tcb_mapping_v2(input.as_bytes(), None, &[]).unwrap_err();
+        let error = update_tcb_mapping_v2(input.as_bytes(), None).unwrap_err();
         assert!(error
             .to_string()
             .contains("conflicting duplicate tdinfo_hash"));
     }
 
     #[test]
-    fn tcb_mapping_revocation_must_be_explicit_and_match() {
+    fn tcb_mapping_rejects_reassigning_existing_hash() {
         let input = format!(
             r#"{{"svnMappings":[{{"tdMeasurements":{{"tdinfo_hash":"{HASH_AA}"}},"isvsvn":1}}]}}"#
         );
+        let current = [0xAAu8; 48];
 
-        let output = update_tcb_mapping_v2(input.as_bytes(), None, &[HASH_AA.to_string()]).unwrap();
-        let value: Value = serde_json::from_slice(&output).unwrap();
-        assert!(value["svnMappings"].as_array().unwrap().is_empty());
-        assert!(update_tcb_mapping_v2(input.as_bytes(), None, &[HASH_11.to_string()]).is_err());
-        assert!(update_tcb_mapping_v2(input.as_bytes(), None, &[HASH_11.to_string()]).is_err());
+        let error = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 2))).unwrap_err();
+        assert!(error.to_string().contains("is immutable"));
+    }
+
+    #[test]
+    fn tcb_mapping_rejects_lower_svn_for_new_release() {
+        let input = format!(
+            r#"{{"svnMappings":[{{"tdMeasurements":{{"tdinfo_hash":"{HASH_AA}"}},"isvsvn":2}}]}}"#
+        );
+        let current = [0x11u8; 48];
+
+        let error = update_tcb_mapping_v2(input.as_bytes(), Some((&current, 1))).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("lower than historical maximum SVN"));
     }
 }
