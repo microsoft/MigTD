@@ -261,13 +261,13 @@ fi
 if stage_should_run emu; then
     banner emu
 
-    # CI generates all default, rotation, revocation, and CoRIM-only policy
-    # variants before the corresponding scenarios. A single generation covers
-    # this local serial run.
+    # CI generates all default, rotation, revocation, and CoRIM policy variants
+    # before the corresponding scenarios. A single generation covers this
+    # local serial run.
     step policy-generation ./sh_script/build_AzCVMEmu_policy_and_test.sh \
-        --mock-report --skip-test --corim-only
+        --mock-report --skip-test
 
-    # CoRIM-only policy contract job.
+    # CoRIM policy contract job.
     step corim-policy__build env SPDM_CONFIG="$REPO_ROOT/config/spdm_config.json" \
         cargo build --no-default-features \
         --features AzCVMEmu,policy_v2,test_mock_report,spdm_attestation,servtd_corim
