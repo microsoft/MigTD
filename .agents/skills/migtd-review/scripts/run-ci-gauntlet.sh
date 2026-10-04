@@ -275,7 +275,9 @@ if stage_should_run emu; then
         --features policy_v2,servtd_corim
     step corim-policy__hash-tests cargo test -p migtd-hash
     step corim-policy__azure-script-syntax bash -n sh_script/Azure/build_azure_mock_test.sh
-    step corim-policy__mock-script-syntax bash -n sh_script/Azure/build_mock_quote_igvm.sh
+    step corim-policy__helper-script-syntax bash -n \
+        sh_script/corim_cli_helpers.sh \
+        sh_script/gen_asymmetric_servtd_corim_fixture.sh
 
     # 1. skip-ra
     step skip-ra__build cargo build \
