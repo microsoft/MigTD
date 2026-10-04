@@ -266,6 +266,9 @@ if stage_should_run emu; then
     # local serial run.
     step policy-generation ./sh_script/build_AzCVMEmu_policy_and_test.sh \
         --mock-report --skip-test
+    step corim-policy__prepare python3 sh_script/prepare_AzCVMEmu_corim_policy.py \
+        --base config/AzCVMEmu/policy_v2_signed.json \
+        --output target/emu-corim-policy.json
 
     # CoRIM policy contract job.
     step corim-policy__build env SPDM_CONFIG="$REPO_ROOT/config/spdm_config.json" \
@@ -325,29 +328,29 @@ if stage_should_run emu; then
 
     # 8. corim-migration
     step corim-migration ./migtdemu.sh --policy-v2 \
-        --policy-file ./config/AzCVMEmu/policy_v2_corim.json \
-        --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor.bin \
-        --servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim.cose \
+        --policy-file ./target/emu-corim-policy.json \
+        --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
+        --servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
     step corim-migration__verify verify_corim_runtime migration \
-        config/AzCVMEmu/policy_v2_corim.json \
-        config/AzCVMEmu/servtd_signer_anchor.bin
+        target/emu-corim-policy.json \
+        src/policy/test/policy_v2/corim/signer_anchor.bin
 
     # 9. corim-rebind
     step corim-rebind ./migtdemu.sh --operation rebind-prepare \
-        --policy-file ./config/AzCVMEmu/policy_v2_corim.json \
-        --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor.bin \
-        --servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim.cose \
+        --policy-file ./target/emu-corim-policy.json \
+        --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
+        --servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
     step corim-rebind__verify verify_corim_runtime rebind-prepare \
-        config/AzCVMEmu/policy_v2_corim.json \
-        config/AzCVMEmu/servtd_signer_anchor.bin
+        target/emu-corim-policy.json \
+        src/policy/test/policy_v2/corim/signer_anchor.bin
 
     # 10. corim-asymmetric-migration
     step corim-asymmetric__generate ./sh_script/gen_asymmetric_servtd_corim_fixture.sh
     step corim-asymmetric-migration ./migtdemu.sh --policy-v2 \
         --policy-file ./config/AzCVMEmu/policy_v2_corim_asymmetric.json \
-        --servtd-signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin \
+        --signer-anchor-file ./config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin \
         --src-servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim_asymmetric_src.cose \
         --dst-servtd-corim-file ./config/AzCVMEmu/tcb_mapping_corim_asymmetric_dst.cose \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
