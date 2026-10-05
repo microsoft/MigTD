@@ -157,7 +157,10 @@ verify_corim_runtime() {
 }
 
 verify_asymmetric_corim() {
-    jq -e '[.policyData.policy[] | select(has("servtd"))] | length == 0' \
+    jq -e '
+        (.policyData | has("servtdCollateral") | not) and
+        ([.policyData.policy[] | select(has("servtd"))] | length == 1)
+    ' \
         config/AzCVMEmu/policy_v2_corim_asymmetric.json >/dev/null &&
         [ "$(wc -c < config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin)" -eq 48 ] &&
         ! cmp -s config/AzCVMEmu/tcb_mapping_corim_asymmetric_src.cose \
