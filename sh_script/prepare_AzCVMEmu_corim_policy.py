@@ -13,7 +13,7 @@ from pathlib import Path
 FIXTURES = Path(__file__).resolve().parent.parent / "src/policy/test/policy_v2/corim"
 
 
-def prepare(base, output, with_identity):
+def prepare(base, output, with_identity, revoked):
     policy = json.loads(base.read_text())
     data = policy["policyData"]
     data.pop("servtdCollateral", None)
@@ -28,7 +28,8 @@ def prepare(base, output, with_identity):
             "operation": "greater-or-equal", "reference": "2024-01-01T00:00:00Z",
         }
     else:
-        data["servtdCrl"] = (FIXTURES / "servtd.crl.pem").read_text()
+        crl = "revoked.crl.pem" if revoked else "servtd.crl.pem"
+        data["servtdCrl"] = (FIXTURES / crl).read_text()
     servtd_rule = {
         "servtd": {
             "migtdIdentity": identity_rules,
@@ -47,5 +48,6 @@ if __name__ == "__main__":
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--with-identity", action="store_true")
+    parser.add_argument("--revoked", action="store_true")
     arguments = parser.parse_args()
-    prepare(arguments.base, arguments.output, arguments.with_identity)
+    prepare(arguments.base, arguments.output, arguments.with_identity, arguments.revoked)

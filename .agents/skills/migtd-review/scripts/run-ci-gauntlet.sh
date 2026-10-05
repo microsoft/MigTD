@@ -413,13 +413,16 @@ if stage_should_run emu; then
 
     # 18. policy-v2-revoked
     step policy-v2-revoked__build cargo build --release \
-        --features AzCVMEmu,policy_v2,test_mock_report --no-default-features
+        --features AzCVMEmu,policy_v2,test_mock_report,servtd_corim --no-default-features
+    step policy-v2-revoked__prepare python3 sh_script/prepare_AzCVMEmu_corim_policy.py \
+        --base config/AzCVMEmu/policy_v2_signed.json \
+        --output target/emu-corim-revoked-policy.json \
+        --revoked
     step_expect_failure_pattern policy-v2-revoked SignerRevoked \
         ./migtdemu.sh --policy-v2 \
-        --src-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json \
-        --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
-        --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json \
-        --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --policy-file ./target/emu-corim-revoked-policy.json \
+        --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
+        --servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
         --mock-report --both --no-sudo --log-level info
 fi
 

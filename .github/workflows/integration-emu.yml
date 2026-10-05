@@ -150,16 +150,15 @@ jobs:
             test-command: "./migtdemu.sh --policy-v2 --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_pmi_b.json --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem --mock-report --both --no-sudo --log-level info"
             artifact-name: "policy-v2-all-chains-rotation-test-logs"
 
-          # Negative test: the TCB-mapping signer certificate is revoked by the
-          # signer CRL embedded in collaterals.servtdCrl, so every MigTD must
+          # Negative test: the CoRIM signer certificate is revoked by the
+          # signer CRL embedded in policyData.servtdCrl, so every MigTD must
           # fail closed at policy init (PolicyError::SignerRevoked) and refuse
-          # to migrate. Uses the policy_v2_signed_revoked.json variant emitted
-          # by build_AzCVMEmu_policy_and_test.sh on both sides.
+          # to migrate.
           - test-name: "Policy v2 Signer Revocation (Mock Report)"
             test-type: "policy-v2-revoked"
             install-jq: 'true'
             timeout-seconds: 300
-            test-command: "./migtdemu.sh --policy-v2 --src-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_revoked.json --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem --mock-report --both --no-sudo --log-level info"
+            test-command: "./migtdemu.sh --policy-v2 --policy-file ./target/emu-corim-policy.json --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin --servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim --mock-report --both --no-sudo --log-level info"
             artifact-name: "policy-v2-revoked-test-logs"
 
     steps:
@@ -247,11 +246,14 @@ jobs:
           ls -la config/AzCVMEmu/policy_v2_signed*.json config/AzCVMEmu/policy_issuer_chain*.pem
 
       - name: Prepare signed CoRIM policy
-        if: matrix.test-type == 'policy-v2-corim' || matrix.test-type == 'spdm-policy-v2-corim-identity'
+        if: matrix.test-type == 'policy-v2-corim' || matrix.test-type == 'spdm-policy-v2-corim-identity' || matrix.test-type == 'policy-v2-revoked'
         run: |
           identity_args=()
           if [[ "${{ matrix.test-type }}" == "spdm-policy-v2-corim-identity" ]]; then
             identity_args+=(--with-identity)
+          fi
+          if [[ "${{ matrix.test-type }}" == "policy-v2-revoked" ]]; then
+            identity_args+=(--revoked)
           fi
           python3 sh_script/prepare_AzCVMEmu_corim_policy.py \
             --base config/AzCVMEmu/policy_v2_signed.json \
@@ -474,7 +476,7 @@ jobs:
             config/AzCVMEmu/policy_v2_signed_b.json
             config/AzCVMEmu/policy_v2_signed_pm_b.json
             config/AzCVMEmu/policy_v2_signed_pmi_b.json
-            config/AzCVMEmu/policy_v2_signed_revoked.json
+            target/emu-corim-policy.json
             config/AzCVMEmu/policy_issuer_chain.pem
             config/AzCVMEmu/policy_issuer_chain_a.pem
             config/AzCVMEmu/policy_issuer_chain_b.pem
