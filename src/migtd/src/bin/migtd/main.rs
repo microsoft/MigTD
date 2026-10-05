@@ -10,9 +10,9 @@ extern crate alloc;
 use core::future::poll_fn;
 use core::task::Poll;
 
-#[cfg(feature = "policy_v2")]
-use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(feature = "policy_v2")]
+use alloc::{format, string::String};
 use log::info;
 #[cfg(feature = "vmcall-raw")]
 use log::{debug, Level};
@@ -477,16 +477,17 @@ fn initialize_policy() -> String {
     #[cfg(feature = "servtd_corim")]
     let json_mapping = None;
     // Initialize and verify the migration policy
-    let version =
-        mig_policy::init_policy(policy, signer_anchor_source, json_mapping).map_err(|e| {
-            log::error!("Failed to initialize migration policy: {:?}\n", e);
+    match mig_policy::init_policy(policy, signer_anchor_source, json_mapping) {
+        Ok(version) => version,
+        Err(error) => {
+            let message = format!("Failed to initialize migration policy: {:?}", error);
+            log::error!("{}\n", message);
             panic_with_guest_crash_reg_report(
                 MigrationResult::InvalidPolicyError as u64,
-                b"Failed to initialize migration policy",
+                message.as_bytes(),
             );
-        });
-
-    version.expect("Failed to initialize migration policy")
+        }
+    }
 }
 
 fn handle_pre_mig() {
