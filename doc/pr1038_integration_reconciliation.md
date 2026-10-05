@@ -165,6 +165,33 @@ Every firmware or boundary-code replay was followed by the port gate:
 
 Additional focused checks covered `migtd-hash`, policy-v2 continuity, asymmetric
 CoRIM fixture generation, migration fault modes, and the enroller preparation
-patch. Milestone and full CI validation are run after the complete replay so
-the final state, rather than an intermediate policy/tooling combination, is
-tested.
+patch.
+
+The final milestone matrix passed all 8 scenarios. The CI gauntlet passed:
+
+- preparation, formatting, Clippy, and dependency policy;
+- MigTD library build and feature-matrix tests;
+- all 32 release/debug, transport, ABI, and TLS/SPDM image builds; and
+- all EMU scenarios, including direct-anchor CoRIM migration/rebind,
+  asymmetric peer mappings, key and mapping-chain rotation, quote retry, and
+  the expected `SignerRevoked` failure.
+
+Final validation exposed stale integration-era assumptions in the local
+gauntlet and asymmetric fixture generator. They were reconciled to PR 1038 by:
+
+- removing the deleted `--corim-only` builder option and obsolete helper path;
+- using the current `--signer-anchor-file` interface and checked-in PR CoRIM
+  fixtures;
+- generating V2 root+Subject/SAN+EKU anchors, a three-certificate chain, and an
+  intermediate-issued CRL for asymmetric fixtures;
+- preserving the complete `policyData` envelope and CoRIM-backed SVN rule;
+- keeping both peers' running-hash assignment identical while adding a
+  source-only historical mapping; and
+- using the checked-in revoked CoRIM signer CRL for the negative test while
+  carrying the concrete initialization error into the crash report.
+
+The linux-sgx pruning safety test also passed. The pinned-container
+reproducibility workflow could not run because Docker is unavailable in the
+local environment. Fuzz execution was checked but is environment-blocked by
+passwordless `sudo` and missing `cargo-afl`/`cargo-fuzz`; those CI workflows
+remain the required coverage for those checks.
