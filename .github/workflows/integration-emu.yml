@@ -429,9 +429,12 @@ jobs:
           if [[ "${{ matrix.test-type }}" == "corim-asymmetric-migration" ]]; then
             echo ""
             echo "=== Verifying asymmetric peer CoRIM fixtures ==="
-            if ! jq -e '[.policyData.policy[] | select(has("servtd"))] | length == 0' \
+            if ! jq -e '
+              (.policyData | has("servtdCollateral") | not) and
+              ([.policyData.policy[] | select(has("servtd"))] | length == 1)
+            ' \
               config/AzCVMEmu/policy_v2_corim_asymmetric.json >/dev/null; then
-              echo "❌ Asymmetric policy still contains a servTD rule"
+              echo "❌ Asymmetric policy does not contain exactly one CoRIM-backed servTD rule"
               exit 1
             fi
             if [[ $(wc -c < config/AzCVMEmu/servtd_signer_anchor_asymmetric.bin) -ne 48 ]]; then
