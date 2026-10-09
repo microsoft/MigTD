@@ -83,6 +83,13 @@ At boot, MigTD:
   and pass signer revocation checks.
 - When a CoRIM is enrolled it is the sole TCB lookup authority. Do not expect
   JSON fallback on a CoRIM miss.
+- `servtd_corim.rs` resolves generic Intel/TDX conditional endorsements
+  without an instance: `tdx_{init,curr}_server_td_hash` (SHA-384, algorithm 7)
+  to the same phase's `tdx_{init,curr}_server_td_svn` (exact `u16`).
+  Initial and current maps must have identical coverage and SVNs before
+  entering the phase-independent lookup cache. Missing phases, extra
+  constraints, and conflicting hash-to-SVN assignments fail closed.
+  See `conditional_endorsements_require_identical_phase_coverage_and_svns`.
 - MigTD has no trusted clock or persistent mapping-generation state. Mapping
   publication order and rollback prevention remain release-authority and
   deployment responsibilities; do not describe signed mapping replacement as
