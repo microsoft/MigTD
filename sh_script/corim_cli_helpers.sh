@@ -82,6 +82,7 @@ pathlib.Path(sys.argv[2]).write_bytes(r + s)
 PY
 }
 
+# Bind root DER, full Subject DN DER, and the selected EKU OID; SAN is excluded.
 compute_signer_anchor() {
     local root_cert="$1"
     local leaf_cert="$2"
@@ -145,13 +146,11 @@ if tag != 0x30:
 
 root_hash = hashlib.sha384(root_der).digest()
 subject_hash = hashlib.sha384(leaf_der[subject_start:subject_end]).digest()
-san_hash = hashlib.sha384(b"\x00").digest()
 anchor = hashlib.sha384(
     b"\x00".join((
-        b"MIGTD-RTMR1-ANCHOR-V2",
+        b"MIGTD-RTMR1-ANCHOR",
         root_hash,
         subject_hash,
-        san_hash,
         eku_der,
     ))
 ).digest()

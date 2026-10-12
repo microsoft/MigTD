@@ -333,7 +333,8 @@ if stage_should_run emu; then
     step corim-migration ./migtdemu.sh --policy-v2 \
         --policy-file ./target/emu-corim-policy.json \
         --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
-        --servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
+        --src-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
+        --dst-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping_san_mismatch.corim \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
     step corim-migration__verify verify_corim_runtime migration \
         target/emu-corim-policy.json \
@@ -343,7 +344,8 @@ if stage_should_run emu; then
     step corim-rebind ./migtdemu.sh --operation rebind-prepare \
         --policy-file ./target/emu-corim-policy.json \
         --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
-        --servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
+        --src-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
+        --dst-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping_no_san.corim \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
     step corim-rebind__verify verify_corim_runtime rebind-prepare \
         target/emu-corim-policy.json \

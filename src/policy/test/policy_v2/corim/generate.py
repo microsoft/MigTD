@@ -64,17 +64,10 @@ def signed_json(name, value, key):
 
 
 def signer_anchor(root, leaf):
-    try:
-        names = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-    except x509.ExtensionNotFound:
-        san_input = b"\x00"
-    else:
-        san_input = b"\x01" + names.public_bytes()
     components = [
-        b"MIGTD-RTMR1-ANCHOR-V2",
+        b"MIGTD-RTMR1-ANCHOR",
         hashlib.sha384(root.public_bytes(serialization.Encoding.DER)).digest(),
         hashlib.sha384(leaf.subject.public_bytes()).digest(),
-        hashlib.sha384(san_input).digest(),
         SIGNER_EKU_DER,
     ]
     return hashlib.sha384(b"\x00".join(components)).digest()

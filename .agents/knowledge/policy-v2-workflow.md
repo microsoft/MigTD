@@ -22,7 +22,7 @@ Shared:
   migtd-collateral-generator -> platform TCB/QE collaterals
   migtd-policy-generator v2  -> { "policyData": ... }
 
-JSON compatibility path:
+JSON endorsement path:
   sign tdTcbMapping (tdinfo_hash -> SVN)
   optionally sign tdIdentity (SVN -> date/status)
   servtd-collateral-generator -> JSON servtdCollateral + issuer chains
@@ -45,13 +45,15 @@ endorsement comes from either the inner JSON signatures or the CoRIM
 At boot, MigTD:
 
 1. Resolves the signer anchor
-   `A = SHA384(tag || H(rootDER) || leafEkuOidDER)` from a PEM chain or the
-   direct anchor slot and extends `SHA384(A)` into RTMR1.
+   `A = SHA384("MIGTD-RTMR1-ANCHOR" || 0 || H(rootDER) || 0 || H(subjectDER) || 0 || leafEkuOidDER)`
+   from a PEM chain or the direct anchor slot and extends `SHA384(A)` into RTMR1.
+   SAN is not bound. Anchor producers, firmware, and offline hashing use this
+   same formula.
 2. Extends canonical `policyData` into RTMR2. JSON packaging redacts only the
    TCB mapping and mapping issuer chain; JSON TD Identity and its issuer chain
    remain measured. A CoRIM-only policy has no `servtdCollateral` and is
    measured as-is.
-3. Verifies JSON/CoRIM signatures and binds their signer root+EKU to `A`.
+3. Verifies JSON/CoRIM signatures and binds their signer root/Subject DN/EKU to `A`.
 
 ## Updating mappings and rotating signer leaves
 
@@ -78,8 +80,9 @@ At boot, MigTD:
   the final image `SERVTD_INFO_HASH` used by `SERVTD_EXT` continuity checks.
   Generate measured-image policy collateral with
   `build_azure_mock_test.sh --retain-mock-report-mapping`.
-- Rotating leaf or intermediate keys is measurement neutral only when the root
-  and signer-anchor EKU are unchanged; the new chain must still validate
+- Rotating leaf or intermediate keys preserves RTMR1 only when the root,
+  byte-exact full Subject DN, and signer-anchor EKU are unchanged; SAN can
+  change. The new chain must still validate
   and pass signer revocation checks.
 - When a CoRIM is enrolled it is the sole TCB lookup authority. Do not expect
   JSON fallback on a CoRIM miss.
@@ -96,7 +99,7 @@ At boot, MigTD:
   an independently enforced in-guest freshness guarantee.
 - After enrollment, recompute the image hash with `migtd-hash` and require it
   to equal the pre-enrollment value. A mismatch means measured policy content,
-  root, or signer EKU changed.
+  root, Subject DN, signer EKU, or anchor profile changed.
 
 ## Implementation status
 
@@ -112,7 +115,9 @@ Legacy scripts still use `config/templates/policy_v2_signed.json` and
 `policy_issuer_chain.pem`. CoRIM-only builds instead need a policy without
 `servtdCollateral`, the 48-byte anchor file, and the signed `.cose` mapping.
 Do not mix the direct-anchor and PEM-chain inputs accidentally: the direct
-anchor takes precedence when both CFV slots are populated.
+anchor takes precedence when both CFV slots are populated. Successfully enrolling
+or hashing a raw 48-byte digest is not proof that it matches the signer identity.
+JSON/CoRIM authentication must reproduce it.
 
 GitHub `cargo image` matrix jobs are compile checks, not publishable release
 artifacts. A deployable image must go through either the release CoRIM

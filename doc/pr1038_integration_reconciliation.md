@@ -3,6 +3,12 @@
 This document records the semantic rebase of `ms/integration` onto the
 upstreaming stack for Intel/MigTD PR 1038.
 
+**Historical reconciliation and validation record.** For the current
+signer-anchor contract, see
+[policy_v2.md](./policy_v2.md#direct-signer-anchor-enrollment).
+The dispositions and validation results below describe the reconciliation
+at that time.
+
 ## Result
 
 - Intel base: `c9f39cc2253fdadd6bfb7041f94470d4157b5855`
@@ -23,14 +29,14 @@ re-expressed on the PR structure instead of restoring the older implementation.
 
 ### One-hash policy and signer identity
 
-PR 1038 is authoritative for the one-hash endorsement format, CoRIM parsing,
-dedicated-EKU signer anchors, RTMR1 enrollment, signer revocation, optional JSON
-identity, and peer-data framing. Integration changes that implemented older
-versions of those features were not replayed.
+PR 1038 was authoritative during this reconciliation for the one-hash
+endorsement format, CoRIM parsing, dedicated-EKU signer anchors, RTMR1
+enrollment, signer revocation, optional JSON identity, and peer-data framing.
+Integration changes that implemented older versions of those features were
+not replayed.
 
-The resulting signer identity is the RTMR1 root-certificate plus dedicated-EKU
-anchor. Legacy signer-key-hash and `MROwner`/`MROwnerConfig` interpretations were
-not restored.
+Signer identity was bound through RTMR1. Legacy signer-key-hash and
+`MROwner`/`MROwnerConfig` interpretations were not restored.
 
 ### Initial and current release continuity
 
@@ -182,7 +188,7 @@ gauntlet and asymmetric fixture generator. They were reconciled to PR 1038 by:
 - removing the deleted `--corim-only` builder option and obsolete helper path;
 - using the current `--signer-anchor-file` interface and checked-in PR CoRIM
   fixtures;
-- generating V2 root+Subject/SAN+EKU anchors, a three-certificate chain, and an
+- generating signer anchors, a three-certificate chain, and an
   intermediate-issued CRL for asymmetric fixtures;
 - preserving the complete `policyData` envelope and CoRIM-backed SVN rule;
 - keeping both peers' running-hash assignment identical while adding a

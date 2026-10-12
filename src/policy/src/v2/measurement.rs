@@ -25,13 +25,12 @@
 //! ## RTMR1 signer anchor
 //!
 //! `compute_signer_anchor` returns the 48-byte value `A` where
-//! `A = SHA384(tag || 0x00 || R || 0x00 || DN || 0x00 || SAN || 0x00 || EKU_OID)`,
-//! where `tag = "MIGTD-RTMR1-ANCHOR-V2"`, `R = SHA384(DER(root_cert))`,
-//! `DN = SHA384(DER(leaf Subject Distinguished Name))`, and
-//! `SAN = SHA384(0x00)` when the leaf has no Subject Alternative Name extension,
-//! or `SHA384(0x01 || DER(GeneralNames))` when it does.
+//! `A = SHA384(tag || 0x00 || R || 0x00 || DN || 0x00 || EKU_OID)`,
+//! where `tag = "MIGTD-RTMR1-ANCHOR"`, `R = SHA384(DER(root_cert))`, and
+//! `DN = SHA384(DER(leaf Subject Distinguished Name))`.
 //! `EKU_OID` is the DER-encoded, dedicated signer-purpose EKU from the leaf.
-//! Names are bound byte-for-byte, without normalization or SAN reordering.
+//! The Subject DN is bound byte-for-byte, without normalization. The optional
+//! SAN is excluded because it need not remain stable across certificate issuance.
 //! The event-log writer hashes `A` and extends RTMR1 with `SHA384(A)`.
 //!
 //! ## `tdinfo_hash` = `init_servtd_info_hash`
@@ -48,7 +47,7 @@ use serde_json::Value;
 
 use crate::PolicyError;
 
-pub const SIGNER_ANCHOR_DOMAIN_TAG: &[u8] = b"MIGTD-RTMR1-ANCHOR-V2";
+pub const SIGNER_ANCHOR_DOMAIN_TAG: &[u8] = b"MIGTD-RTMR1-ANCHOR";
 
 /// Single byte separator (`0x00`) between anchor components.
 const SIGNER_ANCHOR_SEPARATOR: u8 = 0x00;
@@ -157,11 +156,10 @@ pub fn extract_canonical_policy_data_bytes(policy_input: &[u8]) -> Result<Vec<u8
 
 /// Compute the RTMR1 signer anchor `A` from the root, leaf identity, and purpose.
 ///
-/// `A = SHA384(tag || 0x00 || R || 0x00 || DN || 0x00 || SAN || 0x00 || EKU_OID)`
+/// `A = SHA384(tag || 0x00 || R || 0x00 || DN || 0x00 || EKU_OID)`
 ///
 /// `R` and `DN` hash the root certificate DER and leaf Subject DN DER.
-/// `SAN` hashes `0x00` for absence or `0x01 || DER(GeneralNames)` for presence.
-/// `EKU_OID` is the DER-encoded, dedicated signer-purpose OID.
+/// `EKU_OID` is the DER-encoded, dedicated signer-purpose OID. SAN is not bound.
 pub fn compute_signer_anchor(
     root_der: &[u8],
     leaf_identity: &LeafIdentity,
@@ -170,31 +168,14 @@ pub fn compute_signer_anchor(
     let r = digest_sha384(root_der).map_err(|_| PolicyError::HashCalculation)?;
     let dn =
         digest_sha384(&leaf_identity.subject_dn_der).map_err(|_| PolicyError::HashCalculation)?;
-    let mut san_input = Vec::new();
-    match &leaf_identity.subject_alt_name_der {
-        Some(der) => {
-            san_input.push(1);
-            san_input.extend_from_slice(der);
-        }
-        None => san_input.push(0),
-    }
-    let san = digest_sha384(&san_input).map_err(|_| PolicyError::HashCalculation)?;
-
     let mut buf = Vec::with_capacity(
-        SIGNER_ANCHOR_DOMAIN_TAG.len()
-            + 4
-            + r.len()
-            + dn.len()
-            + san.len()
-            + leaf_eku_oid_der.len(),
+        SIGNER_ANCHOR_DOMAIN_TAG.len() + 3 + r.len() + dn.len() + leaf_eku_oid_der.len(),
     );
     buf.extend_from_slice(SIGNER_ANCHOR_DOMAIN_TAG);
     buf.push(SIGNER_ANCHOR_SEPARATOR);
     buf.extend_from_slice(&r);
     buf.push(SIGNER_ANCHOR_SEPARATOR);
     buf.extend_from_slice(&dn);
-    buf.push(SIGNER_ANCHOR_SEPARATOR);
-    buf.extend_from_slice(&san);
     buf.push(SIGNER_ANCHOR_SEPARATOR);
     buf.extend_from_slice(leaf_eku_oid_der);
 
@@ -206,7 +187,7 @@ pub fn compute_signer_anchor(
 
 /// Compute the RTMR1 signer anchor directly from a PEM cert chain (leaf-first).
 ///
-/// Bind the root certificate, leaf Subject DN, optional SAN, and single
+/// Bind the root certificate, leaf Subject DN, and single
 /// dedicated EKU using the same identity extraction as peer validation.
 pub fn compute_signer_anchor_from_chain_pem(
     chain_pem: &[u8],
@@ -227,11 +208,12 @@ pub fn compute_signer_anchor_from_chain_pem(
 ///   returned as-is (the CoRIM-only enrollment form, which does not carry a
 ///   full PEM), or
 /// * a **PEM issuer chain** (leaf-first) — the anchor is derived via
-///   [`compute_signer_anchor_from_chain_pem`] (the legacy JSON form).
+///   [`compute_signer_anchor_from_chain_pem`] (the PEM enrollment form).
 ///
 /// This lets the runtime accept either enrollment/exchange form and bind the
-/// same RTMR1 anchor. A PEM is never 48 bytes, so the discriminator is
-/// unambiguous.
+/// same anchor. A PEM is never 48 bytes, so the discriminator is unambiguous.
+/// Copying a raw digest does not authenticate it: callers must bind the
+/// endorsement signer to it using [`compute_signer_anchor`].
 pub fn resolve_signer_anchor(input: &[u8]) -> Result<[u8; SHA384_DIGEST_SIZE], PolicyError> {
     if input.len() == SHA384_DIGEST_SIZE {
         let mut anchor = [0u8; SHA384_DIGEST_SIZE];
@@ -256,57 +238,39 @@ mod tests {
     #[test]
     fn signer_anchor_matches_fixed_vector() {
         let expected = [
-            0x7b, 0x1b, 0x3c, 0x58, 0xbf, 0x03, 0x15, 0x83, 0xb3, 0x75, 0x6c, 0xf3, 0xe7, 0x69,
-            0x6f, 0x63, 0x1b, 0xcd, 0x6f, 0x1e, 0x35, 0x90, 0x0f, 0xd5, 0xd7, 0xe3, 0xf5, 0x65,
-            0x9c, 0xa9, 0xc3, 0xc5, 0x5c, 0xf4, 0xbf, 0x0f, 0x51, 0x68, 0xe9, 0xf6, 0xc4, 0xd0,
-            0x61, 0x6b, 0x53, 0xb5, 0x96, 0xc4,
+            0x84, 0x9f, 0x0e, 0xa0, 0xae, 0xb5, 0x04, 0xaa, 0x1f, 0xa5, 0xc7, 0x7c, 0x09, 0x08,
+            0xdc, 0xf4, 0xea, 0xe5, 0xd2, 0x38, 0xb9, 0x22, 0x38, 0x35, 0x65, 0x24, 0xfb, 0x95,
+            0xff, 0xea, 0xb3, 0xe9, 0x01, 0x78, 0xfc, 0x4d, 0xb2, 0x39, 0xe3, 0x20, 0x1b, 0xd5,
+            0x62, 0xa9, 0x4a, 0x10, 0xdd, 0x68,
         ];
-        assert_eq!(
-            compute_signer_anchor(
-                b"root DER",
-                &identity(b"leaf Subject DN DER", None),
-                b"\x06\x0a\x2b\x06\x01\x04\x01\x81\xfd\x59\x01\x01"
-            )
-            .unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn signer_anchor_with_san_matches_fixed_vector() {
-        let expected = [
-            0x1c, 0xa4, 0x12, 0xf8, 0x2e, 0xdb, 0x45, 0x88, 0xb8, 0x1f, 0x84, 0x6f, 0x10, 0x5e,
-            0xf7, 0x7e, 0x08, 0xab, 0x83, 0x45, 0xe7, 0xf7, 0xd7, 0x0b, 0x39, 0xdf, 0x10, 0x70,
-            0x5b, 0x66, 0xcb, 0xed, 0x46, 0xcd, 0x3e, 0xc6, 0xec, 0xb7, 0xe2, 0x7e, 0xe0, 0x30,
-            0x00, 0x83, 0x39, 0xc0, 0x9a, 0xb1,
-        ];
-        assert_eq!(
-            compute_signer_anchor(
-                b"root DER",
-                &identity(
-                    b"leaf Subject DN DER",
-                    Some(b"\x30\x0f\x82\x0dmigtd.example")
-                ),
-                b"\x06\x0a\x2b\x06\x01\x04\x01\x81\xfd\x59\x01\x01",
-            )
-            .unwrap(),
-            expected
-        );
+        for san in [None, Some(b"\x30\x0f\x82\x0dmigtd.example".as_slice())] {
+            assert_eq!(
+                compute_signer_anchor(
+                    b"root DER",
+                    &identity(b"leaf Subject DN DER", san),
+                    b"\x06\x0a\x2b\x06\x01\x04\x01\x81\xfd\x59\x01\x01",
+                )
+                .unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]
     fn signer_anchor_from_pem_matches_fixed_vector() {
         let chain = include_bytes!("../../test/policy_v2/cert_chain/policy_issuer_chain.pem");
         let expected = [
-            0xac, 0x30, 0x8e, 0x48, 0x2c, 0xa5, 0xeb, 0x78, 0x71, 0x03, 0x4d, 0x6b, 0x7f, 0xce,
-            0xe2, 0xf3, 0xa2, 0x94, 0x27, 0x25, 0x0d, 0xaa, 0xfd, 0xa0, 0x9e, 0x0b, 0x81, 0xb9,
-            0xe1, 0xf8, 0x19, 0x46, 0xe4, 0xb7, 0xf1, 0xaf, 0xf1, 0xb2, 0xdf, 0xec, 0x18, 0x45,
-            0x4a, 0x42, 0xe3, 0x9c, 0x21, 0x69,
+            0xeb, 0x3b, 0xc0, 0x58, 0x94, 0x89, 0x25, 0x77, 0x4e, 0x75, 0xdb, 0x11, 0x82, 0x55,
+            0x74, 0x8d, 0x08, 0x24, 0x9c, 0xd1, 0x44, 0x1f, 0x5d, 0xb7, 0xf0, 0x29, 0x5c, 0x6e,
+            0xc5, 0xf8, 0x8c, 0x3a, 0xe7, 0xfb, 0x64, 0x29, 0x8e, 0x38, 0x7e, 0x62, 0x48, 0xa0,
+            0x33, 0x62, 0x80, 0x1d, 0x93, 0xef,
         ];
         assert_eq!(
             compute_signer_anchor_from_chain_pem(chain).unwrap(),
             expected
         );
+        assert_eq!(resolve_signer_anchor(chain).unwrap(), expected);
+        assert_eq!(resolve_signer_anchor(&expected).unwrap(), expected);
     }
 
     #[test]
@@ -321,29 +285,34 @@ mod tests {
                 &identity(b"subject2", Some(b"san1")),
                 b"\x06\x02\x2a\x03",
             ),
-            compute_signer_anchor(
-                b"root1",
-                &identity(b"subject1", Some(b"san2")),
-                b"\x06\x02\x2a\x03",
-            ),
-            compute_signer_anchor(b"root1", &identity(b"subject1", None), b"\x06\x02\x2a\x03"),
         ] {
             assert_ne!(original, changed.unwrap());
         }
     }
 
     #[test]
-    fn signer_anchor_distinguishes_absent_and_present_empty_san() {
+    fn signer_anchor_ignores_san_presence_value_and_order() {
         let absent =
             compute_signer_anchor(b"root", &identity(b"subject", None), b"\x06\x02\x2a\x03")
                 .unwrap();
-        let present = compute_signer_anchor(
-            b"root",
-            &identity(b"subject", Some(b"")),
-            b"\x06\x02\x2a\x03",
-        )
-        .unwrap();
-        assert_ne!(absent, present);
+        for san in [
+            b"".as_slice(),
+            b"\x30\x00",
+            b"\x30\x04\x82\x02aa",
+            b"\x30\x04\x82\x02bb",
+            b"\x30\x08\x82\x02aa\x82\x02bb",
+            b"\x30\x08\x82\x02bb\x82\x02aa",
+        ] {
+            assert_eq!(
+                absent,
+                compute_signer_anchor(
+                    b"root",
+                    &identity(b"subject", Some(san)),
+                    b"\x06\x02\x2a\x03",
+                )
+                .unwrap()
+            );
+        }
     }
 
     #[test]
@@ -352,15 +321,14 @@ mod tests {
             "../../../crypto/test/eku/signer_identity_a.pem"
         ))
         .unwrap();
-        let rotated = compute_signer_anchor_from_chain_pem(include_bytes!(
-            "../../../crypto/test/eku/signer_identity_rotated.pem"
-        ))
-        .unwrap();
-
-        assert_eq!(a, rotated);
+        for rotated in [
+            include_bytes!("../../../crypto/test/eku/signer_identity_rotated.pem").as_slice(),
+            include_bytes!("../../../crypto/test/eku/signer_san_mismatch.pem").as_slice(),
+        ] {
+            assert_eq!(a, compute_signer_anchor_from_chain_pem(rotated).unwrap());
+        }
         for changed in [
             include_bytes!("../../../crypto/test/eku/signer_subject_mismatch.pem").as_slice(),
-            include_bytes!("../../../crypto/test/eku/signer_san_mismatch.pem").as_slice(),
             include_bytes!("../../../crypto/test/eku/signer_identity_other_eku.pem").as_slice(),
         ] {
             assert_ne!(a, compute_signer_anchor_from_chain_pem(changed).unwrap());

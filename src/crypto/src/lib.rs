@@ -156,6 +156,9 @@ fn extract_unique_extension_value(
 
 /// The leaf's Subject Distinguished Name and optional Subject Alternative Name,
 /// encoded as DER without normalizing names or reordering SAN entries.
+/// SAN is retained as certificate metadata, not signer identity. Whole-struct
+/// equality must not be used for signer continuity; of these fields, the signer
+/// anchor binds only the Subject DN.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LeafIdentity {
     pub subject_dn_der: Vec<u8>,
@@ -452,7 +455,7 @@ fn validate_direct_crl_distribution_points(leaf: &x509::Certificate<'_>) -> Resu
 ///
 /// Trust is **not** established here: this only proves the chain is internally
 /// consistent and the signature is valid. The caller must bind the returned
-/// root, leaf Subject DN/SAN, and one asserted dedicated EKU to a trusted anchor
+/// root, leaf Subject DN, and one asserted dedicated EKU to a trusted anchor
 /// before trusting the payload. `policy::compute_signer_anchor` binds these
 /// components in the RTMR1 signer anchor.
 pub fn verify_cose_sign1_es384_x5chain(
@@ -644,16 +647,17 @@ fn verify_signature_with_algorithm(
 ///    prevents a peer from presenting `[fake_leaf, legit_leaf, …]` where the
 ///    legit leaf's private key was stolen and used to sign a synthetic
 ///    sub-leaf — the legit leaf is not a CA, so it is not a valid issuer.
-/// 4. Leaf identity must remain stable: Subject Distinguished Name and Subject
-///    Alternative Name must match exactly.
+/// 4. Leaf Subject Distinguished Name must match exactly.
 /// 5. The local and peer leaves must assert the same single, dedicated EKU OID.
 ///
 /// Intentionally not checked:
+/// - **Leaf SAN continuity** — SAN can change across certificate issuance.
+///   Signer identity is the full Subject DN under the same root and purpose.
 /// - **Intermediate cert identity** — intermediate cert contents are not
 ///   compared against the local chain's intermediates. This lets either
 ///   side rotate its intermediate CA(s) independently, as long as the
-///   shared root, leaf identity, and signer-purpose EKU remain stable and every
-///   issuer in the peer chain is itself a CA (check 3). Intermediate certs are
+///   shared root DER, full Subject DN DER, and signer-purpose EKU remain stable.
+///   Every issuer in the peer chain must itself be a CA (check 3). Intermediates are
 ///   still validated structurally (signature integrity in check 1 and
 ///   CA-attribute in check 3).
 pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -> Result<()> {
@@ -677,7 +681,7 @@ pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -
     let peer_leaf =
         x509::Certificate::from_der(peer_chain[0].as_ref()).map_err(|_| Error::ParseCertificate)?;
 
-    // 4. Preserve the leaf's asserted identity across key rotation.
+    // 4. Preserve the full Subject DN DER, not SAN, across key rotation.
     let local_identity = extract_leaf_identity(&local_leaf)?;
     let peer_identity = extract_leaf_identity(&peer_leaf)?;
     if local_identity.subject_dn_der != peer_identity.subject_dn_der {
@@ -685,12 +689,6 @@ pub fn validate_peer_cert_chain(local_chain_pem: &[u8], peer_chain_pem: &[u8]) -
             "Leaf certificate Subject Distinguished Name mismatch".into(),
         ));
     }
-    if local_identity.subject_alt_name_der != peer_identity.subject_alt_name_der {
-        return Err(Error::PeerCertChainValidation(
-            "Leaf certificate Subject Alternative Name mismatch".into(),
-        ));
-    }
-
     // 5. Preserve the leaf's signer purpose across key rotation.
     let local_eku = extract_single_leaf_eku_oid_der(&local_leaf).map_err(|_| {
         Error::PeerCertChainValidation(
@@ -1170,16 +1168,18 @@ m07Y31+o+LpsZuEnlIETx/zemHA=
     }
 
     #[test]
-    fn test_validate_peer_cert_chain_san_mismatch() {
+    fn test_validate_peer_cert_chain_accepts_san_changes() {
         let local = include_bytes!("../test/eku/signer_identity_a.pem");
         let peer = include_bytes!("../test/eku/signer_san_mismatch.pem");
-        let result = validate_peer_cert_chain(local, peer);
-        match result {
-            Err(Error::PeerCertChainValidation(msg)) => {
-                assert!(msg.contains("Subject Alternative Name mismatch"));
-            }
-            other => panic!("Expected PeerCertChainValidation, got: {other:?}"),
-        }
+        let local_identity = extract_leaf_identity_from_chain_pem(local).unwrap();
+        let peer_identity = extract_leaf_identity_from_chain_pem(peer).unwrap();
+        assert_eq!(local_identity.subject_dn_der, peer_identity.subject_dn_der);
+        assert_ne!(
+            local_identity.subject_alt_name_der,
+            peer_identity.subject_alt_name_der
+        );
+        validate_peer_cert_chain(local, peer).unwrap();
+        validate_peer_cert_chain(peer, local).unwrap();
     }
 
     #[test]
