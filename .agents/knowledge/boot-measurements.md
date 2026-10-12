@@ -30,7 +30,7 @@ handoff from the host through TD-shim into MigTD, see the
 |---|---|---|---|---|
 | **MRTD** | td-shim BFV pages **+** MigTD payload pages **+** GPA layout of every region | IGVM loader (host) / TDX module | TD launch, **before any TD code runs** | `TDH.MEM.PAGE.ADD` (all pages) + `TDH.MR.EXTEND` (pages without `unmeasured` flag); sealed by `TDH.MR.FINALIZE` |
 | **RTMR0** | `EV_SEPARATOR` = `SHA384(0x00000000)` extended once from zero | td-shim | Inside `boot_builtin_payload`, just before jumping to MigTD entry | `tdcall_extend_rtmr(rtmr_index=0)` |
-| **RTMR1** | `EV_SEPARATOR`, then the digest of signer anchor `A` (root fingerprint + enrolled signer-purpose EKU) | td-shim (separator) → MigTD (anchor) | td-shim runtime, then MigTD `do_measurements()` | `tdcall_extend_rtmr(rtmr_index=1)` |
+| **RTMR1** | `EV_SEPARATOR`, then the digest of signer anchor `A` (root fingerprint + full leaf Subject DN DER hash + enrolled signer-purpose EKU) | td-shim (separator) → MigTD (anchor) | td-shim runtime, then MigTD `do_measurements()` | `tdcall_extend_rtmr(rtmr_index=1)` |
 | **RTMR2** | **One extend**: canonical `policyData`; JSON packaging redacts only the TCB mapping and mapping issuer chain, while CoRIM-only policyData is measured in full | MigTD | MigTD `do_measurements()`, before any migration handling | `tdcall_extend_rtmr(rtmr_index=2)` |
 | **RTMR3** | Unused (always zero) in production builds | — | — | — |
 
@@ -61,7 +61,7 @@ content** of every "measured" region.
 
 | Section | GPA (in MigTD layout) | `attributes` | `unmeasured` in IGVM? | What's in it |
 |---|---|---|---|---|
-| **CFV** | `0xFF000000`, `0xA0000` | `0x0` | **yes** (GPA-only) | Policy JSON, policy issuer cert chain (PEM), root CA — measured later into RTMR1/RTMR2 |
+| **CFV** | `0xFF000000`, `0xA0000` | `0x0` | **yes** (GPA-only) | Policy JSON and PEM/direct signer-anchor source; runtime measures the derived anchor into RTMR1 and canonical policyData into RTMR2, not the full chain |
 | **TempMem** (stack, heap, mailbox, etc.) | various | `0x0` | yes (GPA-only) | Zero-fill at launch |
 | **PermMem** | `0x0`, `0x2000000` | `0x2` | yes (GPA-only) | Reserved memory for runtime use |
 | **Payload** | `0xFF0C1000`, `0xEE5000` (~15 MB) | `0x1` (EXTENDMR) | **no** — measured | The **MigTD ELF binary**, wrapped as a DXE_CORE FV file |
@@ -208,14 +208,17 @@ The anchor is:
 
 ```text
 R = SHA384(DER(root certificate))
-A = SHA384("MIGTD-RTMR1-ANCHOR-V1" || 0x00 || R || 0x00 || leaf_EKU_OID_DER)
+DN = SHA384(DER(leaf Subject Distinguished Name))
+A = SHA384("MIGTD-RTMR1-ANCHOR" || 0x00 || R || 0x00 || DN || 0x00 || leaf_EKU_OID_DER)
 RTMR1 extends SHA384(A)
 ```
 
 The CFV may carry either the full PEM issuer chain or a precomputed 48-byte
 anchor. `config::get_signer_anchor_source()` prefers the direct anchor slot;
 `resolve_signer_anchor()` derives `A` from PEM or accepts the direct value.
-Both enrollment forms produce the same RTMR1.
+Both enrollment forms produce the same RTMR1 when the direct value is the
+matching digest. The raw 48 bytes do not establish trust by themselves;
+endorsement verification must reproduce them from the signer chain.
 
 ```rust
 fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
@@ -231,10 +234,10 @@ fn get_policy_issuer_chain_and_measure(event_log: &mut [u8]) {
 }
 ```
 
-Leaf-key and intermediate-CA rotation under the same root + signer-anchor EKU is
-measurement-stable. Root or EKU changes are trust-anchor changes and alter
-RTMR1. Peer validation enforces the same root+EKU fingerprint; it no longer
-uses leaf Subject Name as signer identity.
+Leaf-key, intermediate-CA, and SAN rotation under the same root, byte-exact full
+Subject DN, and signer-anchor EKU preserves RTMR1. Root, Subject DN, or EKU
+changes alter RTMR1. Peer validation enforces the same signer identity; see
+`doc/policy_v2.md` for the enrollment and image-endorsement requirements.
 
 ---
 
@@ -370,7 +373,7 @@ is frozen at:
 ```
 mrtd   = SHA384( all measured pages of td-shim + payload )      [deterministic per image]
 rtmr0  = SHA384(0 || SHA384(separator))                          [deterministic per td-shim version]
-rtmr1  = extend(extend(0, separator), SHA384(signer_anchor_A))   [stable across leaf/intermediate rotation]
+rtmr1  = SHA384(RTMR1_separator || SHA384(signer_anchor_A))      [root/Subject DN/EKU]
 rtmr2  = extend(0, SHA384(canonical_redacted_policyData))        [varies by measured policy content]
 rtmr3  = 0                                                       [unused]
 ```
@@ -422,8 +425,8 @@ for the full story; this is the one-paragraph summary.)
    `Attributes: 0x0` ↔ `unmeasured=true` ↔ GPA-only. There is no
    middle ground — the bit either extends or doesn't.
 3. **CFV content is NOT in MRTD.** Changing measured policy content changes
-   RTMR2. Rotating a leaf/intermediate under the same root+EKU does not change
-   RTMR1; changing the root or signer-anchor EKU does.
+   RTMR2. Rotating a leaf/intermediate under the same root/Subject DN/EKU does
+   not change RTMR1; changing any of those bound fields does.
 4. **`mr_index` in event-log code is PCR-style** (1-based), the
    `tdcall_extend_rtmr` `rtmr_index` is 0-based. Off-by-one bugs are
    easy here — see `event_log.rs:164-175`.
@@ -438,7 +441,9 @@ for the full story; this is the one-paragraph summary.)
    omit the policy / issuer-chain measurements entirely, so their RTMR1
    and RTMR2 are completely different from production. Never reuse a
    test-build event-log replay against a production endorsement.
-8. **`payload_v1` vs `policy_v2`**: legacy v1 builds also extend
-   `root_ca` into RTMR2 *after* policy. policy_v2 builds do not — the
-   root is committed through the RTMR1 signer anchor. This means a v1→v2 transition
-   changes both RTMR1 *and* RTMR2.
+8. **Quote-verification and mapping-signer roots have distinct roles.**
+   `not(policy_v2)` builds extend
+   the separately enrolled quote-verification `root_ca` into RTMR2 after policy.
+   Policy v2 measures that root within canonical policy collaterals in RTMR2;
+   its mapping-signer root is part of the RTMR1 anchor together
+   with full Subject DN DER and dedicated EKU.

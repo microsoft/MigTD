@@ -44,8 +44,15 @@ directly without validation as a candidate finding:
   memory + sanity-check before use.
 - **Migration policy** — external input; must be measured (RTMR) and
   sanity-checked before use.
-- **X.509 certificate** (peer MigTD's) — external input; must be measured and
-  sanity-checked before use.
+- **X.509 certificate** (peer MigTD's) — parse and validate before use. For
+  policy-v2 mapping signers, bind the root certificate DER, full Subject DN
+  DER, and dedicated EKU to the measured signer anchor, not the entire chain.
+
+For signer changes, preserve fixed-vector and PEM/direct agreement tests.
+Changed or absent SAN must authenticate under the same signer identity; root,
+Subject DN, and EKU changes must not. Reject missing or extra identity components
+in the anchor and keep chain/signature/CA-constraint/CRL checks. See
+[the anchor contract](../../../../doc/policy_v2.md#direct-signer-anchor-enrollment).
 
 Cross-reference: [Domain Facts § Trust model](../../../knowledge/domain-facts.md)
 — "VMM is untrusted but can DoS" already covers the DoS-vs-integrity

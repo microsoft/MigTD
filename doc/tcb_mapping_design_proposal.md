@@ -31,8 +31,8 @@ The design provides these properties:
 3. **Measured policy.** Migration rules, platform collateral, policy SVN, and
    JSON TD Identity content are bound to RTMR2.
 4. **Signer continuity with rotation.** Mapping and CoRIM signers must resolve
-   to the RTMR1 root+EKU signer anchor. Leaf and intermediate certificates may
-   rotate without changing the anchor.
+   to the RTMR1 root/Subject DN/EKU signer anchor. Leaf keys, SANs, and
+   intermediate certificates may rotate without changing those bound fields.
 5. **Authenticated init/current lookup.** The current hash resolves through
    the authenticated source mapping. The initial hash resolves through the
    source mapping or, when absent there, the authenticated destination mapping.
@@ -58,7 +58,8 @@ Define `H(x) = SHA384(x)`:
 
 ```text
 R = H(DER(root certificate))
-A = H("MIGTD-RTMR1-ANCHOR-V1" || 0x00 || R || 0x00 || leaf_EKU_OID_DER)
+DN = H(DER(leaf Subject Distinguished Name))
+A = H("MIGTD-RTMR1-ANCHOR" || 0x00 || R || 0x00 || DN || 0x00 || leaf_EKU_OID_DER)
 ```
 
 MigTD extends `H(A)` into RTMR1 through the event-log helper. The CFV supplies
@@ -71,9 +72,11 @@ The direct 48-byte slot takes precedence when both slots are populated. The
 standard JSON packaging uses the PEM form. CoRIM-only packaging uses the direct
 anchor so the image need not duplicate the CoRIM `x5chain`.
 
-Both forms produce the same RTMR1 when they represent the same root and signer
-EKU. Root or EKU changes alter RTMR1; leaf-key and intermediate-CA rotation
-under the same root+EKU do not.
+Both forms produce the same RTMR1 when they represent the same root, byte-exact
+full Subject DN, and signer EKU. Changing any of those fields alters RTMR1;
+leaf-key, intermediate-CA, and SAN rotation preserving those fields does not.
+See [policy_v2.md](./policy_v2.md#direct-signer-anchor-enrollment) for the
+producer, firmware, and image-endorsement requirements.
 
 ## RTMR2 canonical policyData
 
@@ -139,7 +142,7 @@ svnMappings[].tdMeasurements.tdinfo_hash -> isvsvn
 
 The JSON mapping signature is verified with
 `servtdTcbMappingIssuerChain`, then that chain is bound to RTMR1 by its
-root+EKU anchor.
+root/Subject DN/EKU anchor.
 
 An optional JSON `servtdIdentity` translates the resolved SVN to
 `tcbDate`/`tcbStatus`. It is not the source of release identity; the one-hash

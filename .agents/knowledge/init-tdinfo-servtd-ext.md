@@ -139,7 +139,7 @@ The two inputs serve different purposes:
 |---|---|---|
 | init/current continuity | The initially bound release is no newer than the authenticated current source release | Current report hash through the source mapping; `init_servtd_info_hash` through source then authenticated-local fallback |
 | current-image TCB lookup | The authenticated current peer image resolves to SVN (and optional date/status) | Complete current `tdinfo_hash` via JSON mapping or CoRIM |
-| cross-peer signer trust | Source and destination belong to the same signer authority while allowing leaf/intermediate rotation | RTMR1 signer anchor: root fingerprint + enrolled signer-purpose EKU |
+| cross-peer signer trust | Source and destination belong to the same signer authority while allowing leaf/intermediate rotation | RTMR1 signer anchor: root fingerprint + full leaf Subject DN DER hash + enrolled signer-purpose EKU |
 
 Do not treat the destination mapping as authority for the current source hash
 or restore dependence on the legacy Init_TDINFO wire contents.

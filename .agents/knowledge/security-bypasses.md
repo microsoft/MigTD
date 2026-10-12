@@ -74,8 +74,10 @@ development/test build features, and explains **why** each is bypassed.
 ### Under `AzCVMEmu`
 - Full SPDM / TLS handshake (key exchange, cipher negotiation)
 - RTMR2 policyData integrity and event-log replay
-- Inner JSON mapping/identity signatures or signed-CoRIM verification, with
-  every signer bound to the RTMR1 root+EKU anchor
+- Inner JSON mapping or signed-CoRIM verification, bound to the RTMR1
+  root/Subject DN/EKU anchor; SAN is excluded
+- Optional JSON TD Identity signature verification; its content and separate
+  issuer chain remain bound to RTMR2
 - Init/current SVN ordering through authenticated source/local mappings;
   conflicts and double misses fail closed
 - Policy evaluation (`evaluate_policy_common` / `evaluate_policy_backward`)

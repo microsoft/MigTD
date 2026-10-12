@@ -37,12 +37,21 @@
 5. Create branch `v<major>.<minor>`.
 6. Upload the release content to branch `v<major>.<minor>`.
 
+### Policy v2 signer-anchor contract
+
+Policy v2 releases use the root-certificate/full Subject DN/dedicated-EKU
+anchor; SAN is excluded. Align firmware, anchor producers, enrollment, and the
+offline hash calculator with that contract before building release artifacts.
+Generate the anchor before building each image, then endorse its complete
+TDINFO hash. See the
+[anchor contract](policy_v2.md#direct-signer-anchor-enrollment).
+
 ### Cumulative MigTD SVN mapping
 
 The prior release's `tcb_mapping.json` signing payload is the
 authority-maintained source of truth for supported MigTD releases. Generate
 the next mapping with
-`migtd-hash --update-tcb-mapping <prior> --output-tcb-mapping <next>
+`migtd-hash --policy-v2 --update-tcb-mapping <prior> --output-tcb-mapping <next>
 --mapping-isvsvn <svn>` so the new `tdinfo_hash` is added without dropping
 historical hashes. The tool canonicalizes ordering for reproducible signing
 input, rejects conflicting duplicate hashes, rejects attempts to reassign an

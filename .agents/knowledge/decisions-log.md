@@ -68,3 +68,12 @@ timestamp: 2026-07-26T00:14:16+00:00
   multi-hop paths remain unsupported when neither endpoint knows the initial
   hash. Mappings are append-only and release revocation is leaf-CRL based.
   Design discussion: microsoft/MigTD#236.
+
+- **Define signer anchors using stable certificate identity.** Bind the root
+  certificate, full byte-exact leaf Subject DN, and dedicated EKU, and use the
+  same identity in JSON peer-chain checks. SAN is not a stable identifier
+  across signing-certificate issuance and is not bound or replaced with a
+  hard-coded value. Keep chain/signature/CRL verification. Producers, PEM/direct
+  enrollment, firmware, and offline hashing use the same formula. See
+  [the anchor contract](../../doc/policy_v2.md#direct-signer-anchor-enrollment)
+  and `src/policy/src/v2/measurement.rs`.

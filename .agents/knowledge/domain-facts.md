@@ -18,10 +18,16 @@ timestamp: 2026-07-26T00:14:16+00:00
 - **VMM is untrusted but can DoS.** DoS-via-VMM is *not* a finding.
 - **Root of trust = `MRTD` + `RTMR0..3`** (attested). Certificate chains
   carry signatures, but policy-v2 signer identity is bound by the RTMR1
-  signer anchor: root-certificate SHA-384 fingerprint + one enrolled
-  signer-purpose EKU. CoRIM verification tries every EKU asserted by the leaf
+  signer anchor: root-certificate SHA-384 fingerprint + full leaf Subject DN
+  DER hash + one enrolled signer-purpose EKU. CoRIM verification tries every
+  dedicated EKU asserted by the leaf
   and accepts only the one reproducing the measured anchor; legacy PEM paths
   still require a single unambiguous EKU.
+- SAN is not a stable signer identifier and is excluded from the anchor and
+  JSON peer-chain identity comparison. The authority must keep the full Subject
+  DN DER stable and reserve the root/Subject DN/dedicated-EKU tuple for the
+  intended signer. Producers, firmware, and offline hashing must use the same
+  formula (`doc/policy_v2.md`, `v2/measurement.rs`).
 - After `mig_policy::init_policy()` succeeds, `VERIFIED_POLICY` is trusted.
 - The one-hash TCB mapping (JSON or CoRIM) maps the complete 48-byte
   `tdinfo_hash` / `SERVTD_INFO_HASH` directly to MigTD SVN. When a signed
@@ -71,14 +77,15 @@ bypassed under which build feature.
 
 ## TDINFO / MROwner / MROwnerConfig semantics
 
-- **MROwner** is provisioned by GHCI as the hash of the policy signer's
-  public key, but it is no longer the cross-peer signer trust anchor.
-- **MROwnerConfig** = MigTD policy SVN (a.k.a. "migtd svn").
+- **MROwner** and **MROwnerConfig** are included in the complete TDINFO
+  endorsement. Policy v2 does not require them to encode a signer-key hash
+  or policy SVN; signer identity is bound by the RTMR1 anchor instead.
 - There is no local startup check comparing `MROwnerConfig` with policy SVN.
   The policy is bound through measured RTMR2 data, while migration continuity
   uses authenticated peer measurements and their verified one-hash mapping.
 - Cross-peer signer compatibility is the RTMR1 anchor equality
-  (root fingerprint + leaf EKU). Leaf and intermediate keys may rotate
+  (root fingerprint + full leaf Subject DN DER hash + dedicated leaf EKU).
+  Leaf and intermediate keys may rotate
   independently under the same anchor.
 - The legacy wire field **`init_td_info`** is accepted for framing
   compatibility but cleared by `MigtdMigrationInformation::read_from_bytes`;
