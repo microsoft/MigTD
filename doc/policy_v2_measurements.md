@@ -64,13 +64,15 @@ MigTD adds no other production event to RTMR0.
 ## RTMR1 signer anchor
 
 td-shim first extends the same separator into RTMR1. MigTD then resolves the
-Policy v2 signer anchor:
+signer anchor used by Policy v2:
 
 ```text
 R = SHA384(DER(root certificate))
+DN = SHA384(DER(leaf Subject Distinguished Name))
 A = SHA384(
-    "MIGTD-RTMR1-ANCHOR-V1" || 0x00 ||
+    "MIGTD-RTMR1-ANCHOR" || 0x00 ||
     R || 0x00 ||
+    DN || 0x00 ||
     leaf_EKU_OID_DER
 )
 RTMR1_final = extend(RTMR1_separator, A)
@@ -86,10 +88,13 @@ The CFV can carry:
 `config::get_signer_anchor_source()` prefers the direct anchor. JSON packaging
 normally uses the PEM chain; CoRIM-only packaging normally uses the direct
 anchor. The two forms are measurement-equivalent when they represent the same
-root and signer-purpose EKU.
+root, full Subject DN DER, and signer-purpose EKU.
 
 RTMR1 does **not** measure the complete issuer-chain bytes. Leaf-key and
-intermediate-CA rotation under the same root+EKU leaves RTMR1 unchanged.
+intermediate-CA rotation under the same root/Subject DN/EKU leaves RTMR1
+unchanged. SAN presence, value, and ordering are not bound. PEM and direct
+enrollment represent the same anchor, as described in
+[policy_v2.md](./policy_v2.md#direct-signer-anchor-enrollment).
 
 ## RTMR2 canonical policyData
 
@@ -112,7 +117,7 @@ servtdCollateral.servtdTcbMappingIssuerChain
 
 The mapping contains the circular `tdinfo_hash` and must be replaceable. Its
 issuer-chain bytes are also replaceable, while policy verification requires
-the chain's root+EKU identity to match the RTMR1 signer anchor.
+the chain's root/Subject DN/EKU identity to match the RTMR1 signer anchor.
 
 All other fields remain measured, including JSON `servtdIdentity`, its
 signature, and `servtdIdentityIssuerChain`. Reissuing any of those bytes
@@ -177,8 +182,9 @@ For JSON packaging, the pre-final policy contains an empty mapping sentinel.
 For CoRIM-only packaging, `servtdCollateral` is absent. Enrolling the final
 mapping or CoRIM must not change MRTD or any RTMR.
 
-Changes to measured policy content, the signer root/EKU, firmware, payload, or
-launch layout must change the resulting `tdinfo_hash`.
+Changes to measured policy content, the signer root certificate DER, full leaf
+Subject DN DER, dedicated EKU, firmware, payload, or launch layout must change
+the resulting `tdinfo_hash`.
 
 ## Source and test index
 

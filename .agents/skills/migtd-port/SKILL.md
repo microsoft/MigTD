@@ -164,6 +164,11 @@ This survives context summarisation and lets you resume mid-port.
 - **Gate on what the target gates on.** Example from the integration2 port: init-TDINFO /
   servtd code is gated on `policy_v2` on the target, not `all(vmcall-raw, policy_v2)`.
   Keep the target's gate.
+- **Preserve the signer-anchor contract.** When porting the SAN-independent
+  anchor, carry its producers, fixtures, comments, and verification paths
+  together. Bind root certificate DER, full Subject DN DER, and dedicated EKU,
+  not SAN. Verify producer/runtime agreement after resolving conflicts; see
+  [the contract](../../../doc/policy_v2.md#direct-signer-anchor-enrollment).
 - **Split partial picks.** A single `integration` commit often bundles a keeper + a part
   that's already upstreamed or out-of-scope. Cherry-pick with `-n`, then `git reset`/`git
   checkout -p` to stage only the keeper hunks. Note the split in the `picks.note`.

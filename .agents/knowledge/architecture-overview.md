@@ -9,7 +9,9 @@ timestamp: 2026-09-23T20:59:11+00:00
 # MigTD Architecture Overview (Azure Build)
 
 Source baseline: MigTD commit `7ffd8d940d1f5c9749e6b203d8ebd013848e3839`
-(`ms/integration`). Unless explicitly marked as an alternate profile, the
+(`ms/integration`), with signer guidance updated to the
+[signer-anchor contract](../../doc/policy_v2.md#direct-signer-anchor-enrollment).
+Unless explicitly marked as an alternate profile, the
 diagrams describe the following effective feature set, with Cargo/xtask
 defaults disabled:
 
@@ -193,10 +195,11 @@ the full canvas, so dark previews cannot show through gaps between groups.
 Flowcharts use native SVG text rather than HTML labels for image-viewer compatibility.
 The collapsible text blocks retain the editable Mermaid sources without
 rendering a second, transparent diagram. After changing a source block,
-regenerate the SVGs with Mermaid CLI's Chromium dependencies installed:
+regenerate the SVGs with the renderer-compatible Mermaid CLI version and its
+Chromium dependencies installed:
 
 ```bash
-npm exec --yes --package @mermaid-js/mermaid-cli -- \
+npm exec --yes --package @mermaid-js/mermaid-cli@11.17.0 -- \
   python3 .agents/knowledge/architecture-diagrams/render.py
 ```
 
@@ -384,7 +387,7 @@ flowchart TB
         CFV["CFV<br/>policyData + JSON ServTD endorsements<br/>policy issuer chain / signer-anchor source"]
         INIT["mig_policy::init_policy<br/>verify inner signatures, anchors and CRLs<br/>configure quote-verification root"]
         VERIFIED["VERIFIED_POLICY<br/>local rules, collaterals, signer anchor<br/>verified one-hash MigTD SVN mapping"]
-        MEAS["Boot measurement + CC event log<br/>RTMR1: root-fingerprint + signer-EKU anchor<br/>RTMR2: canonical policyData with mapping redacted"]
+        MEAS["Boot measurement + CC event log<br/>RTMR1: root / full Subject DN / EKU anchor<br/>RTMR2: canonical policyData with mapping redacted"]
         CFV --> INIT --> VERIFIED
         CFV --> MEAS
     end
@@ -435,14 +438,19 @@ flowchart TB
 
 **Boot trust.** `init_policy()` freezes the verified local policy.
 `do_measurements()` measures the signer anchor and canonical policy data
-before request handling begins. RTMR1 binds the root-certificate fingerprint
-and enrolled signer-purpose EKU, not the complete PEM chain or an individual
+before request handling begins. RTMR1 binds the root-certificate fingerprint,
+full leaf Subject DN DER hash, and enrolled signer-purpose EKU, not SAN,
+the complete PEM chain, or an individual
 leaf key. For this JSON profile, RTMR2 excludes only the ServTD TCB mapping
 and its issuer chain; the rest of `policyData`, including any TD Identity
 and its issuer chain, remains measured. The legacy outer policy signature
 is ignored; inner endorsement signatures and measurement binding are
 load-bearing. The quote-verification root comes from policy-v2 collaterals,
 not the separate policy-v1 root-CA enrollment slot.
+
+PEM and direct 48-byte enrollment represent the same signer identity.
+SAN may change, but the full Subject DN DER and dedicated EKU must
+remain stable and signer-specific under the enrolled root.
 
 **Peer trust.** Policy material received before SPDM authentication is not
 trusted merely because it arrived over `VmcallRaw`. Quote/TDREPORT verification

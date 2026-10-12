@@ -24,9 +24,16 @@ Most failed/regressed "fixes" in this codebase trace back to skipping this secti
 
 - **VMM is untrusted but has inherent DoS capability** — it can starve the TD, stall vmcalls, drop packets, withhold cycles, or kill the TD. **DoS-via-VMM is NOT a finding.** Do not file issues that boil down to "the VMM could refuse to make progress".
 - **Root of trust = hardware attestation registers**: `MRTD` and `RTMR0..RTMR3`. The QE/PCK chain is a transport, not the root.
-  - Policy-v2 signer identity is attested through the **RTMR1 signer anchor**
-    (root-certificate fingerprint + enrolled signer-purpose EKU), not raw
-    issuer-chain bytes or leaf Subject Name.
+  - Policy-v2 mapping-signer identity is attested through the **RTMR1 signer anchor**
+    (root-certificate fingerprint + full leaf Subject DN DER hash + enrolled
+    signer-purpose EKU), not raw issuer-chain bytes or SAN.
+  - PEM and direct 48-byte enrollment use the same signer-anchor formula.
+    A raw digest must be authenticated against the presented endorsement signer
+    before its mapping is trusted. See
+    [the anchor contract](../../../doc/policy_v2.md#direct-signer-anchor-enrollment).
+  - SAN changes or absence are not signer mismatches. The authority must keep
+    full Subject DN DER stable and reserve the root/Subject DN/dedicated-EKU
+    tuple for the intended signer. Chain, signature, and CRL checks still apply.
 - **Trusted-after-init**: `mig_policy::init_policy()` verifies the RTMR2-bound
   policyData plus its inner JSON/CoRIM endorsements and freezes
   `VERIFIED_POLICY`. The legacy outer policy signature is ignored.
@@ -94,7 +101,10 @@ A previous review pass produced a "fix" (`bc99fa4`) that removed the `+1`, passe
   - Policy v2 supports a JSON servTD-collateral path (PEM chain derives the
     RTMR1 anchor) and a CoRIM-only path (direct 48-byte anchor + signed
     TCB-mapping CoRIM). The outer JSON policy signature is legacy/ignored;
-    mapping/identity or CoRIM signatures must bind to the same root+EKU anchor.
+    JSON mapping or CoRIM signatures must bind to the root/Subject DN/EKU
+    anchor. Optional JSON TD Identity has its own signature and issuer chain;
+    both remain measured in RTMR2, with cross-peer chain checks separate from
+    the mapping-signer anchor.
 
 ---
 
@@ -106,7 +116,7 @@ A previous review pass produced a "fix" (`bc99fa4`) that removed the `+1`, passe
 | "Shared log circular buffer overflow" | Wrapping logic keeps offsets in bounds; VMM is reader, not writer. |
 | "vmcall-raw read returns 0 → infinite loop" | The `vmcall-raw` transport blocks until data or error; **never returns 0/EOF**. |
 | "Interrupt broadcast wakes all migrations" | Spurious wakes are caught by per-buffer status check (correct by design). |
-| "Cert chain weakness in attestation/SPDM verifier" | The root+signer-EKU anchor is measured into RTMR1; chain compromise alone is insufficient unless it can produce a chain under that anchor and evade revocation. |
+| "Cert chain weakness in attestation/SPDM verifier" | Check the exact trust path: the mapping-signer anchor binds root/Subject DN/EKU, not SAN or a leaf key. Measurements do not rule out compromised keys or issuance under that same tuple; chain and CRL checks remain necessary. |
 | "TSC div-by-zero in calibration" | Pre-conditioned by CPUID/feature detection on real HW. |
 | "Unbounded heap alloc in peer-info parse" | Bounded by mig session size limits + 7 MiB heap → just DoS. |
 | "Misspelled identifier" | Fix only if user-visible; don't churn the codebase for internal names. |

@@ -10,11 +10,11 @@
 
 ## Domain knowledge
 
-* [MigTD Domain Facts](domain-facts.md) - Trust model, one-hash/CoRIM lookup, signer-anchor and MROWNER semantics, verifiers, vmcall invariants, and heap sizing.
+* [MigTD Domain Facts](domain-facts.md) - Trust model, signer anchors and MROWNER semantics, one-hash/CoRIM lookup, verifiers, vmcall invariants, and heap sizing.
 * [MigTD Architecture Overview (Azure Build)](architecture-overview.md) - Layered/component diagrams, kernel-free boot, dispatcher/migration/SPDM/rebind sequences, an alternate RA-TLS view, policy-v2 trust, and IGVM build.
 * [Azure WaitForRequest Error and ReportStatus Map](azure-waitforrequest-errors.md) - Azure IGVM vmcall-raw/SPDM request failures, logging coverage, and host-visible status codes.
 * [Security Bypasses](security-bypasses.md) - Which verification checks are bypassed under dev/test build features, and why.
-* [Boot Measurements](boot-measurements.md) - How MRTD/RTMR0-3 are populated, including the RTMR1 root+EKU anchor and redacted RTMR2 policyData.
+* [Boot Measurements](boot-measurements.md) - How MRTD/RTMR0-3 are populated, including the SAN-independent RTMR1 signer anchor and redacted RTMR2 policyData.
 * [Init_TDINFO and ServtdExt Usage Summary](init-tdinfo-servtd-ext.md) - Continuity/integrity checks, current-image one-hash lookup, and migration vs. rebinding behavior.
 * [Memory Budget](memory-budget.md) - Stack/heap/shared-memory sizing equations for multi-session SPDM attestation.
 * [Reproducible Build — Status & Limitations](reproducible-build.md) - What's implemented, verified, and still limited for MRTD-stable rebuilds.
@@ -22,7 +22,7 @@
 ## Build, release & test workflows
 
 * [AzCVMEmu Build & Run — Agent Cheat Sheet](azcvmemu-build-and-run.md) - Feature-flag combinations, prerequisites, `migtdemu.sh` invocations.
-* [Policy v2 Generation Workflow](policy-v2-workflow.md) - JSON/CoRIM packaging, signer-anchor enrollment, and measurement-stable mapping/key rotation.
+* [Policy v2 Generation Workflow](policy-v2-workflow.md) - JSON/CoRIM packaging, signer-anchor enrollment, and measurement-stable mapping/key/SAN rotation.
 * [Integration Testing — QEMU/vsock](integration-testing.md) - Local non-EMU integration testing with vsock and serial transports.
 * [Release Process](release-process.md) - Version semantics, release content checklist, release steps.
 * [Code Coverage Plan (Draft Status)](code-coverage-plan.md) - Proposed per-PR coverage flow — decided backend/tooling, phased plan, open questions.

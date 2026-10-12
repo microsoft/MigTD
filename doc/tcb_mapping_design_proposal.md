@@ -31,10 +31,12 @@ The design provides these properties:
 3. **Measured policy.** Migration rules, platform collateral, policy SVN, and
    JSON TD Identity content are bound to RTMR2.
 4. **Signer continuity with rotation.** Mapping and CoRIM signers must resolve
-   to the RTMR1 root+EKU signer anchor. Leaf and intermediate certificates may
-   rotate without changing the anchor.
-5. **Direct init/current lookup.** Migration and rebinding resolve both hashes
-   through the authenticated source's verified mapping and require
+   to the RTMR1 root/Subject DN/EKU signer anchor. Leaf keys, SANs, and
+   intermediate certificates may rotate without changing those bound fields.
+5. **Authenticated init/current lookup.** The current hash resolves through
+   the authenticated source mapping. The initial hash resolves through the
+   source mapping or, when absent there, the authenticated destination mapping.
+   Conflicting assignments fail closed, and MigTD requires
    `init SVN <= current SVN`.
 
 ## Measurement layout
@@ -56,7 +58,8 @@ Define `H(x) = SHA384(x)`:
 
 ```text
 R = H(DER(root certificate))
-A = H("MIGTD-RTMR1-ANCHOR-V1" || 0x00 || R || 0x00 || leaf_EKU_OID_DER)
+DN = H(DER(leaf Subject Distinguished Name))
+A = H("MIGTD-RTMR1-ANCHOR" || 0x00 || R || 0x00 || DN || 0x00 || leaf_EKU_OID_DER)
 ```
 
 MigTD extends `H(A)` into RTMR1 through the event-log helper. The CFV supplies
@@ -69,9 +72,11 @@ The direct 48-byte slot takes precedence when both slots are populated. The
 standard JSON packaging uses the PEM form. CoRIM-only packaging uses the direct
 anchor so the image need not duplicate the CoRIM `x5chain`.
 
-Both forms produce the same RTMR1 when they represent the same root and signer
-EKU. Root or EKU changes alter RTMR1; leaf-key and intermediate-CA rotation
-under the same root+EKU do not.
+Both forms produce the same RTMR1 when they represent the same root, byte-exact
+full Subject DN, and signer EKU. Changing any of those fields alters RTMR1;
+leaf-key, intermediate-CA, and SAN rotation preserving those fields does not.
+See [policy_v2.md](./policy_v2.md#direct-signer-anchor-enrollment) for the
+producer, firmware, and image-endorsement requirements.
 
 ## RTMR2 canonical policyData
 
@@ -137,7 +142,7 @@ svnMappings[].tdMeasurements.tdinfo_hash -> isvsvn
 
 The JSON mapping signature is verified with
 `servtdTcbMappingIssuerChain`, then that chain is bound to RTMR1 by its
-root+EKU anchor.
+root/Subject DN/EKU anchor.
 
 An optional JSON `servtdIdentity` translates the resolved SVN to
 `tcbDate`/`tcbStatus`. It is not the source of release identity; the one-hash
@@ -166,13 +171,15 @@ own measurement:
    CoRIM-only packaging.
 3. Run `migtd-hash` on the resulting image to compute `tdinfo_hash`.
 4. Add the hash-to-SVN entry to the authority-maintained cumulative JSON
-   mapping or signed CoRIM.
+   mapping or signed CoRIM. New release SVNs must be no lower than all prior
+   release SVNs, and an existing hash assignment is immutable.
 5. Enroll the signed endorsement.
 6. Re-run `migtd-hash` and require the hash to be unchanged.
 
-The mapping must retain every supported historical initial hash. Removing a
-hash revokes that image for future lookup and must be an explicit,
-authority-reviewed operation.
+The mapping must retain every historical initial hash. Hash assignments are
+append-only and immutable. MigTD release revocation is performed by revoking
+the mapping's leaf signer certificate through the locally authoritative
+servTD CRL, not by removing an individual hash.
 
 Images built with `use-mock-quote` need both the synthetic report hash used by
 peer evaluation and the final image hash used by `SERVTD_EXT` continuity.
@@ -184,15 +191,23 @@ After quote or TDREPORT authentication, MigTD:
 1. verifies event-log replay and the RTMR2 canonical policy digest;
 2. verifies JSON/CoRIM signatures and signer-anchor binding;
 3. requires the authenticated peer's signer anchor to equal the local anchor;
-4. resolves the authenticated source's current report `tdinfo_hash`;
-5. resolves `ServtdExt.init_servtd_info_hash` through the same source mapping;
-6. rejects either lookup miss; and
-7. requires `init SVN <= current SVN` before policy evaluation succeeds.
+4. resolves the authenticated source's current report `tdinfo_hash` only
+   through the source mapping;
+5. resolves `ServtdExt.init_servtd_info_hash` through the source mapping and
+   the authenticated local mapping;
+6. rejects conflicting initial-hash assignments;
+7. uses the local initial-hash assignment only when the source mapping misses;
+8. rejects a miss from both mappings; and
+9. requires `init SVN <= current SVN` before policy evaluation succeeds.
 
-The destination's local mapping is not used for the source's initial hash. An
-older destination must not be required to predict future source releases.
-The legacy wire `init_td_info` field is retained for framing compatibility but
-is ignored.
+This fallback supports returning a TD to its originating release or moving it
+to a later cumulative release. It does not support arbitrary multi-hop
+movement among historical builds whose mappings do not know the initial hash.
+For example, with `V1={H1}`, `V2={H1,H2}`, and `V3={H1,H2,H3}`, a TD initialized
+under V3 can move V3 -> V1 -> V3, but V1 -> V2 fails because neither endpoint
+can authenticate H3. This is an intentional fail-closed availability
+limitation. The legacy wire `init_td_info` field is retained for framing
+compatibility but is ignored.
 
 ## Replay and freshness model
 
@@ -202,8 +217,8 @@ The measurement and endorsement layers provide different guarantees:
   and `tdinfo_hash`; the changed image requires a matching endorsement.
 - JSON mappings and CoRIMs are intentionally unmeasured and replaceable.
   Their authenticity comes from signatures bound to the RTMR1 anchor.
-- A mapping lookup miss fails closed. Cumulative mappings preserve supported
-  historical initial hashes; explicit removal revokes a hash.
+- A mapping lookup miss fails closed. Cumulative mappings preserve all
+  historical initial hashes; individual hashes are never removed.
 - MigTD has no trusted wall clock or persistent mapping-generation state.
   Mapping publication order and rollback prevention are release-authority and
   deployment responsibilities. Policy SVN/status floors and signer CRL

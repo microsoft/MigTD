@@ -18,23 +18,32 @@ timestamp: 2026-07-26T00:14:16+00:00
 - **VMM is untrusted but can DoS.** DoS-via-VMM is *not* a finding.
 - **Root of trust = `MRTD` + `RTMR0..3`** (attested). Certificate chains
   carry signatures, but policy-v2 signer identity is bound by the RTMR1
-  signer anchor: root-certificate SHA-384 fingerprint + one enrolled
-  signer-purpose EKU. CoRIM verification tries every EKU asserted by the leaf
+  signer anchor: root-certificate SHA-384 fingerprint + full leaf Subject DN
+  DER hash + one enrolled signer-purpose EKU. CoRIM verification tries every
+  dedicated EKU asserted by the leaf
   and accepts only the one reproducing the measured anchor; legacy PEM paths
   still require a single unambiguous EKU.
+- SAN is not a stable signer identifier and is excluded from the anchor and
+  JSON peer-chain identity comparison. The authority must keep the full Subject
+  DN DER stable and reserve the root/Subject DN/dedicated-EKU tuple for the
+  intended signer. Producers, firmware, and offline hashing must use the same
+  formula (`doc/policy_v2.md`, `v2/measurement.rs`).
 - After `mig_policy::init_policy()` succeeds, `VERIFIED_POLICY` is trusted.
 - The one-hash TCB mapping (JSON or CoRIM) maps the complete 48-byte
   `tdinfo_hash` / `SERVTD_INFO_HASH` directly to MigTD SVN. When a signed
   CoRIM is enrolled it is the sole lookup authority; a miss does not fall
   back to JSON collateral.
-- Init/current SVN continuity in the completed one-hash design uses the
-  authenticated source's verified mapping twice: map
-  `ServtdExt.init_servtd_info_hash` to init SVN, map the source's authenticated
-  current-report `tdinfo_hash` to current SVN, and require
-  `init SVN <= current SVN`. Do not query the destination's local mapping.
-- Current implementation gap: only the current source hash is mapped today.
-  Init/current ordering still comes from full Init_TDINFO
-  `MROWNERCONFIG` compared with the source report's `MROWNERCONFIG`.
+- Init/current SVN continuity resolves the source's authenticated current-report
+  `tdinfo_hash` only through the source mapping. Resolve
+  `ServtdExt.init_servtd_info_hash` through the source mapping first, then the
+  authenticated destination mapping as a fallback. Conflicting assignments
+  fail closed; require `init SVN <= current SVN`.
+- Migration and rebinding both enforce this mapped-SVN ordering. A missing
+  current mapping or an initial hash missing from both mappings fails closed;
+  the legacy wire Init_TDINFO is ignored.
+- MigTD hash mappings are cumulative and append-only. A hash's SVN is immutable,
+  later release SVNs are non-decreasing, and release revocation uses the
+  locally authoritative leaf-signer CRL rather than hash removal.
 
 ## Rebind vs Migration attestation — DIFFERENT verifiers
 
@@ -51,29 +60,21 @@ bypassed under which build feature.
 
 ## TDINFO / MROwner / MROwnerConfig semantics
 
-- **MROwner** is provisioned by GHCI as the hash of the policy signer's
-  public key, but it is no longer the cross-peer signer trust anchor.
-- **MROwnerConfig** = MigTD policy SVN (a.k.a. "migtd svn").
-- `verify_own_tdinfo()` checks only that the local `MROwnerConfig` matches
-  policy SVN. The old local `MROwner == signer-key hash` check is deprecated
-  because anchor-only CoRIM enrollment carries no leaf public key.
-- Migration/rebind currently cross-check full **init** TDINFO
-  `MROwner`/`MROwnerConfig` with that same peer's authenticated current
-  report. This is transitional compatibility logic, not the final one-hash
-  mechanism. The final mechanism compares the two SVNs resolved from the
-  source peer's verified hash mapping.
+- **MROwner** and **MROwnerConfig** are included in the complete TDINFO
+  endorsement. Policy v2 does not require them to encode a signer-key hash
+  or policy SVN; signer identity is bound by the RTMR1 anchor instead.
+- There is no local startup check comparing `MROwnerConfig` with policy SVN.
+  The policy is bound through measured RTMR2 data, while migration continuity
+  uses authenticated peer measurements and their verified one-hash mapping.
 - Cross-peer signer compatibility is the RTMR1 anchor equality
-  (root fingerprint + leaf EKU). Leaf and intermediate keys may rotate
+  (root fingerprint + full leaf Subject DN DER hash + dedicated leaf EKU).
+  Leaf and intermediate keys may rotate
   independently under the same anchor.
 - The legacy wire field **`init_td_info`** is accepted for framing
   compatibility but cleared by `MigtdMigrationInformation::read_from_bytes`;
   callers see it as absent. The completed one-hash flow must use
   `ServtdExt.init_servtd_info_hash` directly and must not depend on a
   VMM-supplied 512-byte Init_TDINFO.
-- Under the **`AzCVMEmu`** feature, **skip the `verify_own_tdinfo()`
-  MROwnerConfig check** rather than emulating it via env vars. The
-  env-var emulation approach was tried (commit `8ce39a3`) and abandoned as
-  "too much to maintain". Current pattern: feature-gate-skip on `AzCVMEmu`.
 - Existing `REVERTME` commits typically bypass MROwner/MROwnerConfig checks
   because the host isn't ready to plumb them through; these are test-only
   and must be reverted before upstreaming.

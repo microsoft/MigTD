@@ -21,7 +21,12 @@ Rules for every AI-assisted change.
 - Ignore findings that only give the VMM more DoS.
 - Trust `MRTD` and `RTMR0..3`.
 - Treat certificate chains as transport.
-- The policy root CA is measured into RTMR.
+- Policy v2 measures the signer anchor into RTMR1: root certificate DER,
+  full byte-exact leaf Subject DN DER, and the dedicated signer EKU.
+- SAN and leaf keys are not anchor inputs; chain/signature/CRL checks still apply.
+- Use the same signer-anchor formula in producers, enrollment, and authentication.
+- PEM and direct 48-byte enrollment are two representations of the same
+  anchor. See [the contract](doc/policy_v2.md#direct-signer-anchor-enrollment).
 - Trust `VERIFIED_POLICY` only after `init_policy()`.
 - Regular migration uses quotes.
 - Quote REPORTDATA starts at byte 520.
@@ -30,8 +35,8 @@ Rules for every AI-assisted change.
 - TDREPORT REPORTDATA starts at byte 128.
 - Use `verify_tdreport_data_binding`.
 - Never mix the two paths.
-- `MROwner` is the policy signer key hash.
-- `MROwnerConfig` is the policy SVN.
+- `MROwner` and `MROwnerConfig` are covered by the complete TDINFO endorsement,
+  not used as policy-v2 signer identity or policy-SVN authority.
 - Check local TDINFO during startup.
 - Require the same signer during migration.
 - Require source SVN to meet destination SVN.

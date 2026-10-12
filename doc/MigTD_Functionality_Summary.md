@@ -122,7 +122,7 @@ Implemented in `src/migtd/src/migration/{data.rs, session.rs, event.rs}`:
 ### Measurement & Event Log (`src/migtd/src/event_log.rs`)
 - `write_tagged_event_log`: SHA-384 of measured data → `tdcall_extend_rtmr` →
   append a tagged CCEL event.
-- Measured items: the root+EKU **signer anchor** in RTMR1 and canonical
+- Measured items: the root/Subject DN/EKU **signer anchor** in RTMR1 and canonical
   **`policyData`** in RTMR2. JSON packaging redacts the TCB mapping and mapping
   issuer chain; CoRIM-only policyData is measured in full.
 - `verify_event_log` replays the event log against the RTMRs from the verified
@@ -180,11 +180,13 @@ enrolled into the image and measured into RTMR2 at boot.
 - The legacy outer `policyData` signature is ignored. Runtime:
   `init_policy` verifies RTMR2 integrity and inner JSON/CoRIM endorsements;
   `authenticate_remote*` verifies quote/TDREPORT evidence, event-log integrity,
-  signer-anchor compatibility, and TCB relationships.
-- **Measurement binding:** RTMR1 ← root+EKU signer anchor; RTMR2 ← canonical
+  signer-anchor equality, and TCB relationships.
+- **Measurement binding:** RTMR1 ← root/Subject DN/EKU signer anchor; RTMR2 ← canonical
   `policyData`. JSON policyData redacts only `servtdTcbMapping` and
   `servtdTcbMappingIssuerChain`; CoRIM-only policyData is measured in full. The
   same bytes are reproduced offline by `migtd-hash --policy-v2`.
+- **Signer anchor:** SAN is not bound. PEM and direct 48-byte inputs use the
+  same root/Subject DN/EKU identity.
 - Migration continuity: MigTD resolves the authenticated source's initial and
   current `SERVTD_INFO_HASH` values through the source's verified one-hash
   mapping and requires the mapped initial SVN not to exceed the current SVN.

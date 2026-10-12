@@ -22,7 +22,7 @@ Shared:
   migtd-collateral-generator -> platform TCB/QE collaterals
   migtd-policy-generator v2  -> { "policyData": ... }
 
-JSON compatibility path:
+JSON endorsement path:
   sign tdTcbMapping (tdinfo_hash -> SVN)
   optionally sign tdIdentity (SVN -> date/status)
   servtd-collateral-generator -> JSON servtdCollateral + issuer chains
@@ -45,13 +45,15 @@ endorsement comes from either the inner JSON signatures or the CoRIM
 At boot, MigTD:
 
 1. Resolves the signer anchor
-   `A = SHA384(tag || H(rootDER) || leafEkuOidDER)` from a PEM chain or the
-   direct anchor slot and extends `SHA384(A)` into RTMR1.
+   `A = SHA384("MIGTD-RTMR1-ANCHOR" || 0 || H(rootDER) || 0 || H(subjectDER) || 0 || leafEkuOidDER)`
+   from a PEM chain or the direct anchor slot and extends `SHA384(A)` into RTMR1.
+   SAN is not bound. Anchor producers, firmware, and offline hashing use this
+   same formula.
 2. Extends canonical `policyData` into RTMR2. JSON packaging redacts only the
    TCB mapping and mapping issuer chain; JSON TD Identity and its issuer chain
    remain measured. A CoRIM-only policy has no `servtdCollateral` and is
    measured as-is.
-3. Verifies JSON/CoRIM signatures and binds their signer root+EKU to `A`.
+3. Verifies JSON/CoRIM signatures and binds their signer root/Subject DN/EKU to `A`.
 
 ## Updating mappings and rotating signer leaves
 
@@ -59,12 +61,17 @@ At boot, MigTD:
   the complete 48-byte `SERVTD_INFO_HASH`, not individual MRTD/RTMR fields.
 - A deployable mapping must cover both current MigTD releases and any initial
   MigTD hashes that can appear in target-TD `SERVTD_EXT` state. During
-  migration/rebinding, the verifier uses the authenticated source's mapping
-  to resolve both `init_servtd_info_hash` and the source's current report
-  hash, then requires `init SVN <= current SVN`.
-- That comparison is against the **source peer's verified mapping**, not the
-  destination's local mapping. This preserves reverse migration because an
-  older destination does not need to predict future source releases.
+  migration/rebinding, the verifier resolves the current report hash only
+  through the authenticated source mapping. It resolves
+  `init_servtd_info_hash` through the source mapping, then the authenticated
+  local mapping as fallback, and requires `init SVN <= current SVN`.
+- The local lookup is not an allowlist: a source hit is sufficient. The
+  fallback supports returning to the originating or a later cumulative
+  release, while arbitrary historical multi-hop paths may fail when neither
+  endpoint knows the initial hash.
+- Mappings are cumulative and append-only. Existing hash-to-SVN assignments
+  are immutable, later release SVNs are non-decreasing, and leaf-signer CRLs
+  provide revocation.
 - Re-issuing a JSON mapping or CoRIM is measurement-neutral. Re-issuing JSON
   TD Identity or its issuer chain changes RTMR2 and requires a new
   `tdinfo_hash` endorsement.
@@ -73,18 +80,26 @@ At boot, MigTD:
   the final image `SERVTD_INFO_HASH` used by `SERVTD_EXT` continuity checks.
   Generate measured-image policy collateral with
   `build_azure_mock_test.sh --retain-mock-report-mapping`.
-- Rotating leaf or intermediate keys is measurement neutral only when the root
-  and signer-anchor EKU are unchanged; the new chain must still validate
+- Rotating leaf or intermediate keys preserves RTMR1 only when the root,
+  byte-exact full Subject DN, and signer-anchor EKU are unchanged; SAN can
+  change. The new chain must still validate
   and pass signer revocation checks.
 - When a CoRIM is enrolled it is the sole TCB lookup authority. Do not expect
   JSON fallback on a CoRIM miss.
+- `servtd_corim.rs` resolves generic Intel/TDX conditional endorsements
+  without an instance: `tdx_{init,curr}_server_td_hash` (SHA-384, algorithm 7)
+  to the same phase's `tdx_{init,curr}_server_td_svn` (exact `u16`).
+  Initial and current maps must have identical coverage and SVNs before
+  entering the phase-independent lookup cache. Missing phases, extra
+  constraints, and conflicting hash-to-SVN assignments fail closed.
+  See `conditional_endorsements_require_identical_phase_coverage_and_svns`.
 - MigTD has no trusted clock or persistent mapping-generation state. Mapping
   publication order and rollback prevention remain release-authority and
   deployment responsibilities; do not describe signed mapping replacement as
   an independently enforced in-guest freshness guarantee.
 - After enrollment, recompute the image hash with `migtd-hash` and require it
   to equal the pre-enrollment value. A mismatch means measured policy content,
-  root, or signer EKU changed.
+  root, Subject DN, signer EKU, or anchor profile changed.
 
 ## Implementation status
 
@@ -100,7 +115,9 @@ Legacy scripts still use `config/templates/policy_v2_signed.json` and
 `policy_issuer_chain.pem`. CoRIM-only builds instead need a policy without
 `servtdCollateral`, the 48-byte anchor file, and the signed `.cose` mapping.
 Do not mix the direct-anchor and PEM-chain inputs accidentally: the direct
-anchor takes precedence when both CFV slots are populated.
+anchor takes precedence when both CFV slots are populated. Successfully enrolling
+or hashing a raw 48-byte digest is not proof that it matches the signer identity.
+JSON/CoRIM authentication must reproduce it.
 
 GitHub `cargo image` matrix jobs are compile checks, not publishable release
 artifacts. A deployable image must go through either the release CoRIM

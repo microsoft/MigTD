@@ -39,11 +39,17 @@ exits, which is already part of the VMM's threat surface.
 
 ## Cert-chain weakness in attested path
 
+Use this rationale only after tracing the actual signer binding. Attested
+measurements do not by themselves rule out a compromised authorized signer.
+
 ```
-False-positive. The root CA chain is measured into RTMR<N> and attested via the
-TDX quote — see <attestation-init>. A compromised cert alone is insufficient
-because the peer's verification of our quote would catch a divergent measurement.
-Trust root is hardware attestation, not the software chain.
+The policy-v2 mapping signer is bound to the attested RTMR1 signer anchor:
+root certificate DER + full byte-exact leaf Subject DN DER + dedicated EKU.
+The complete chain, SAN, and leaf key are not anchor inputs. A different
+root/Subject DN/EKU tuple is rejected at <anchor-check>, but compromise or
+unauthorized issuance within the enrolled tuple still matters. Verify the
+chain/signature/CA-constraint checks and locally authoritative CRL at
+<signer-verification> before classifying this finding.
 ```
 
 ## vmcall-raw 0-byte read
