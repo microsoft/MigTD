@@ -19,6 +19,10 @@ type Result<T = ()> = core::result::Result<T, VmcallRawError>;
 pub struct VmcallRaw {
     pub addr: VmcallRawAddr,
     pub data_queue: VecDeque<Vec<u8>>,
+    /// Whether `self.addr.transport_context()` currently has a live entry in
+    /// `VMCALL_MIG_CONTEXT_FLAGS`. Tracked so `Drop` can always clean up,
+    /// including when the caller never reaches an explicit `shutdown()`.
+    registered: bool,
 }
 
 impl AsyncRead for VmcallRaw {
@@ -44,6 +48,7 @@ impl VmcallRaw {
                 transport_context: mid,
             },
             data_queue: VecDeque::new(),
+            registered: false,
         })
     }
 
@@ -52,6 +57,7 @@ impl VmcallRaw {
         VMCALL_MIG_CONTEXT_FLAGS
             .lock()
             .insert(self.addr.transport_context(), AtomicBool::new(false));
+        self.registered = true;
 
         Ok(())
     }
@@ -110,6 +116,7 @@ impl VmcallRaw {
         VMCALL_MIG_CONTEXT_FLAGS
             .lock()
             .remove(&self.addr.transport_context());
+        self.registered = false;
         Ok(())
     }
 
@@ -121,6 +128,27 @@ impl VmcallRaw {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for VmcallRaw {
+    /// Guarantee `VMCALL_MIG_CONTEXT_FLAGS` never outlives this transport.
+    ///
+    /// `connect()` registers `self.addr.transport_context()` so the shared
+    /// interrupt handler can signal completion of in-flight VMCALLs. The only
+    /// prior removal path was the async `reset()`/`shutdown()`, which callers
+    /// only reach on a *clean* teardown. Every early-return failure after a
+    /// successful `connect()` (pre-session exchange, SPDM/TLS handshake,
+    /// policy evaluation, timeouts, ...) drops the transport via `?` without
+    /// ever calling `shutdown()`, which used to leak the entry for the
+    /// lifetime of the TD. `Drop` runs on every exit path -- normal or
+    /// early-return -- so this closes that gap unconditionally.
+    fn drop(&mut self) {
+        if self.registered {
+            VMCALL_MIG_CONTEXT_FLAGS
+                .lock()
+                .remove(&self.addr.transport_context());
+        }
     }
 }
 
@@ -186,6 +214,70 @@ mod tests {
         assert_eq!(n2, 2);
         assert_eq!(&buf[..n2], b"ef");
         assert!(s.data_queue.is_empty());
+    }
+
+    #[test]
+    fn drop_removes_context_flag_even_without_explicit_shutdown() {
+        // Regression test for the leak: a transport that connected but was
+        // then dropped via an early-return failure (e.g. `?` after a failed
+        // pre-session exchange / SPDM handshake) must still have its
+        // VMCALL_MIG_CONTEXT_FLAGS entry removed, even though `shutdown()`
+        // was never called. We fake what `connect()` does instead of calling
+        // it directly, since the real path touches the interrupt subsystem.
+        let ctx = 0xABCD_EF01_2345_6789u64;
+        VMCALL_MIG_CONTEXT_FLAGS.lock().remove(&ctx); // start clean
+        {
+            let mut s = VmcallRaw {
+                addr: VmcallRawAddr {
+                    transport_context: ctx,
+                },
+                data_queue: VecDeque::new(),
+                registered: false,
+            };
+            VMCALL_MIG_CONTEXT_FLAGS
+                .lock()
+                .insert(ctx, AtomicBool::new(false));
+            s.registered = true;
+            assert!(VMCALL_MIG_CONTEXT_FLAGS.lock().contains_key(&ctx));
+            // `s` goes out of scope here without ever calling shutdown()/reset(),
+            // modeling an early-return failure path.
+        }
+        assert!(!VMCALL_MIG_CONTEXT_FLAGS.lock().contains_key(&ctx));
+    }
+
+    #[test]
+    fn drop_is_noop_when_never_registered() {
+        let ctx = 0x1111_2222_3333_4444u64;
+        VMCALL_MIG_CONTEXT_FLAGS.lock().remove(&ctx); // start clean
+        {
+            let _s = VmcallRaw::new_with_mid(ctx).unwrap();
+            // Never connected, so nothing was ever inserted for `ctx`.
+        }
+        assert!(!VMCALL_MIG_CONTEXT_FLAGS.lock().contains_key(&ctx));
+    }
+
+    #[test]
+    fn explicit_shutdown_still_removes_the_flag() {
+        let ctx = 0x5555_6666_7777_8888u64;
+        VMCALL_MIG_CONTEXT_FLAGS.lock().remove(&ctx); // start clean
+        let mut s = VmcallRaw {
+            addr: VmcallRawAddr {
+                transport_context: ctx,
+            },
+            data_queue: VecDeque::new(),
+            registered: false,
+        };
+        VMCALL_MIG_CONTEXT_FLAGS
+            .lock()
+            .insert(ctx, AtomicBool::new(false));
+        s.registered = true;
+
+        run_ready(s.shutdown()).unwrap();
+        assert!(!VMCALL_MIG_CONTEXT_FLAGS.lock().contains_key(&ctx));
+        assert!(!s.registered);
+
+        drop(s);
+        assert!(!VMCALL_MIG_CONTEXT_FLAGS.lock().contains_key(&ctx));
     }
 
     #[test]
