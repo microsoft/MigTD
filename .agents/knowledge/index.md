@@ -3,7 +3,7 @@
 ## Workflow & conventions
 
 * [Commit Hygiene, Remotes & Workflow Patterns](commit-and-workflow.md) - DCO sign-off, force-push rules, remote layout, rebase/cherry-pick patterns, issue filing.
-* [Setup, Verification Gauntlet & Pre-done Checklist](verification-and-checklist.md) - Mandatory post-checkout setup, the four-CI-workflow gauntlet, EMU invocations, and the "am I done" checklist.
+* [Setup, Verification Gauntlet & Pre-done Checklist](verification-and-checklist.md) - Mandatory post-checkout setup, the five-CI-workflow gauntlet, EMU invocations, and the "am I done" checklist.
 * [Code Style Preferences](code-style.md) - Diff minimization, error handling, logging discipline.
 * [Anti-patterns — Things To NOT Do](anti-patterns.md) - Collected pushback items from past sessions.
 * [Engineering Decisions Log](decisions-log.md) - Concrete decisions (feature/commit kept vs. dropped) with SHAs — append-only.
@@ -14,7 +14,7 @@
 * [MigTD Architecture Overview (Azure Build)](architecture-overview.md) - Layered/component diagrams, kernel-free boot, dispatcher/migration/SPDM/rebind sequences, an alternate RA-TLS view, policy-v2 trust, and IGVM build.
 * [Azure WaitForRequest Error and ReportStatus Map](azure-waitforrequest-errors.md) - Azure IGVM vmcall-raw/SPDM request failures, logging coverage, and host-visible status codes.
 * [Security Bypasses](security-bypasses.md) - Which verification checks are bypassed under dev/test build features, and why.
-* [Boot Measurements](boot-measurements.md) - How MRTD/RTMR0-3 are populated, including the SAN-independent RTMR1 signer anchor and redacted RTMR2 policyData.
+* [Boot Measurements](boot-measurements.md) - How MRTD/RTMR0-3 are populated, including the SAN-independent RTMR1 signer anchor, complete canonical RTMR2 policyData, and separate unmeasured TCB mappings.
 * [Init_TDINFO and ServtdExt Usage Summary](init-tdinfo-servtd-ext.md) - Continuity/integrity checks, current-image one-hash lookup, and migration vs. rebinding behavior.
 * [Memory Budget](memory-budget.md) - Stack/heap/shared-memory sizing equations for multi-session SPDM attestation.
 * [Reproducible Build — Status & Limitations](reproducible-build.md) - What's implemented, verified, and still limited for MRTD-stable rebuilds.

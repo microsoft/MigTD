@@ -41,6 +41,10 @@ timestamp: 2026-07-26T00:14:16+00:00
 - Migration and rebinding both enforce this mapped-SVN ordering. A missing
   current mapping or an initial hash missing from both mappings fails closed;
   the legacy wire Init_TDINFO is ignored.
+- Mapping lookup keys include `SERVTD_ATTR`. Use the validated current mask
+  for current evidence and `INIT_ATTR` for the initial hash. A missing JSON
+  `servtdAttr` or CoRIM `raw_value` means zero, not a wildcard for other masks.
+  Named initial/current CoMID phases must agree on `(hash, attr) -> SVN`.
 - MigTD hash mappings are cumulative and append-only. A hash's SVN is immutable,
   later release SVNs are non-decreasing, and release revocation uses the
   locally authoritative leaf-signer CRL rather than hash removal.

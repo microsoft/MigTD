@@ -121,7 +121,7 @@ Three tiers, cheap → expensive. Do **not** skip straight to push.
 |---|---|---|---|
 | fast | `scripts/fast-emu-check.sh` | 2 emu scenarios (skip-RA, SPDM skip-RA) | after **every** pick (via `port-verify.sh`) |
 | milestone | `scripts/emu-milestone.sh` | 8 curated emu scenarios | after a batch of picks / after a drop or squash |
-| full CI | `.agents/skills/migtd-review/scripts/run-ci-gauntlet.sh` | all 14 emu + 32 `cargo image` + format + deny | before pushing |
+| full CI | `.agents/skills/migtd-review/scripts/run-ci-gauntlet.sh` | 18 workflow EMU scenarios + CoRIM rebind (19 total), library checks + 32 `cargo image` + format + deny | before pushing |
 
 For just the full emu matrix or just the firmware builds:
 ```bash
@@ -129,10 +129,10 @@ For just the full emu matrix or just the firmware builds:
 .agents/skills/migtd-review/scripts/run-ci-gauntlet.sh --only main
 ```
 
-Why a fast gate per-pick and not the full 14 every time: the full emu matrix is ~20–40
+Why a fast gate per-pick and not the full 19 every time: the full emu matrix is ~20–40
 min; the 2-scenario gate is a couple of minutes and catches the overwhelming majority of
 broken picks (build break, fmt, obvious logic regressions). The milestone (8) and full
-(14) tiers catch policy-v2 / rebind / key-rotation specific regressions.
+(19) tiers catch policy-v2 / rebind / key-rotation specific regressions.
 
 > **migtdemu.sh is not parallel-safe** (hardcoded port 8001, `taskset -c 0`, fixed log
 > names, shared `target/release/migtd`). Run emu scenarios **sequentially**. The scripts
@@ -211,4 +211,4 @@ This survives context summarisation and lets you resume mid-port.
 - `scripts/fast-emu-check.sh` — 2-scenario emu smoke.
 - `scripts/emu-milestone.sh` — 8-scenario emu checkpoint.
 - migtd-review skill — trust model (§1), build features, and `run-ci-gauntlet.sh` for full
-  CI parity (format + deny + 32 image builds + 14 emu).
+  CI coverage (format + deny + library + 32 image builds + 19 emu).

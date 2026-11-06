@@ -34,7 +34,7 @@ interface; it does not select the image format.
 | `stack-guard` | `td-payload` stack guard page and page-fault exception stack, not a stack canary |
 | `spdm_attestation` | SPDM requester/responder and secured migration/rebind exchange instead of the RA-TLS session path |
 | `igvm-attest` | `get_quote_igvm()` / `servtd_get_quote()` host-mediated quote acquisition |
-| `policy_v2` | `policy::v2`, `mig_policy::v2`, and `attestation/attest-lib-ext`; also enables the vmcall-raw rebind and `GetMigtdData` handlers |
+| `policy_v2` | `policy::v2`, `mig_policy::v2`, and `attestation/attest-lib-ext`; also enables the vmcall-raw rebind handler |
 
 This exact profile uses **JSON ServTD endorsements**. Signed CoRIM
 endorsements require the additional `servtd_corim` feature and enrollment;
@@ -336,13 +336,18 @@ the TDX-module interface uses TDCALL operations. These are distinct trust
 boundaries. The VMM can relay, modify, delay, or drop transport data, but is
 not trusted to authenticate a peer or authorize an MSK transfer.
 
-With `policy_v2`, the dispatcher enables **`StartRebinding` and
-`GetMigtdData`** in addition to `StartMigration`, `GetTdReport`, and
+With `policy_v2`, the dispatcher enables **`StartRebinding`**
+in addition to `StartMigration`, `GetTdReport`, and
 `EnableLogArea`. One listener accepts requests; per-request futures share
 the same cooperative executor. Interrupt callbacks
 record completion state, and the main loop polls tasks then halts until an
 interrupt. A broadcast data wakeup is filtered by each request's shared-buffer
 `data_status`.
+
+Intel commit `56e42432` retires opcode 5 (`GetMigtdData`) for every profile.
+Rebinding obtains the full TDREPORT through request-ID-only `GetTdReport`.
+The integration compatibility parser also bounds-checks a legacy 72-byte
+request and ignores its REPORTDATA tail.
 
 ## Policy v2 and attestation structure
 
@@ -387,7 +392,7 @@ flowchart TB
         CFV["CFV<br/>policyData + JSON ServTD endorsements<br/>policy issuer chain / signer-anchor source"]
         INIT["mig_policy::init_policy<br/>verify inner signatures, anchors and CRLs<br/>configure quote-verification root"]
         VERIFIED["VERIFIED_POLICY<br/>local rules, collaterals, signer anchor<br/>verified one-hash MigTD SVN mapping"]
-        MEAS["Boot measurement + CC event log<br/>RTMR1: root / full Subject DN / EKU anchor<br/>RTMR2: canonical policyData with mapping redacted"]
+        MEAS["Boot measurement + CC event log<br/>RTMR1: root / full Subject DN / EKU anchor<br/>RTMR2: complete canonical policyData; mapping separate"]
         CFV --> INIT --> VERIFIED
         CFV --> MEAS
     end
@@ -790,9 +795,9 @@ extension, not part of the selected JSON-endorsement profile.
 One persistent listener and the request handlers share a cooperative
 executor. The state lifeline combines `PENDING_REQUEST` and `REQUESTS`;
 the task lifelines do not denote OS threads. The handler block represents
-previously scheduled tasks polled during the current iteration. This view
-also includes `GetMigtdData`, which is enabled by the selected `policy_v2`
-profile but absent from the supplied sequence.
+previously scheduled tasks polled during the current iteration.
+The rendered SVG predates opcode-5 retirement; the Mermaid source below
+reflects the current dispatcher.
 
 ![Dispatcher and request completion sequence](architecture-diagrams/request-dispatch.svg)
 
@@ -885,8 +890,6 @@ sequenceDiagram
                 HANDLER->>SESSION: get_tdreport()
             else EnableLogArea
                 HANDLER->>SESSION: enable_logarea()
-            else GetMigtdData
-                HANDLER->>SESSION: get_migtd_data()
             end
             SESSION-->>HANDLER: Result and response data<br/>when ready
             HANDLER->>HANDLER: Map result to<br/>MigrationResult

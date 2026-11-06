@@ -25,8 +25,10 @@ Shared:
 JSON endorsement path:
   sign tdTcbMapping (tdinfo_hash -> SVN)
   optionally sign tdIdentity (SVN -> date/status)
-  servtd-collateral-generator -> JSON servtdCollateral + issuer chains
-  cargo image --policy-v2 --policy <policy> --policy-issuer-chain <chain>
+  enroll signed JSON mapping separately from policyData:
+  cargo image --policy-v2 --policy <policy> --policy-issuer-chain <chain> \
+      --servtd-tcb-mapping <mapping_signed.json>
+  optional JSON TD Identity and its issuer chain remain in policyData
 
 CoRIM-only path:
   omit --servtd-collateral when generating policyData
@@ -49,10 +51,10 @@ At boot, MigTD:
    from a PEM chain or the direct anchor slot and extends `SHA384(A)` into RTMR1.
    SAN is not bound. Anchor producers, firmware, and offline hashing use this
    same formula.
-2. Extends canonical `policyData` into RTMR2. JSON packaging redacts only the
-   TCB mapping and mapping issuer chain; JSON TD Identity and its issuer chain
-   remain measured. A CoRIM-only policy has no `servtdCollateral` and is
-   measured as-is.
+2. Extends complete canonical `policyData` into RTMR2, without redaction.
+   JSON mappings and CoRIM share a separately enrolled, unmeasured artifact
+   slot. JSON TD Identity and its issuer chain remain measured. Legacy
+   embedded mapping fields are rejected (`85f6e581`).
 3. Verifies JSON/CoRIM signatures and binds their signer root/Subject DN/EKU to `A`.
 
 ## Updating mappings and rotating signer leaves
@@ -72,6 +74,10 @@ At boot, MigTD:
 - Mappings are cumulative and append-only. Existing hash-to-SVN assignments
   are immutable, later release SVNs are non-decreasing, and leaf-signer CRLs
   provide revocation.
+- CRL floors belong at `servtd.crl.servtdCrlNum`. The legacy flat
+  `servtd.servtdCrlNum` fails policy initialization (Intel commit `15391949`).
+  Keep generated test policies in the same nested format; the asymmetric
+  CoRIM migration scenario exercises this contract.
 - Re-issuing a JSON mapping or CoRIM is measurement-neutral. Re-issuing JSON
   TD Identity or its issuer chain changes RTMR2 and requires a new
   `tdinfo_hash` endorsement.

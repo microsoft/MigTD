@@ -105,7 +105,6 @@ cause.
 | Policy-v2 authentication failure, including peer quote verification | 8 |
 | `GetTdReport` TDG.MR.REPORT failure | 4 |
 | `GetTdReport` output-length invariant failure | 1 |
-| `GetMigtdData` local report-generation failure | 1 |
 | `EnableLogArea` before a log area exists | 12 |
 | `EnableLogArea` with an invalid level | 1 |
 
@@ -135,15 +134,15 @@ instead. Logs are required to identify the exact stage.
 ## ReportStatus delivery behavior
 
 `StartMigration`, `StartRebinding`, and `EnableLogArea` add caller-level logging
-when `report_status()` returns an error. `GetTdReport` and `GetMigtdData`
-discard that result, but all currently returned errors are logged inside
+when `report_status()` returns an error. `GetTdReport` discards that result,
+but all currently returned errors are logged inside
 `report_status()`:
 
 - shared-memory allocation failure;
 - invalid status code; and
 - the initial ReportStatus VMCALL failure.
 
-The latter two call sites still lose operation-specific caller context and
+The `GetTdReport` call site still loses operation-specific caller context and
 should not be described as completely silent.
 
 The ReportStatus confirmation loop has no timeout. If the host never changes

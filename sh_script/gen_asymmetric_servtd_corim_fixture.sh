@@ -22,7 +22,7 @@ if [[ ! -f "$BASE_POLICY" || ! -f "$BASE_MAPPING" ]]; then
     exit 1
 fi
 
-MOCK_TDINFO_HASH="$(jq -er '.svnMappings[0].tdMeasurements.tdinfo_hash' "$BASE_MAPPING")"
+MOCK_TDINFO_HASH="$(jq -er '.svnMappings[0].tdMeasurements.servtdInfoHash' "$BASE_MAPPING")"
 if [[ ${#MOCK_TDINFO_HASH} -ne 96 ]]; then
     echo "Invalid mock TDINFO hash in $BASE_MAPPING" >&2
     exit 1
@@ -145,9 +145,11 @@ jq --rawfile servtd_crl "$WORK_DIR/servtd.crl.pem" '
                     "reference": 1
                 }
             },
-            "servtdCrlNum": {
-                "operation": "greater-or-equal",
-                "reference": 1
+            "crl": {
+                "servtdCrlNum": {
+                    "operation": "greater-or-equal",
+                    "reference": 1
+                }
             }
         }
     };

@@ -90,7 +90,10 @@ A previous review pass produced a "fix" (`bc99fa4`) that removed the `+1`, passe
 - **Always in tree** (regardless of features): `virtio`, `pci`, `crypto` (rustls enabled by default).
 - **Build (production image)**:
   ```bash
-  cargo image --features main,vmcall-raw,stack-guard,vmcall-interrupt,oneshot-apic,spdm_attestation,igvm-attest,policy_v2
+  cargo image --no-default-features \
+      --features vmcall-raw,stack-guard,vmcall-interrupt,oneshot-apic,spdm_attestation,igvm-attest \
+      --policy-v2 --policy <policy.json> --policy-issuer-chain <issuer-chain.pem> \
+      --servtd-tcb-mapping <mapping_signed.json> --image-format igvm
   ```
   - The xtask sets release/debug profile internally — do **not** pass `--release`.
 - **Build (AzCVMEmu host harness)**: see §6.
@@ -198,7 +201,7 @@ What each stage covers (the commands the script runs are the source of truth):
 | `.github/workflows/deny.yml` | `deny` | `cargo deny check advisories`, `cargo deny check sources` (continue-on-error), `cargo deny check bans` |
 | `.github/workflows/library.yml` | `library` | `cargo xtask lib-build`, `cargo xtask lib-test` |
 | `.github/workflows/main.yml` | `main` | 32 `cargo image` builds = 4 devices × 2 policy_versions × 2 protocols × 2 build_types |
-| `.github/workflows/integration-emu.yml` | `emu` | CoRIM policy-contract checks plus 18 EMU scenarios mirroring the workflow matrix exactly, including CoRIM-only migration/rebind/asymmetric lookup and the fail-closed revoked-signer policy test |
+| `.github/workflows/integration-emu.yml` | `emu` | Artifact/verifier and CoRIM policy-contract checks plus all 18 workflow scenarios and an additional CoRIM rebind regression (19 total), including asymmetric lookup and fail-closed signer revocation |
 
 **Note**: the format.yml clippy step uses a *different* feature set than the in-scope set above (`stack-guard,virtio-vsock,virtio-serial,vmcall-interrupt`). Both must compile cleanly; the former is what runs in CI and gates merges.
 
@@ -223,24 +226,28 @@ Prerequisites: Rust 1.88.0, nasm, clang, libtss2-dev, pkg-config, jq, and `bash 
 Working tests on Ubuntu 24.04 (skip-RA paths):
 
 ```bash
-./migtdemu.sh --skip-ra --both --no-sudo --log-level info
-./migtdemu.sh --operation rebind-prepare \
+./migtdemu.sh --skip-ra --debug --both --no-sudo --log-level info
+./migtdemu.sh --operation rebind \
     --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
     --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
-    --skip-ra --both --no-sudo --log-level info
-./migtdemu.sh --skip-ra --features spdm_attestation --both --no-sudo --log-level info
+    --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
+    --skip-ra --debug --both --no-sudo --log-level info
+./migtdemu.sh --skip-ra --debug --features spdm_attestation --both --no-sudo --log-level info
 ```
 
 Full test matrix script (mirrors `.github/workflows/integration-emu.yml`):
 
 ```bash
-./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report
+.agents/skills/migtd-review/scripts/run-ci-gauntlet.sh --only emu
 ```
+
+`build_AzCVMEmu_policy_and_test.sh --mock-report` generates fixtures and runs
+smoke tests, not the full matrix.
 
 ### Policy file gotcha — `EXPLICIT_POLICY_FILE`
 
-- `config/AzCVMEmu/policy_v2_signed.json`, `config/AzCVMEmu/policy_v2_raw.json`, and `config/AzCVMEmu/policy_issuer_chain.pem` are **tracked in git**. CI starts every job from a clean `actions/checkout`, so these are always present.
-- `migtdemu.sh` only auto-generates policy files when `EXPLICIT_POLICY_FILE != true` *and* `SKIP_POLICY_GENERATION != true` (see `migtdemu.sh:452`). Passing `--policy-file` sets `EXPLICIT_POLICY_FILE=true`, which **disables** auto-generation. So if you `git clean -fdx` (or otherwise delete the tracked policy files), then run with `--policy-file`, you'll get `Error: Source Policy file not found: …`. Restore them with `git checkout config/AzCVMEmu/` and re-run.
+- `config/AzCVMEmu/policy_v2_raw.json` is tracked; the signed JSON and issuer-chain PEM are generated, untracked fixtures. Generate them in a fresh checkout with `./sh_script/build_AzCVMEmu_policy_and_test.sh --mock-report --skip-test`.
+- Passing `--policy-file` sets `EXPLICIT_POLICY_FILE=true`, which disables automatic policy-v2 fixture generation. After `git clean -fdx`, regenerate missing fixtures before naming them explicitly. Inspect `git status` first and do not overwrite the configuration directory to restore generated files.
 - The key-rotation policy files (`policy_v2_signed_a/b/pm_b/pmi_b.json` + matching chains) are **not** tracked. The rotation scenarios in `integration-emu.yml` generate them on demand.
 
 ### Local CI matrix invocations (mirrors `integration-emu.yml`)
@@ -248,8 +255,8 @@ Full test matrix script (mirrors `.github/workflows/integration-emu.yml`):
 Single-instance scenarios (no `--mock-report` or `--policy-v2`):
 
 ```bash
-./migtdemu.sh --skip-ra --both --no-sudo
-./migtdemu.sh --features spdm_attestation --skip-ra --both --no-sudo
+./migtdemu.sh --skip-ra --debug --both --no-sudo
+./migtdemu.sh --features spdm_attestation --skip-ra --debug --both --no-sudo
 ```
 
 `policy_v2` + mock-report scenarios (require the tracked policy files):
@@ -257,10 +264,11 @@ Single-instance scenarios (no `--mock-report` or `--policy-v2`):
 ```bash
 ./migtdemu.sh --policy-v2 --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
     --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+    --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
     --mock-report --both --no-sudo
 ```
 
-Rebind scenarios use `--operation rebind-prepare`. SPDM scenarios add `--features spdm_attestation`. Key-rotation scenarios additionally pass `--policy-file`/`--policy-issuer-chain-file` pointing at the rotated artifacts (e.g., `policy_v2_signed_a.json`).
+Rebind scenarios use `--operation rebind`. SPDM scenarios add `--features spdm_attestation`. Key-rotation scenarios additionally pass `--policy-file`/`--policy-issuer-chain-file` pointing at the rotated artifacts (e.g., `policy_v2_signed_a.json`).
 
 ### No safe parallelism for `migtdemu.sh`
 

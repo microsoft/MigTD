@@ -31,7 +31,7 @@ handoff from the host through TD-shim into MigTD, see the
 | **MRTD** | td-shim BFV pages **+** MigTD payload pages **+** GPA layout of every region | IGVM loader (host) / TDX module | TD launch, **before any TD code runs** | `TDH.MEM.PAGE.ADD` (all pages) + `TDH.MR.EXTEND` (pages without `unmeasured` flag); sealed by `TDH.MR.FINALIZE` |
 | **RTMR0** | `EV_SEPARATOR` = `SHA384(0x00000000)` extended once from zero | td-shim | Inside `boot_builtin_payload`, just before jumping to MigTD entry | `tdcall_extend_rtmr(rtmr_index=0)` |
 | **RTMR1** | `EV_SEPARATOR`, then the digest of signer anchor `A` (root fingerprint + full leaf Subject DN DER hash + enrolled signer-purpose EKU) | td-shim (separator) → MigTD (anchor) | td-shim runtime, then MigTD `do_measurements()` | `tdcall_extend_rtmr(rtmr_index=1)` |
-| **RTMR2** | **One extend**: canonical `policyData`; JSON packaging redacts only the TCB mapping and mapping issuer chain, while CoRIM-only policyData is measured in full | MigTD | MigTD `do_measurements()`, before any migration handling | `tdcall_extend_rtmr(rtmr_index=2)` |
+| **RTMR2** | **One extend**: complete canonical `policyData`; signed TCB mappings are enrolled separately and remain unmeasured | MigTD | MigTD `do_measurements()`, before any migration handling | `tdcall_extend_rtmr(rtmr_index=2)` |
 | **RTMR3** | Unused (always zero) in production builds | — | — | — |
 
 Test/debug variant: when `test_disable_ra_and_accept_all` is on,
@@ -245,23 +245,22 @@ changes alter RTMR1. Peer validation enforces the same signer identity; see
 
 ### policy_v2 build (current default)
 
-**One extension** over canonical `policyData`. For the JSON-collateral path,
-the extractor removes only:
+**One extension** over complete canonical `policyData`, with no field redaction.
+Intel commit `85f6e581` separates signed JSON TCB mappings from policyData,
+using the same unmeasured artifact slot as CoRIM. Legacy embedded
+`servtdCollateral.servtdTcbMapping` and `servtdTcbMappingIssuerChain` fields
+are rejected, not silently stripped.
 
-- `servtdCollateral.servtdTcbMapping` (strictly required when
-  `servtdCollateral` is present),
-- `servtdTcbMappingIssuerChain`.
-
-The mapping and mapping-chain bytes can be re-issued without changing
-`tdinfo_hash`; the mapping signer chain must resolve to the RTMR1 anchor.
-Every other `policyData` field remains measured, including migration rules,
+The separately enrolled mapping and its issuer chain can be re-issued without
+changing `tdinfo_hash`; the mapping signer chain must resolve to the RTMR1 anchor.
+Every `policyData` field remains measured, including migration rules,
 platform collaterals, `policySvn`, JSON `servtdIdentity` and its issuer chain,
 servTD collateral version fields, and `servtdCrl`. A CoRIM-only policy omits
 `servtdCollateral`, so its entire `policyData` object is measured as-is.
 
 | # | Bytes hashed | Tag ID constant | EventName |
 |---|--------------|-----------------|-----------|
-| 1 | canonical `policyData` after the implemented servTD redaction set above (object bytes including outer `{ }`) | `TAGGED_EVENT_ID_POLICY_DATA = 0x9` | `MigTdPolicyData` |
+| 1 | complete canonical `policyData` (object bytes including outer `{ }`) | `TAGGED_EVENT_ID_POLICY_DATA = 0x9` | `MigTdPolicyData` |
 
 Canonicalization sorts object keys lexicographically at every level, preserves
 array order, and removes whitespace. The extractor accepts either bare
@@ -278,7 +277,7 @@ keeping CCEL size bounded.
 Sketch:
 
 ```rust
-// canonical policyData after JSON servTD endorsement redaction → SHA-384
+// complete canonical policyData → SHA-384
 let policy_bytes = migtd::policy::extract_canonical_policy_data_bytes(policy)?;
 event_log::write_tagged_event_log(
     event_log,
@@ -296,16 +295,15 @@ signed-blob hash or (b) per-field whitelist:
   signed file must exist before the image is built).
 - A per-field whitelist (the previous "six extends" scheme) required
   reviewer discipline to remember to add every new `policyData` field to
-  the measurement code path. The single-extend redacted scheme
-  automatically binds every newly added field unless it is deliberately
-  added to the explicit redaction set. The mapping issuer chain is redacted
-  from RTMR2 and must resolve to the RTMR1 anchor; the identity issuer chain
-  remains measured.
+  the measurement code path. The complete canonical-policyData scheme
+  automatically binds every newly added field. The separately enrolled
+  mapping issuer chain must resolve to the RTMR1 anchor; the identity
+  issuer chain remains measured.
 - The dummy policy embedded in the base IGVM's CFV pre-computes the same
   RTMR2 as the final enrolled policy as long as the canonical
-  measured `policyData` agrees byte-for-byte after the same redaction helper.
+  measured `policyData` agrees byte-for-byte after canonicalization.
 
-The **hashed bytes** are the canonical redacted-`policyData` bytes (sorted-key, whitespace-free); the **event-log payload field** is the small version string. Peers replay the event log and compare digests, not raw payloads — `check_policy_integrity` recomputes the canonical bytes via the same `extract_canonical_policy_data_bytes` helper to verify the single digest.
+The **hashed bytes** are the complete canonical `policyData` bytes (sorted-key, whitespace-free); the **event-log payload field** is the small version string. Peers replay the event log and compare digests, not raw payloads — `check_policy_integrity` recomputes the canonical bytes via the same `extract_canonical_policy_data_bytes` helper to verify the single digest.
 
 Mirror in `MigTD/tools/migtd-hash/src/lib.rs` (`rtmr2()`): offline simulator
 performs the same single `rtmr2.extend_with_raw_data(...)` call so the build
@@ -368,7 +366,7 @@ After this point, the TD report's `tdinfo` is frozen at:
 mrtd   = SHA384( all measured pages of td-shim + payload )      [deterministic per image]
 rtmr0  = SHA384(0 || SHA384(separator))                          [deterministic per td-shim version]
 rtmr1  = SHA384(RTMR1_separator || SHA384(signer_anchor_A))      [root/Subject DN/EKU]
-rtmr2  = extend(0, SHA384(canonical_redacted_policyData))        [varies by measured policy content]
+rtmr2  = extend(0, SHA384(complete_canonical_policyData))        [varies by measured policy content]
 rtmr3  = 0                                                       [unused]
 ```
 

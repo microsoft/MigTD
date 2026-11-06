@@ -145,7 +145,10 @@ verify_corim_runtime() {
     local policy_file="$2"
     local anchor_file="$3"
 
-    jq -e '.policyData | has("servtdCollateral") | not' "$policy_file" >/dev/null &&
+    jq -e '.policyData |
+        (has("servtdTcbMappingIssuerChain") | not) and
+        ((.servtdCollateral // {}) | has("servtdTcbMapping") | not)
+    ' "$policy_file" >/dev/null &&
         [ "$(wc -c < "$anchor_file")" -eq 48 ] || return 1
 
     local role log
@@ -245,7 +248,8 @@ if stage_should_run main; then
                     if [ "$policy_version" = "v2" ]; then
                         cmd+=(--policy-v2
                               --policy config/templates/policy_v2_signed.json
-                              --policy-issuer-chain config/templates/policy_issuer_chain.pem)
+                              --policy-issuer-chain config/templates/policy_issuer_chain.pem
+                              --servtd-tcb-mapping config/templates/tcb_mapping_signed.json)
                     fi
                     if [ "$build_type" = "debug" ]; then
                         cmd+=(--debug)
@@ -260,7 +264,7 @@ fi
 # ============================================================ STAGE: emu
 # Mirrors .github/workflows/integration-emu.yml. Some scenarios run an
 # explicit `cargo build` *before* migtdemu.sh; others let migtdemu.sh
-# build internally. We match the workflow exactly.
+# build internally. Also retain the downstream CoRIM rebind regression.
 if stage_should_run emu; then
     banner emu
 
@@ -272,6 +276,18 @@ if stage_should_run emu; then
     step corim-policy__prepare python3 sh_script/prepare_AzCVMEmu_corim_policy.py \
         --base config/AzCVMEmu/policy_v2_signed.json \
         --output target/emu-corim-policy.json
+    step emu-artifacts python3 sh_script/test_migtdemu_artifacts.py
+    step servtd-artifact-loading cargo test --locked -p migtd -p td-shim-interface-emu \
+        --no-default-features \
+        --features migtd/AzCVMEmu,migtd/policy_v2,migtd/test_disable_ra_and_accept_all \
+        --lib servtd_files_are_loaded_by_guid
+    step policy-and-migtd-tests cargo test --locked -p policy -p migtd \
+        --features policy_v2,servtd_corim --lib
+    step policy-verifier-tests cargo test --locked -p migtd-policy-verifier
+    step rebinding-request-sequence cargo test --locked -p migtd -p tdx-tdcall-emu \
+        --lib --no-default-features \
+        --features migtd/AzCVMEmu,migtd/policy_v2,migtd/test_disable_ra_and_accept_all,migtd/test_mock_report \
+        test_rebinding_requests_use_td_report
 
     # CoRIM policy contract job.
     step corim-policy__build env SPDM_CONFIG="$REPO_ROOT/config/spdm_config.json" \
@@ -294,26 +310,37 @@ if stage_should_run emu; then
     step policy-v2 ./migtdemu.sh --policy-v2 \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
         --mock-report --both --no-sudo --log-level info
 
     # 3. policy-v2-igvm
     step policy-v2-igvm ./migtdemu.sh --policy-v2 \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
         --mock-report --features igvm-attest --both --no-sudo --log-level info
 
     # 4. rebind-skip-ra
     step rebind-skip-ra__build cargo build \
         --features AzCVMEmu,policy_v2,test_disable_ra_and_accept_all --no-default-features
-    step rebind-skip-ra ./migtdemu.sh --operation rebind-prepare \
+    step rebind-skip-ra ./migtdemu.sh --operation rebind --policy-v2 \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
         --skip-ra --debug --both --no-sudo --log-level info
 
     # 5. rebind-mock
-    step rebind-mock ./migtdemu.sh --operation rebind-prepare \
+    step rebind-mock ./migtdemu.sh --operation rebind --policy-v2 \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
+        --mock-report --both --no-sudo --log-level info
+
+    step rebind-v1-skip-ra__build cargo build \
+        --features AzCVMEmu,test_disable_ra_and_accept_all --no-default-features
+    step rebind-v1-skip-ra ./migtdemu.sh --operation rebind \
+        --skip-ra --debug --both --no-sudo --log-level info
+    step rebind-v1-mock ./migtdemu.sh --operation rebind \
         --mock-report --both --no-sudo --log-level info
 
     # 6. spdm-skip-ra
@@ -327,6 +354,7 @@ if stage_should_run emu; then
     step spdm-policy-v2 ./migtdemu.sh --policy-v2 \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
 
     # 8. corim-migration
@@ -335,19 +363,34 @@ if stage_should_run emu; then
         --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
         --src-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
         --dst-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping_san_mismatch.corim \
-        --mock-report --features spdm_attestation --both --no-sudo --log-level info
+        --mock-report --both --no-sudo --log-level info
     step corim-migration__verify verify_corim_runtime migration \
         target/emu-corim-policy.json \
         src/policy/test/policy_v2/corim/signer_anchor.bin
+    step native-artifact-startup env MIGTD_EMU_BINARY="$REPO_ROOT/target/release/migtd" \
+        python3 sh_script/test_migtdemu_artifacts.py
+
+    step corim-identity__prepare python3 sh_script/prepare_AzCVMEmu_corim_policy.py \
+        --base config/AzCVMEmu/policy_v2_signed.json \
+        --output target/emu-corim-identity-policy.json --with-identity
+    step spdm-corim-identity ./migtdemu.sh --policy-v2 \
+        --policy-file ./target/emu-corim-identity-policy.json \
+        --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
+        --src-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
+        --dst-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping_no_san.corim \
+        --mock-report --features spdm_attestation --both --no-sudo --log-level info
+    step spdm-corim-identity__verify verify_corim_runtime migration \
+        target/emu-corim-identity-policy.json \
+        src/policy/test/policy_v2/corim/signer_anchor.bin
 
     # 9. corim-rebind
-    step corim-rebind ./migtdemu.sh --operation rebind-prepare \
+    step corim-rebind ./migtdemu.sh --operation rebind --policy-v2 \
         --policy-file ./target/emu-corim-policy.json \
         --signer-anchor-file ./src/policy/test/policy_v2/corim/signer_anchor.bin \
         --src-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping.corim \
         --dst-servtd-corim-file ./src/policy/test/policy_v2/corim/tcb_mapping_no_san.corim \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
-    step corim-rebind__verify verify_corim_runtime rebind-prepare \
+    step corim-rebind__verify verify_corim_runtime rebind \
         target/emu-corim-policy.json \
         src/policy/test/policy_v2/corim/signer_anchor.bin
 
@@ -364,9 +407,10 @@ if stage_should_run emu; then
     # 11. spdm-rebind-skip-ra
     step spdm-rebind-skip-ra__build cargo build \
         --features AzCVMEmu,policy_v2,test_disable_ra_and_accept_all,spdm_attestation --no-default-features
-    step spdm-rebind-skip-ra ./migtdemu.sh --operation rebind-prepare \
+    step spdm-rebind-skip-ra ./migtdemu.sh --operation rebind --policy-v2 \
         --policy-file ./config/AzCVMEmu/policy_v2_signed.json \
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
+        --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
         --skip-ra --debug --features spdm_attestation --both --no-sudo --log-level info
 
     # 12. mock-quote-retry
@@ -377,40 +421,50 @@ if stage_should_run emu; then
     step policy-v2-key-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
+        --src-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_a.json \
         --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_b.json \
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
+        --dst-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_b.json \
         --mock-report --both --no-sudo --log-level info
 
     # 14. policy-v2-key-rotation-igvm
     step policy-v2-key-rotation-igvm ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
+        --src-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_a.json \
         --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_b.json \
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
+        --dst-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_b.json \
         --mock-report --features igvm-attest --both --no-sudo --log-level info
 
     # 15. spdm-policy-v2-key-rotation
     step spdm-policy-v2-key-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
+        --src-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_a.json \
         --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_b.json \
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
+        --dst-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_b.json \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
 
     # 16. policy-v2-policy-mapping-rotation
     step policy-v2-policy-mapping-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
+        --src-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_a.json \
         --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_pm_b.json \
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
+        --dst-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_pm_b.json \
         --mock-report --both --no-sudo --log-level info
 
     # 17. policy-v2-all-chains-rotation
     step policy-v2-all-chains-rotation ./migtdemu.sh --policy-v2 \
         --src-policy-file ./config/AzCVMEmu/policy_v2_signed_a.json \
         --src-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_a.pem \
+        --src-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_a.json \
         --dst-policy-file ./config/AzCVMEmu/policy_v2_signed_pmi_b.json \
         --dst-policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain_b.pem \
+        --dst-servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed_pmi_b.json \
         --mock-report --both --no-sudo --log-level info
 
     # 18. policy-v2-revoked
