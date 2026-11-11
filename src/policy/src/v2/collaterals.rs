@@ -207,26 +207,6 @@ pub fn get_collateral_with_fmspc(
     })
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlatformTcb {
-    tcb_info: TcbInfo,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TcbInfo {
-    pub tcb_evaluation_data_number: u32,
-}
-
-pub fn get_tcb_evaluation_number_from_collateral(
-    collateral: &Collateral,
-) -> Result<u32, PolicyError> {
-    let platform_tcb = serde_json::from_str::<PlatformTcb>(&collateral.tcb_info)
-        .map_err(|_| PolicyError::InvalidCollateral)?;
-    Ok(platform_tcb.tcb_info.tcb_evaluation_data_number)
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -268,18 +248,5 @@ mod test {
 
         let result = get_collateral_with_fmspc(&fmspc, &collaterals);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_get_tcb_evaluation_number_from_collateral() {
-        let collaterals_json = include_bytes!("../../test/policy_v2/collaterals.json");
-        let collaterals = deserialize_collaterals(collaterals_json).unwrap();
-
-        let collateral =
-            get_collateral_with_fmspc(&[0x20, 0xC0, 0x6F, 0x0, 0x0, 0x0], &collaterals).unwrap();
-        let tcb_evaluation_number = get_tcb_evaluation_number_from_collateral(&collateral);
-
-        assert!(tcb_evaluation_number.is_ok());
-        assert_eq!(tcb_evaluation_number.unwrap(), 5);
     }
 }

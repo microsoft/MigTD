@@ -36,9 +36,68 @@ pub fn build_v2_policy_data(
         })
         .transpose()?;
     merge_servtd_collateral(map, servtd_collateral, servtd_crl)?;
+    validate_component_policy(&base)?;
 
     let out = serde_json::to_vec(&base)?;
     Ok(out)
+}
+
+fn validate_component_policy(policy: &Value) -> Result<()> {
+    let version = policy["version"]
+        .as_str()
+        .ok_or_else(|| anyhow!("Policy version is required"))?;
+    if !matches!(version, "2.0" | "2.1") {
+        return Err(anyhow!("Unsupported policy version: {version}"));
+    }
+    for block in ["policy", "forwardPolicy", "backwardPolicy"] {
+        let Some(rules) = policy.get(block).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        for rule in rules
+            .as_array()
+            .ok_or_else(|| anyhow!("{block} must be an array"))?
+        {
+            let Some(global) = rule.get("global") else {
+                continue;
+            };
+            let global = global
+                .as_object()
+                .ok_or_else(|| anyhow!("global must be an object"))?;
+            for (name, component) in global {
+                if !matches!(
+                    name.as_str(),
+                    "tcb" | "platform" | "crl" | "tdxModule" | "AttestationModule"
+                ) {
+                    return Err(anyhow!("Unknown global policy field: {name}"));
+                }
+                if !matches!(
+                    name.as_str(),
+                    "platform" | "tdxModule" | "AttestationModule"
+                ) || component.is_null()
+                {
+                    continue;
+                }
+                let component = component
+                    .as_object()
+                    .ok_or_else(|| anyhow!("{name} must be an object"))?;
+                let extended = name != "platform"
+                    || ["tcbDate", "tcbEvaluationDataNumber"]
+                        .iter()
+                        .any(|field| component.get(*field).is_some_and(|value| !value.is_null()));
+                if extended && version != "2.1" {
+                    return Err(anyhow!("Component TCB rules require policy version 2.1"));
+                }
+                for field in component.keys() {
+                    if !(matches!(field.as_str(), "tcbDate" | "tcbEvaluationDataNumber")
+                        || name == "platform" && field == "fmspc")
+                    {
+                        return Err(anyhow!("Unknown {name} policy field: {field}"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn merge_servtd_collateral(
@@ -107,6 +166,27 @@ mod tests {
 
     const CRL: &str = include_str!("../../../src/crypto/test/crl/empty.crl.pem");
     const OTHER_CRL: &str = include_str!("../../../src/crypto/test/crl/root_empty.crl.pem");
+
+    #[test]
+    fn component_policy_requires_explicit_version_and_field_names() {
+        assert!(validate_component_policy(&json!({
+            "version": "2.0",
+            "policy": [{"global": {"platform": {"tcbDate": null}, "tdxModule": null}}]
+        }))
+        .is_ok());
+        for block in ["policy", "forwardPolicy", "backwardPolicy"] {
+            let mut policy = json!({"version": "2.0", (block): [{"global": {
+                "AttestationModule": {"tcbDate": {"operation": "greater-or-equal", "reference": "self"}}
+            }}]});
+            assert!(validate_component_policy(&policy).is_err());
+            policy["version"] = json!("2.1");
+            assert!(validate_component_policy(&policy).is_ok());
+            policy[block][0]["global"] = json!({"attestationModule": {}});
+            assert!(validate_component_policy(&policy).is_err());
+            policy[block][0]["global"] = json!({"platform": {" fmspc": {}}});
+            assert!(validate_component_policy(&policy).is_err());
+        }
+    }
 
     fn merge(mut base: Value, collateral: Option<Value>, crl: Option<&str>) -> Result<Value> {
         merge_servtd_collateral(

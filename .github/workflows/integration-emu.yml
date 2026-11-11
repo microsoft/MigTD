@@ -343,6 +343,10 @@ jobs:
             exit $EXIT_CODE
           fi
 
+      - name: Check component TCB enforcement with verified quotes
+        if: matrix.test-type == 'spdm-policy-v2'
+        run: python3 sh_script/test_component_tcb_policy.py
+
       - name: Check native artifact startup errors
         if: matrix.test-type == 'policy-v2-corim'
         run: |
@@ -508,6 +512,7 @@ jobs:
             config/AzCVMEmu/policy_v2_signed_pm_b.json
             config/AzCVMEmu/policy_v2_signed_pmi_b.json
             target/emu-corim-policy.json
+            target/component-tcb-policy/
             config/AzCVMEmu/policy_issuer_chain.pem
             config/AzCVMEmu/policy_issuer_chain_a.pem
             config/AzCVMEmu/policy_issuer_chain_b.pem

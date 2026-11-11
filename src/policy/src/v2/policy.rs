@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
-use alloc::{collections::BTreeMap, string::String, string::ToString, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, string::ToString, vec::Vec};
 use chrono::NaiveDateTime;
 use core::{
     cmp::Ordering,
@@ -43,6 +43,8 @@ pub enum TcbStatus {
     ConfigurationAndSWHardeningNeeded,
     OutOfDate,
     OutOfDateConfigurationNeeded,
+    TDRelaunchAdvised,
+    TDRelaunchAdvisedConfigurationNeeded,
     Revoked,
 }
 
@@ -55,18 +57,27 @@ impl TcbStatus {
             TcbStatus::ConfigurationAndSWHardeningNeeded => "ConfigurationAndSWHardeningNeeded",
             TcbStatus::OutOfDate => "OutOfDate",
             TcbStatus::OutOfDateConfigurationNeeded => "OutOfDateConfigurationNeeded",
+            TcbStatus::TDRelaunchAdvised => "TDRelaunchAdvised",
+            TcbStatus::TDRelaunchAdvisedConfigurationNeeded => {
+                "TDRelaunchAdvisedConfigurationNeeded"
+            }
             TcbStatus::Revoked => "Revoked",
         }
     }
 
+    // TD-relaunch advisories follow OutOfDate's configuredness ranking.
     // "UpToDate" == "SWHardeningNeeded" == "OutOfDate" >= "ConfigurationNeeded" ==
     // "ConfigurationAndSWHardeningNeeded" == "OutOfDateConfigurationNeeded” > "Revoked"
     fn rank(&self) -> u8 {
         match self {
-            TcbStatus::UpToDate | TcbStatus::SWHardeningNeeded | TcbStatus::OutOfDate => 2,
+            TcbStatus::UpToDate
+            | TcbStatus::SWHardeningNeeded
+            | TcbStatus::OutOfDate
+            | TcbStatus::TDRelaunchAdvised => 2,
             TcbStatus::ConfigurationNeeded
             | TcbStatus::ConfigurationAndSWHardeningNeeded
-            | TcbStatus::OutOfDateConfigurationNeeded => 1,
+            | TcbStatus::OutOfDateConfigurationNeeded
+            | TcbStatus::TDRelaunchAdvisedConfigurationNeeded => 1,
             TcbStatus::Revoked => 0,
         }
     }
@@ -82,6 +93,10 @@ impl TryFrom<&str> for TcbStatus {
             "ConfigurationAndSWHardeningNeeded" => Ok(TcbStatus::ConfigurationAndSWHardeningNeeded),
             "OutOfDate" => Ok(TcbStatus::OutOfDate),
             "OutOfDateConfigurationNeeded" => Ok(TcbStatus::OutOfDateConfigurationNeeded),
+            "TDRelaunchAdvised" => Ok(TcbStatus::TDRelaunchAdvised),
+            "TDRelaunchAdvisedConfigurationNeeded" => {
+                Ok(TcbStatus::TDRelaunchAdvisedConfigurationNeeded)
+            }
             "Revoked" => Ok(TcbStatus::Revoked),
             _ => Err(PolicyError::InvalidParameter),
         }
@@ -153,7 +168,14 @@ impl PartialEq for ServtdTcbStatus {
 
 impl Eq for ServtdTcbStatus {}
 
-/// Contains all required data to be evaluated against a rebinding policy
+/// A component's matched launch TCB date and its authenticated collateral revision.
+#[derive(Debug, Clone)]
+pub struct ComponentTcbEvaluationInfo {
+    pub tcb_date: String,
+    pub tcb_evaluation_number: u32,
+}
+
+/// Contains the evidence available for migration or rebinding policy evaluation.
 #[derive(Debug, Clone, Default)]
 pub struct PolicyEvaluationInfo {
     /// The TEE_TCB_SVN of MigTD
@@ -167,6 +189,10 @@ pub struct PolicyEvaluationInfo {
 
     /// The TCB evaluation data number used to track TCB revocations and updates
     pub tcb_evaluation_number: Option<u32>,
+
+    pub platform_tcb: Option<ComponentTcbEvaluationInfo>,
+    pub tdx_module_tcb: Option<ComponentTcbEvaluationInfo>,
+    pub attestation_module_tcb: Option<ComponentTcbEvaluationInfo>,
 
     /// The FMSPC of platform
     pub fmspc: Option<[u8; 6]>,
@@ -514,7 +540,16 @@ impl<'a> PolicyData<'a> {
     }
 
     pub fn validate(&self) -> bool {
-        !self.id.is_empty() && self.version == "2.0"
+        !self.id.is_empty()
+            && matches!(self.version.as_str(), "2.0" | "2.1")
+            && [&self.policy, &self.forward_policy, &self.backward_policy]
+                .iter()
+                .filter_map(|block| block.as_ref())
+                .flatten()
+                .all(|rule| match rule {
+                    PolicyTypes::Global(global) => global.validate(&self.version),
+                    PolicyTypes::Servtd(_) => true,
+                })
     }
 
     pub fn get_policy_svn(&self) -> u32 {
@@ -611,19 +646,48 @@ impl<'a> PolicyData<'a> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum PolicyTypes {
-    Global(GlobalPolicy),
-    Servtd(ServtdPolicy),
+    Global(Box<GlobalPolicy>),
+    Servtd(Box<ServtdPolicy>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GlobalPolicy {
     tcb: Option<TcbPolicy>,
     platform: Option<PlatformPolicy>,
     crl: Option<CrlPolicy>,
+    tdx_module: Option<ComponentTcbPolicy>,
+    #[serde(rename = "AttestationModule")]
+    attestation_module: Option<ComponentTcbPolicy>,
 }
 
 impl GlobalPolicy {
+    fn validate(&self, version: &str) -> bool {
+        let component_rules = self.tdx_module.is_some()
+            || self.attestation_module.is_some()
+            || self.platform.as_ref().is_some_and(|platform| {
+                platform.tcb_date.is_some() || platform.tcb_evaluation_data_number.is_some()
+            });
+        if component_rules && version != "2.1" {
+            return false;
+        }
+        [&self.tdx_module, &self.attestation_module]
+            .iter()
+            .filter_map(|policy| policy.as_ref())
+            .all(|policy| {
+                valid_component_rules(
+                    policy.tcb_date.as_ref(),
+                    policy.tcb_evaluation_data_number.as_ref(),
+                )
+            })
+            && self.platform.as_ref().is_none_or(|platform| {
+                valid_component_rules(
+                    platform.tcb_date.as_ref(),
+                    platform.tcb_evaluation_data_number.as_ref(),
+                )
+            })
+    }
+
     fn evaluate(
         &self,
         value: &PolicyEvaluationInfo,
@@ -635,6 +699,19 @@ impl GlobalPolicy {
 
         if let Some(platform_policy) = &self.platform {
             platform_policy.evaluate(value, relative_reference)?;
+        }
+
+        if let Some(policy) = &self.tdx_module {
+            policy.evaluate(
+                value.tdx_module_tcb.as_ref(),
+                relative_reference.tdx_module_tcb.as_ref(),
+            )?;
+        }
+        if let Some(policy) = &self.attestation_module {
+            policy.evaluate(
+                value.attestation_module_tcb.as_ref(),
+                relative_reference.attestation_module_tcb.as_ref(),
+            )?;
         }
 
         if let Some(crl_policy) = &self.crl {
@@ -704,8 +781,11 @@ impl TcbPolicy {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlatformPolicy {
     fmspc: Option<PolicyProperty>,
+    tcb_date: Option<PolicyProperty>,
+    tcb_evaluation_data_number: Option<PolicyProperty>,
 }
 
 impl PlatformPolicy {
@@ -725,8 +805,78 @@ impl PlatformPolicy {
             }
         }
 
-        Ok(())
+        evaluate_component_tcb(
+            self.tcb_date.as_ref(),
+            self.tcb_evaluation_data_number.as_ref(),
+            value.platform_tcb.as_ref(),
+            relative_reference.platform_tcb.as_ref(),
+        )
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ComponentTcbPolicy {
+    tcb_date: Option<PolicyProperty>,
+    tcb_evaluation_data_number: Option<PolicyProperty>,
+}
+
+impl ComponentTcbPolicy {
+    fn evaluate(
+        &self,
+        value: Option<&ComponentTcbEvaluationInfo>,
+        relative: Option<&ComponentTcbEvaluationInfo>,
+    ) -> Result<(), PolicyError> {
+        evaluate_component_tcb(
+            self.tcb_date.as_ref(),
+            self.tcb_evaluation_data_number.as_ref(),
+            value,
+            relative,
+        )
+    }
+}
+
+fn valid_component_rules(date: Option<&PolicyProperty>, number: Option<&PolicyProperty>) -> bool {
+    date.is_none_or(|property| match &property.reference {
+        Reference::String(reference) => {
+            matches!(property.operation.as_str(), "equal" | "greater-or-equal")
+                && (matches!(reference.as_str(), "self" | "init")
+                    || is_canonical_iso8601(reference))
+        }
+        Reference::StringList(references) => {
+            matches!(property.operation.as_str(), "allow-list" | "deny-list")
+                && references
+                    .iter()
+                    .all(|reference| is_canonical_iso8601(reference))
+        }
+        _ => false,
+    }) && number.is_none_or(|property| property.evaluate_integer(0, Some(0)).is_ok())
+}
+
+fn evaluate_component_tcb(
+    date: Option<&PolicyProperty>,
+    number: Option<&PolicyProperty>,
+    value: Option<&ComponentTcbEvaluationInfo>,
+    relative: Option<&ComponentTcbEvaluationInfo>,
+) -> Result<(), PolicyError> {
+    if let Some(property) = date {
+        let value = value.ok_or(PolicyError::TcbEvaluation)?;
+        if !property
+            .evaluate_string(&value.tcb_date, relative.map(|info| info.tcb_date.as_str()))?
+        {
+            return Err(PolicyError::TcbEvaluation);
+        }
+    }
+    if let Some(property) = number {
+        let value = value.ok_or(PolicyError::TcbEvaluation)?;
+        if !property.evaluate_integer(
+            value.tcb_evaluation_number,
+            relative.map(|info| info.tcb_evaluation_number),
+        )? {
+            return Err(PolicyError::TcbEvaluation);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1144,6 +1294,128 @@ mod test {
         assert!(serde_json::from_str::<PolicyData>(policy).is_ok());
     }
 
+    fn component_mut<'a>(
+        info: &'a mut PolicyEvaluationInfo,
+        name: &str,
+    ) -> &'a mut Option<ComponentTcbEvaluationInfo> {
+        match name {
+            "platform" => &mut info.platform_tcb,
+            "tdxModule" => &mut info.tdx_module_tcb,
+            "AttestationModule" => &mut info.attestation_module_tcb,
+            _ => panic!("unknown test component"),
+        }
+    }
+
+    #[test]
+    fn component_rules_compare_only_the_requested_component() {
+        let cases = [
+            ("platform", "2025-01-01T00:00:00Z", 20),
+            ("tdxModule", "2024-01-01T00:00:00Z", 20),
+            ("AttestationModule", "2025-05-01T00:00:00Z", 13),
+        ];
+        let mut evidence = PolicyEvaluationInfo {
+            tcb_date: Some("2030-01-01T00:00:00Z".into()),
+            tcb_evaluation_number: Some(u32::MAX),
+            ..Default::default()
+        };
+        for (name, date, number) in cases {
+            *component_mut(&mut evidence, name) = Some(ComponentTcbEvaluationInfo {
+                tcb_date: date.into(),
+                tcb_evaluation_number: number,
+            });
+        }
+        for (name, date, number) in cases {
+            let absolute: GlobalPolicy = serde_json::from_value(serde_json::json!({
+                (name): {
+                    "tcbDate": {"operation": "greater-or-equal", "reference": date},
+                    "tcbEvaluationDataNumber": {"operation": "greater-or-equal", "reference": number}
+                }
+            })).unwrap();
+            assert!(absolute
+                .evaluate(&evidence, &PolicyEvaluationInfo::default())
+                .is_ok());
+            let mut older = evidence.clone();
+            component_mut(&mut older, name).as_mut().unwrap().tcb_date =
+                "2023-01-01T00:00:00Z".into();
+            assert!(absolute.evaluate(&older, &evidence).is_err(), "{}", name);
+            let mut lower = evidence.clone();
+            component_mut(&mut lower, name)
+                .as_mut()
+                .unwrap()
+                .tcb_evaluation_number = number - 1;
+            assert!(absolute.evaluate(&lower, &evidence).is_err(), "{}", name);
+
+            let relative: GlobalPolicy = serde_json::from_value(serde_json::json!({
+                (name): {
+                    "tcbDate": {"operation": "greater-or-equal", "reference": "self"},
+                    "tcbEvaluationDataNumber": {"operation": "greater-or-equal", "reference": "self"}
+                }
+            })).unwrap();
+            assert!(relative.evaluate(&evidence, &evidence).is_ok());
+            assert!(relative.evaluate(&evidence, &older).is_ok());
+            assert!(relative.evaluate(&older, &evidence).is_err(), "{}", name);
+            assert!(relative.evaluate(&lower, &evidence).is_err(), "{}", name);
+            let mut missing = evidence.clone();
+            *component_mut(&mut missing, name) = None;
+            assert!(relative.evaluate(&evidence, &missing).is_err(), "{}", name);
+            assert!(relative.evaluate(&missing, &evidence).is_err(), "{}", name);
+        }
+    }
+
+    #[test]
+    fn component_rules_require_policy_21_in_every_block() {
+        let template: serde_json::Value =
+            serde_json::from_str(include_str!("../../test/policy_v2/policy_data.json")).unwrap();
+        for block in ["policy", "forwardPolicy", "backwardPolicy"] {
+            for name in ["platform", "tdxModule", "AttestationModule"] {
+                let mut data = template.clone();
+                data[block] = serde_json::json!([{"global": {
+                    (name): {"tcbDate": {"operation": "greater-or-equal", "reference": "2025-01-01T00:00:00Z"}}
+                }}]);
+                let input = serde_json::to_string(&data).unwrap();
+                assert!(!serde_json::from_str::<PolicyData>(&input)
+                    .unwrap()
+                    .validate());
+                data["version"] = "2.1".into();
+                let input = serde_json::to_string(&data).unwrap();
+                assert!(serde_json::from_str::<PolicyData>(&input)
+                    .unwrap()
+                    .validate());
+                data[block][0]["global"][name]["tcbDate"]["reference"] =
+                    "2025-1-01T00:00:00Z".into();
+                let input = serde_json::to_string(&data).unwrap();
+                assert!(!serde_json::from_str::<PolicyData>(&input)
+                    .unwrap()
+                    .validate());
+            }
+        }
+        assert!(serde_json::from_str::<GlobalPolicy>(r#"{"attestationModule":{}}"#).is_err());
+        assert!(serde_json::from_str::<GlobalPolicy>(r#"{"platform":{" fmspc":{}}}"#).is_err());
+        assert!(serde_json::from_str::<GlobalPolicy>(r#"{"tdxModule":{"tcbDtae":{}}}"#).is_err());
+    }
+
+    #[test]
+    fn aggregate_relaunch_status_preserves_configuration_and_revocation_rules() {
+        let deny_configuration: GlobalPolicy = serde_json::from_str(
+            r#"{"tcb":{"tcbStatusAccepted":{"operation":"allow-list","reference":[]}}}"#,
+        )
+        .unwrap();
+        let allow_configuration: GlobalPolicy = serde_json::from_str(
+            r#"{"tcb":{"tcbStatusAccepted":{"operation":"allow-list","reference":["ConfigurationNeeded"]}}}"#,
+        ).unwrap();
+        let mut value = PolicyEvaluationInfo {
+            tcb_status: Some("TDRelaunchAdvised".into()),
+            ..Default::default()
+        };
+        let reference = PolicyEvaluationInfo::default();
+        assert!(deny_configuration.evaluate(&value, &reference).is_ok());
+        value.tcb_status = Some("TDRelaunchAdvisedConfigurationNeeded".into());
+        assert!(deny_configuration.evaluate(&value, &reference).is_err());
+        assert!(allow_configuration.evaluate(&value, &reference).is_ok());
+        value.tcb_status = Some("Revoked".into());
+        assert!(allow_configuration.evaluate(&value, &reference).is_err());
+    }
+
     fn verified_test_policy_without_mapping() -> VerifiedPolicy<'static> {
         let policy_data = include_bytes!("../../test/policy_v2/policy_v2.json");
         let policy = RawPolicyData::deserialize_from_json(policy_data).unwrap();
@@ -1539,6 +1811,9 @@ mod test {
             tcb_date: Some("2025-09-01T00:00:00Z".to_string()),
             tcb_status: Some("UpToDate".to_string()),
             tcb_evaluation_number: Some(15),
+            platform_tcb: None,
+            tdx_module_tcb: None,
+            attestation_module_tcb: None,
             fmspc: Some([0x10, 0xC0, 0x6F, 0x00, 0x00, 0x00]),
             migtd_isvsvn: None,
             migtd_tcb_status: None,

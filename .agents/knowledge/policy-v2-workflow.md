@@ -109,6 +109,21 @@ At boot, MigTD:
 
 ## Implementation status
 
+Component TCB rules require `policyData.version = "2.1"` and use the exact
+blocks `global.platform`, `global.tdxModule`, and `global.AttestationModule`.
+MigTD consumes QVL-selected launch results through the explicit
+`verify_quote_integrity_ex2` 900-byte report; do not reconstruct matches from
+collateral JSON or substitute the v5 current-SVN result. REPORTDATA remains
+at offset 520. Platform and module share the TCB Info evaluation number;
+QE/TDQE uses QE Identity's number. Legacy module version zero bundles the
+module date with the platform date, not an independent module identity.
+`global.tcb` uses QVL's aggregate date/status/number, including for schema 2.0.
+Read the extended aggregate-status field: legacy component-status slots may
+be empty when a full QVL status name cannot fit their 32-byte width.
+Rebind peer TDREPORT data has no component results and continues to skip
+global rules. See `doc/policy_v2.md` and the
+`component_evaluation_uses_verifier_output_not_collateral_json` regression.
+
 The runtime enforces the completed design in both migration and rebinding:
 it resolves `ServtdExt.init_servtd_info_hash` and the authenticated source's
 current report hash through the source's verified mapping, fails closed on

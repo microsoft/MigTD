@@ -64,6 +64,7 @@ mod v2 {
     use alloc::{string::String, string::ToString, vec::Vec};
     use attestation::verify_quote_with_collaterals;
     use chrono::DateTime;
+    use core::ops::Range;
     use crypto::{crl::get_crl_number, hash::digest_sha384, pem_cert_to_der, SHA384_DIGEST_SIZE};
     use lazy_static::lazy_static;
     use policy::*;
@@ -660,8 +661,8 @@ mod v2 {
         servtd_attr: u64,
     ) -> Result<PolicyEvaluationInfo, PolicyError> {
         let (tcb_date, tcb_status) = get_tcb_date_and_status_from_suppl_data(suppl_data)?;
-        let collateral = get_collateral_with_fmspc(&fmspc, collaterals)?;
-        let tcb_evaluation_number = get_tcb_evaluation_number_from_collateral(&collateral)?;
+        let tcb_evaluation_number =
+            u32_from_suppl_data(suppl_data, Report::R_TCB_EVALUATION_NUMBER)?;
         let report_value = Report::new(suppl_data)?;
 
         let migtd = policy
@@ -680,6 +681,21 @@ mod v2 {
             tcb_date: Some(tcb_date.to_string()),
             tcb_status: Some(tcb_status.as_str().to_string()),
             tcb_evaluation_number: Some(tcb_evaluation_number),
+            platform_tcb: Some(component_tcb_from_suppl_data(
+                suppl_data,
+                Report::R_PLATFORM_TCB_DATE,
+                Report::R_TCB_INFO_EVALUATION_NUMBER,
+            )?),
+            tdx_module_tcb: Some(component_tcb_from_suppl_data(
+                suppl_data,
+                Report::R_TDX_MODULE_TCB_DATE,
+                Report::R_TCB_INFO_EVALUATION_NUMBER,
+            )?),
+            attestation_module_tcb: Some(component_tcb_from_suppl_data(
+                suppl_data,
+                Report::R_QE_TCB_DATE,
+                Report::R_QE_EVALUATION_NUMBER,
+            )?),
             fmspc: Some(fmspc),
             migtd_isvsvn: Some(migtd.isvsvn),
             migtd_tcb_status: migtd.tcb_status,
@@ -711,6 +727,9 @@ mod v2 {
             tcb_date: None,
             tcb_status: None,
             tcb_evaluation_number: None,
+            platform_tcb: None,
+            tdx_module_tcb: None,
+            attestation_module_tcb: None,
             fmspc: None,
             migtd_isvsvn: Some(migtd.isvsvn),
             migtd_tcb_status: migtd.tcb_status,
@@ -724,28 +743,70 @@ mod v2 {
     fn get_tcb_date_and_status_from_suppl_data(
         suppl_data: &[u8],
     ) -> Result<(String, String), PolicyError> {
-        if suppl_data.len() < REPORT_DATA_SIZE {
+        if suppl_data.len() != REPORT_DATA_SIZE
+            || suppl_data[Report::R_SUPPL_VERSION] != 2u16.to_le_bytes()
+            || suppl_data[Report::R_SUPPL_SIZE] != (REPORT_DATA_SIZE as u16).to_le_bytes()
+        {
+            return Err(PolicyError::InvalidParameter);
+        }
+        let flags = u32_from_suppl_data(suppl_data, Report::R_COMPONENT_FLAGS)?;
+        if flags & 7 != 7 || flags & !15 != 0 {
             return Err(PolicyError::InvalidParameter);
         }
 
-        let tcb_date_bytes = &suppl_data[Report::R_TCB_DATE];
-        let tcb_status_bytes = &suppl_data[Report::R_TCB_STATUS];
+        let tcb_date = date_from_suppl_data(suppl_data, Report::R_TCB_DATE)?;
+        let tcb_status =
+            slice_to_string_null_terminated(&suppl_data[Report::R_AGGREGATE_TCB_STATUS])?;
+        TcbStatus::try_from(tcb_status.as_str())?;
 
-        let tcb_date = u64::from_le_bytes(tcb_date_bytes.try_into().unwrap());
-        let tcb_status = slice_to_string_null_terminated(tcb_status_bytes)?;
+        Ok((tcb_date, tcb_status))
+    }
 
-        Ok((unix_to_iso8601(tcb_date)?, tcb_status))
+    fn component_tcb_from_suppl_data(
+        data: &[u8],
+        date: Range<usize>,
+        number: Range<usize>,
+    ) -> Result<ComponentTcbEvaluationInfo, PolicyError> {
+        Ok(ComponentTcbEvaluationInfo {
+            tcb_date: date_from_suppl_data(data, date)?,
+            tcb_evaluation_number: u32_from_suppl_data(data, number)?,
+        })
+    }
+
+    fn u32_from_suppl_data(data: &[u8], range: Range<usize>) -> Result<u32, PolicyError> {
+        let bytes = data.get(range).ok_or(PolicyError::InvalidParameter)?;
+        Ok(u32::from_le_bytes(
+            bytes
+                .try_into()
+                .map_err(|_| PolicyError::InvalidParameter)?,
+        ))
+    }
+
+    fn date_from_suppl_data(data: &[u8], range: Range<usize>) -> Result<String, PolicyError> {
+        let bytes = data.get(range).ok_or(PolicyError::InvalidParameter)?;
+        let timestamp = u64::from_le_bytes(
+            bytes
+                .try_into()
+                .map_err(|_| PolicyError::InvalidParameter)?,
+        );
+        if timestamp == 0 {
+            return Err(PolicyError::InvalidParameter);
+        }
+        unix_to_iso8601(timestamp)
     }
 
     fn unix_to_iso8601(unix_timestamp: u64) -> Result<String, PolicyError> {
-        DateTime::from_timestamp(unix_timestamp as i64, 0)
+        let timestamp = i64::try_from(unix_timestamp).map_err(|_| PolicyError::InvalidParameter)?;
+        DateTime::from_timestamp(timestamp, 0)
             .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
             .ok_or(PolicyError::InvalidParameter)
     }
 
     fn slice_to_string_null_terminated(slice: &[u8]) -> Result<String, PolicyError> {
-        // Find the null terminator or use the entire slice
-        let end_pos = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+        let end_pos = slice
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or(PolicyError::InvalidParameter)?;
         let str_bytes = &slice[..end_pos];
 
         // Convert to String
@@ -1072,21 +1133,38 @@ mod v2 {
             }])
         }
 
-        fn evaluation_results(
-            policy: &VerifiedPolicy,
-            tdreport: &TdxReport,
-        ) -> [Result<PolicyEvaluationInfo, PolicyError>; 2] {
+        fn supplemental_data(tdreport: &TdxReport) -> [u8; REPORT_DATA_SIZE] {
             let mut suppl_data = [0; REPORT_DATA_SIZE];
             let td_info_range = Report::R_MIGTD_ATTR_TD.start..Report::R_MIGTD_RTMR3.end;
             let td_info_size = td_info_range.len();
             suppl_data[td_info_range].copy_from_slice(&tdreport.td_info.as_bytes()[..td_info_size]);
             let status = TcbStatus::UpToDate.as_str().as_bytes();
-            suppl_data[Report::R_TCB_STATUS.start..][..status.len()].copy_from_slice(status);
+            suppl_data[Report::R_AGGREGATE_TCB_STATUS.start..][..status.len()]
+                .copy_from_slice(status);
+            suppl_data[Report::R_SUPPL_VERSION].copy_from_slice(&2u16.to_le_bytes());
+            suppl_data[Report::R_SUPPL_SIZE]
+                .copy_from_slice(&(REPORT_DATA_SIZE as u16).to_le_bytes());
+            suppl_data[Report::R_COMPONENT_FLAGS].copy_from_slice(&15u32.to_le_bytes());
+            for range in [
+                Report::R_TCB_DATE,
+                Report::R_PLATFORM_TCB_DATE,
+                Report::R_TDX_MODULE_TCB_DATE,
+                Report::R_QE_TCB_DATE,
+            ] {
+                suppl_data[range].copy_from_slice(&1_735_689_600u64.to_le_bytes());
+            }
             assert_eq!(
                 compute_tdinfo_hash_from_report(&Report::new(&suppl_data).unwrap()).unwrap(),
                 servtd_info_hash_from_td_info(&tdreport.td_info, 0).unwrap()
             );
+            suppl_data
+        }
 
+        fn evaluation_results(
+            policy: &VerifiedPolicy,
+            tdreport: &TdxReport,
+        ) -> [Result<PolicyEvaluationInfo, PolicyError>; 2] {
+            let suppl_data = supplemental_data(tdreport);
             [
                 setup_evaluation_data(
                     [0x00, 0xC0, 0x6F, 0x00, 0x00, 0x00],
@@ -1167,6 +1245,64 @@ mod v2 {
                     .evaluate_policy_common(&evaluation, &evaluation, false)
                     .unwrap();
             }
+        }
+
+        #[test]
+        fn component_evaluation_uses_verifier_output_not_collateral_json() {
+            let input = serde_json::to_vec(&policy_json()).unwrap();
+            let mut policy = load_policy(&input, ISSUER_CHAIN);
+            let tdreport =
+                TdxReport::read_from_bytes(&[0; core::mem::size_of::<TdxReport>()]).unwrap();
+            endorse_test_report(&mut policy, &tdreport);
+            let mut data = supplemental_data(&tdreport);
+            data[Report::R_TCB_DATE].copy_from_slice(&1_704_067_200u64.to_le_bytes());
+            data[Report::R_TDX_MODULE_TCB_DATE].copy_from_slice(&1_704_067_200u64.to_le_bytes());
+            data[Report::R_QE_TCB_DATE].copy_from_slice(&1_746_057_600u64.to_le_bytes());
+            data[Report::R_TCB_EVALUATION_NUMBER].copy_from_slice(&13u32.to_le_bytes());
+            data[Report::R_TCB_INFO_EVALUATION_NUMBER].copy_from_slice(&20u32.to_le_bytes());
+            data[Report::R_QE_EVALUATION_NUMBER].copy_from_slice(&13u32.to_le_bytes());
+            data[Report::R_AGGREGATE_TCB_STATUS].fill(0);
+            let status = "TDRelaunchAdvisedConfigurationNeeded";
+            data[Report::R_AGGREGATE_TCB_STATUS.start..][..status.len()]
+                .copy_from_slice(status.as_bytes());
+            let value = setup_evaluation_data(
+                [0, 0xC0, 0x6F, 0, 0, 0],
+                &data,
+                &policy,
+                policy.get_collaterals(),
+                0,
+            )
+            .unwrap();
+            assert_eq!(value.tcb_date.as_deref(), Some("2024-01-01T00:00:00Z"));
+            assert_eq!(value.tcb_status.as_deref(), Some(status));
+            assert_eq!(value.tcb_evaluation_number, Some(13));
+            let platform = value.platform_tcb.unwrap();
+            let module = value.tdx_module_tcb.unwrap();
+            let attestation = value.attestation_module_tcb.unwrap();
+            assert_eq!(platform.tcb_date, "2025-01-01T00:00:00Z");
+            assert_eq!(module.tcb_date, "2024-01-01T00:00:00Z");
+            assert_eq!(attestation.tcb_date, "2025-05-01T00:00:00Z");
+            assert_eq!(platform.tcb_evaluation_number, 20);
+            assert_eq!(module.tcb_evaluation_number, 20);
+            assert_eq!(attestation.tcb_evaluation_number, 13);
+
+            let rebind = setup_evaluation_data_with_tdreport(&tdreport, &policy, 0).unwrap();
+            assert!(rebind.platform_tcb.is_none());
+            assert!(rebind.tdx_module_tcb.is_none());
+            assert!(rebind.attestation_module_tcb.is_none());
+            assert!(get_tcb_date_and_status_from_suppl_data(&data[..822]).is_err());
+            data[Report::R_COMPONENT_FLAGS].copy_from_slice(&3u32.to_le_bytes());
+            assert!(get_tcb_date_and_status_from_suppl_data(&data).is_err());
+            data[Report::R_COMPONENT_FLAGS].copy_from_slice(&7u32.to_le_bytes());
+            data[Report::R_TDX_MODULE_TCB_DATE].fill(0xff);
+            assert!(setup_evaluation_data(
+                [0, 0xC0, 0x6F, 0, 0, 0],
+                &data,
+                &policy,
+                policy.get_collaterals(),
+                0,
+            )
+            .is_err());
         }
 
         #[test]
