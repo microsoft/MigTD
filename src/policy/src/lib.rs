@@ -25,8 +25,12 @@ use cc_measurement::CcEventHeader;
 use core::ops::Range;
 
 /// Size of the full supplemental data returned by quote verification.
-/// Matches C struct `servtd_tdx_quote_suppl_data` (822 bytes, packed).
-pub const REPORT_DATA_SIZE: usize = 822;
+/// Matches the legacy ServTD result, or its versioned component extension for v2 policy.
+pub const REPORT_DATA_SIZE: usize = if cfg!(feature = "policy_v2") {
+    900
+} else {
+    822
+};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -111,6 +115,14 @@ impl<'a> Report<'a> {
     pub const R_PLATFORM_TCB_DATE: Range<usize> = 774..782;
     pub const R_QE_TCB_DATE: Range<usize> = 782..790;
     pub const R_QE_TCB_STATUS: Range<usize> = 790..822;
+    pub const R_SUPPL_VERSION: Range<usize> = 822..824;
+    pub const R_SUPPL_SIZE: Range<usize> = 824..826;
+    pub const R_COMPONENT_FLAGS: Range<usize> = 826..830;
+    pub const R_TDX_MODULE_TCB_DATE: Range<usize> = 830..838;
+    pub const R_TCB_EVALUATION_NUMBER: Range<usize> = 838..842;
+    pub const R_TCB_INFO_EVALUATION_NUMBER: Range<usize> = 842..846;
+    pub const R_QE_EVALUATION_NUMBER: Range<usize> = 846..850;
+    pub const R_AGGREGATE_TCB_STATUS: Range<usize> = 850..900;
 
     fn setup_migtd_info(
         report: &'a [u8],

@@ -100,6 +100,7 @@ mod attest_lib_binding {
         /// @return Status code of the operation, one of:
         ///      - MIGTD_ATTEST_SUCCESS
         ///      - MIGTD_ATTEST_ERROR_UNEXPECTED
+        #[cfg(not(feature = "attest-lib-ext"))]
         pub fn verify_quote_integrity(
             p_quote: *const ::core::ffi::c_void,
             quote_size: u32,
@@ -110,7 +111,7 @@ mod attest_lib_binding {
         ) -> i32;
 
         #[cfg(feature = "attest-lib-ext")]
-        pub fn verify_quote_integrity_ex(
+        pub fn verify_quote_integrity_ex2(
             p_quote: *const ::core::ffi::c_void,
             quote_size: u32,
             root_pub_key: *const ::core::ffi::c_void,
@@ -162,14 +163,14 @@ mod null_binding {
 
     #[cfg(feature = "attest-lib-ext")]
     #[no_mangle]
-    pub unsafe extern "C" fn verify_quote_integrity_ex(
-        p_quote: *const ::core::ffi::c_void,
-        quote_size: u32,
-        root_pub_key: *const ::core::ffi::c_void,
-        root_pub_key_size: u32,
-        p_collateral: *const QveCollateral,
-        p_tdx_report_verify: *mut ::core::ffi::c_void,
-        p_tdx_report_verify_size: *mut u32,
+    pub unsafe extern "C" fn verify_quote_integrity_ex2(
+        _p_quote: *const ::core::ffi::c_void,
+        _quote_size: u32,
+        _root_pub_key: *const ::core::ffi::c_void,
+        _root_pub_key_size: u32,
+        _p_collateral: *const QveCollateral,
+        _p_tdx_report_verify: *mut ::core::ffi::c_void,
+        _p_tdx_report_verify_size: *mut u32,
     ) -> i32 {
         0
     }

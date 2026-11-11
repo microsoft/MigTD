@@ -3,13 +3,16 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 #[cfg(feature = "attest-lib-ext")]
-use crate::binding::verify_quote_integrity_ex;
+use crate::binding::verify_quote_integrity_ex2;
+
+#[cfg(not(feature = "attest-lib-ext"))]
+use crate::binding::verify_quote_integrity;
 
 #[cfg(not(any(feature = "igvm-attest", feature = "use-mock-quote")))]
-use crate::binding::get_quote as get_quote_inner;
+use crate::binding::{get_quote as get_quote_inner, AttestLibError};
 
 use crate::{
-    binding::{init_heap, verify_quote_integrity, AttestLibError, QveCollateral},
+    binding::{init_heap, QveCollateral},
     root_ca::ROOT_CA_PUBLIC_KEY,
     Error, TD_VERIFIED_REPORT_SIZE,
 };
@@ -167,11 +170,22 @@ pub fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, Error> {
         .as_slice();
 
     unsafe {
+        #[cfg(not(feature = "attest-lib-ext"))]
         let result = verify_quote_integrity(
             quote.as_ptr() as *const c_void,
             quote.len() as u32,
             public_key.as_ptr() as *const c_void,
             public_key.len() as u32,
+            td_report_verify.as_mut_ptr() as *mut c_void,
+            &mut report_verify_size as *mut u32,
+        );
+        #[cfg(feature = "attest-lib-ext")]
+        let result = verify_quote_integrity_ex2(
+            quote.as_ptr() as *const c_void,
+            quote.len() as u32,
+            public_key.as_ptr() as *const c_void,
+            public_key.len() as u32,
+            core::ptr::null(),
             td_report_verify.as_mut_ptr() as *mut c_void,
             &mut report_verify_size as *mut u32,
         );
@@ -181,17 +195,7 @@ pub fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, Error> {
         }
     }
 
-    if report_verify_size as usize != TD_VERIFIED_REPORT_SIZE {
-        log::error!(
-            "Invalid report size: expected {}, got {}\n",
-            TD_VERIFIED_REPORT_SIZE,
-            report_verify_size
-        );
-        return Err(Error::InvalidOutput);
-    }
-
-    mask_verified_report_values(&mut td_report_verify[..report_verify_size as usize]);
-    Ok(td_report_verify[..report_verify_size as usize].to_vec())
+    finish_verified_report(td_report_verify, report_verify_size)
 }
 
 #[cfg(feature = "attest-lib-ext")]
@@ -211,7 +215,7 @@ pub fn verify_quote_with_collaterals(
 
     let qve_collateral: QveCollateral = (&collateral).into();
     unsafe {
-        let result = verify_quote_integrity_ex(
+        let result = verify_quote_integrity_ex2(
             quote.as_ptr() as *const c_void,
             quote.len() as u32,
             public_key.as_ptr() as *const c_void,
@@ -221,25 +225,30 @@ pub fn verify_quote_with_collaterals(
             &mut report_verify_size as *mut u32,
         );
         if result != 0 {
-            log::error!(
-                "verify_quote_integrity_ex failed with error: {:#x}\n",
-                result
-            );
+            log::error!("verify_quote_integrity_ex2 failed with error: {result:#x}\n");
             return Err(Error::VerifyQuote);
         }
     }
 
-    if report_verify_size as usize != TD_VERIFIED_REPORT_SIZE {
-        log::error!(
-            "verify_quote_with_collaterals: Invalid report size: expected {}, got {}\n",
-            TD_VERIFIED_REPORT_SIZE,
-            report_verify_size
-        );
+    finish_verified_report(td_report_verify, report_verify_size)
+}
+
+fn finish_verified_report(mut report: Vec<u8>, size: u32) -> Result<Vec<u8>, Error> {
+    if size as usize != TD_VERIFIED_REPORT_SIZE || report.len() < size as usize {
+        log::error!("Invalid report size: expected {TD_VERIFIED_REPORT_SIZE}, got {size}\n");
         return Err(Error::InvalidOutput);
     }
 
-    mask_verified_report_values(&mut td_report_verify[..report_verify_size as usize]);
-    Ok(td_report_verify[..report_verify_size as usize].to_vec())
+    #[cfg(feature = "attest-lib-ext")]
+    if report[822..824] != 2u16.to_le_bytes()
+        || report[824..826] != (TD_VERIFIED_REPORT_SIZE as u16).to_le_bytes()
+    {
+        return Err(Error::InvalidOutput);
+    }
+
+    report.truncate(size as usize);
+    mask_verified_report_values(&mut report);
+    Ok(report)
 }
 
 fn mask_verified_report_values(report: &mut [u8]) {
@@ -253,5 +262,35 @@ fn mask_verified_report_values(report: &mut [u8]) {
     }
     for (i, j) in R_ATTRIBUTES.zip(R_ATTRIBUTES_MASK) {
         report[i] &= report[j]
+    }
+}
+
+#[cfg(all(test, feature = "attest-lib-ext"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_report_preserves_binding_and_checks_version_and_size() {
+        let mut report = vec![0; TD_REPORT_VERIFY_SIZE];
+        report[520..584].fill(0x5a);
+        report[822..824].copy_from_slice(&2u16.to_le_bytes());
+        report[824..826].copy_from_slice(&(TD_VERIFIED_REPORT_SIZE as u16).to_le_bytes());
+        let verified =
+            finish_verified_report(report.clone(), TD_VERIFIED_REPORT_SIZE as u32).unwrap();
+        assert_eq!(verified.len(), TD_VERIFIED_REPORT_SIZE);
+        assert_eq!(verified[520..584], [0x5a; 64]);
+
+        for size in [822, 899, 901, 1025] {
+            assert!(matches!(
+                finish_verified_report(report.clone(), size),
+                Err(Error::InvalidOutput)
+            ));
+        }
+        report[822] = 3;
+        assert!(finish_verified_report(report.clone(), 900).is_err());
+        report[822] = 2;
+        report[824] ^= 1;
+        assert!(finish_verified_report(report.clone(), 900).is_err());
+        assert!(finish_verified_report(vec![0; 899], 900).is_err());
     }
 }

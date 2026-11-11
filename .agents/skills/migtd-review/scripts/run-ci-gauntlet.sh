@@ -356,6 +356,7 @@ if stage_should_run emu; then
         --policy-issuer-chain-file ./config/AzCVMEmu/policy_issuer_chain.pem \
         --servtd-tcb-mapping-file ./config/AzCVMEmu/tcb_mapping_signed.json \
         --mock-report --features spdm_attestation --both --no-sudo --log-level info
+    step component-tcb-policy python3 sh_script/test_component_tcb_policy.py
 
     # 8. corim-migration
     step corim-migration ./migtdemu.sh --policy-v2 \
