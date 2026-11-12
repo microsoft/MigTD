@@ -14,6 +14,8 @@ use core::task::Poll;
 use alloc::vec::Vec;
 #[cfg(feature = "policy_v2")]
 use alloc::{format, string::String};
+#[cfg(feature = "vmcall-raw")]
+use crypto::hash::digest_sha384;
 use log::info;
 #[cfg(feature = "vmcall-raw")]
 use log::{debug, Level};
@@ -28,8 +30,6 @@ use migtd::migration::logging::*;
 use migtd::migration::session::*;
 use migtd::migration::MigrationResult;
 use migtd::{config, event_log, migration};
-#[cfg(feature = "vmcall-raw")]
-use sha2::{Digest, Sha384};
 use spin::Mutex;
 #[cfg(feature = "vmcall-raw")]
 use tdx_tdcall::tdreport;
@@ -71,11 +71,19 @@ fn dump_td_info_and_hash() {
     );
 
     debug!("td_info: {:?}\n", td_report.td_info);
-    let mut hasher = Sha384::new();
-    hasher.update(td_report.td_info.as_bytes());
-
-    let hash = hasher.finalize();
-    debug!("TD Info Hash: {:x}\n", hash);
+    let hash = match digest_sha384(td_report.td_info.as_bytes()) {
+        Ok(hash) => hash,
+        Err(e) => {
+            debug!("Failed to hash TD info: {:?}\n", e);
+            return;
+        }
+    };
+    debug!(
+        "TD Info Hash: {}\n",
+        hash.iter()
+            .map(|byte| alloc::format!("{byte:02x}"))
+            .collect::<alloc::string::String>()
+    );
 }
 
 const MIGTD_VERSION: &str = env!("CARGO_PKG_VERSION");
