@@ -80,6 +80,7 @@ build-igvm:
 	 --image-format igvm --output $(IGVM_FILE) --debug \
 	 --policy-v2 --policy config/templates/policy_v2_signed.json \
 	 --policy-issuer-chain config/templates/policy_issuer_chain.pem \
+	 --servtd-tcb-mapping config/templates/tcb_mapping_signed.json \
 	 --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
 
 build-igvm-all: pre-build build-igvm generate-hash-v2
@@ -94,6 +95,7 @@ build-igvm-v2-mock:
 	 --log-level $(LOG_LEVEL) \
 	 --policy-issuer-chain config/Azure/policy_issuer_chain.pem \
 	 --policy config/Azure/policy_v2_signed.json \
+	 --servtd-tcb-mapping config/Azure/tcb_mapping_signed.json \
 	 --output $(IGVM_FILE)
 
 # --- Accept-all (allow-all v2 policy + mock quote) ---
@@ -129,6 +131,7 @@ test-reject:
 	cd ../../ && ./migtdemu.sh --policy-v2 \
 	 --policy-file config/Azure/policy_v2_signed.json \
 	 --policy-issuer-chain-file config/Azure/policy_issuer_chain.pem \
+	 --servtd-tcb-mapping-file config/Azure/tcb_mapping_signed.json \
 	 --mock-report --both --no-sudo --log-level info; \
 	EXIT_CODE=$$?; \
 	if [ $$EXIT_CODE -eq 0 ]; then \
@@ -151,6 +154,7 @@ build-igvm-get-quote: pre-build
 	 --image-format igvm --output $(IGVM_FILE) --debug \
 	 --policy-v2 --policy config/templates/policy_v2_signed.json \
 	 --policy-issuer-chain config/templates/policy_issuer_chain.pem \
+	 --servtd-tcb-mapping config/templates/tcb_mapping_signed.json \
 	 --root-ca config/Intel_SGX_Provisioning_Certification_RootCA_preproduction.cer
 
 build-igvm-get-quote-all: build-igvm-get-quote generate-hash-v2
