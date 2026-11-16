@@ -175,7 +175,7 @@ mod v2 {
                 _ => PolicyError::QuoteGeneration,
             })?;
         let (fmspc, suppl_data) = verify_quote(&quote, policy.get_collaterals())?;
-        crate::quote::verify_local_report(&suppl_data, &report)
+        crate::quote::verify_local_report_binding(&suppl_data, &report)
             .map_err(|_| PolicyError::QuoteVerification)?;
         setup_evaluation_data(
             fmspc,
@@ -604,7 +604,7 @@ mod v2 {
             .log_err("Peer servtd signer revocation check")
     }
 
-    fn verify_quote(
+    pub(crate) fn verify_quote(
         quote: &[u8],
         collaterals: &Collaterals,
     ) -> Result<([u8; 6], Vec<u8>), PolicyError> {

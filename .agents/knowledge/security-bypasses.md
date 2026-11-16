@@ -39,6 +39,20 @@ development/test build features, and explains **why** each is bypassed.
 
 ---
 
+## Local quote-to-report binding
+
+- Both `quote::verify_local_quote` and
+  `mig_policy::get_local_tcb_evaluation_info` use
+  `quote::verify_local_report_binding` after cryptographic quote verification.
+- Real quotes must match the live TDREPORT. `use-mock-quote` skips only this
+  comparison because its static quote cannot describe a real hardware report.
+  Quote cryptographic verification still uses the verified policy collateral.
+- `quote::verify_local_report` remains an unconditional strict comparison.
+  Rebind TDREPORT verification and REPORTDATA binding are unchanged.
+- Matching mock quotes and reports in EMU can hide hardware mismatches. The
+  library CI matrix includes `use-mock-quote` and a deliberately mismatched
+  local-report binding regression in `quote::tests`.
+
 ## SPDM Migration Path
 
 | # | Check | `AzCVMEmu` | `use-mock-quote` | Location | Reason |
