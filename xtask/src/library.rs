@@ -89,6 +89,7 @@ impl LibraryCrates {
                     "main,policy_v2,vmcall-raw",
                     "main,vmcall-raw,spdm_attestation",
                     "main,policy_v2,vmcall-raw,spdm_attestation",
+                    "main,policy_v2,vmcall-raw,spdm_attestation,use-mock-quote",
                 ] {
                     cmd!(sh, "cargo test")
                         .args([

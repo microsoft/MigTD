@@ -8,10 +8,12 @@
 //! This module provides a wrapper around tdcall_report that can optionally
 //! use a mock report for testing purposes when use-mock-quote feature is enabled.
 
-// Re-export all items from the original tdreport module
+// The emulator does not re-export the report's component types.
+extern crate tdx_tdcall as hardware_tdx_tdcall;
+
+pub use hardware_tdx_tdcall::tdreport::{ReportMac, ReportType};
 pub use tdx_tdcall::tdreport::{
-    tdcall_verify_report, ReportMac, ReportType, TdxReport, TD_REPORT_ADDITIONAL_DATA_SIZE,
-    TD_REPORT_SIZE,
+    tdcall_verify_report, TdxReport, TD_REPORT_ADDITIONAL_DATA_SIZE, TD_REPORT_SIZE,
 };
 
 // Override tdcall_report with mock version

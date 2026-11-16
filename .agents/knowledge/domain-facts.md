@@ -62,6 +62,17 @@ full detail on how each path verifies TDINFO, and
 [Security Bypasses](security-bypasses.md) for which of these checks are
 bypassed under which build feature.
 
+## Local quote collateral
+
+- Policy-v2 local quote verification must use the initialized verified policy's
+  FMSPC-selected collateral, just like peer verification
+  (`src/migtd/src/quote.rs`, `mig_policy::verify_quote`).
+- NULL collateral makes DCAP fetch collateral through `TDVMCALL<GetQuote>`,
+  even for a static mock quote. A mock quote suppresses quote generation, not
+  this fallback. TCB hash/SVN mappings do not replace quote collateral.
+- `sh_script/test_component_tcb_policy.py` exercises the `use-mock-quote`
+  local verifier without skip-RA and rejects host-collateral requests.
+
 ## TDINFO / MROwner / MROwnerConfig semantics
 
 - **MROwner** and **MROwnerConfig** are included in the complete TDINFO

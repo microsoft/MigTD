@@ -280,7 +280,7 @@ fn replay_event_log_with_report(
     } else {
         //In AzCVMEmu mode, RTMR extension is emulated (no-op), RTMR in MigTD QUOTE won't match eventlog.
         //Return OK in this development environment.
-        #[cfg(feature = "AzCVMEmu")]
+        #[cfg(all(feature = "AzCVMEmu", not(feature = "use-mock-quote")))]
         {
             Ok(())
         }

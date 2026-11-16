@@ -49,12 +49,27 @@ const VERIFIED_SEAM_ATTRIBUTES: core::ops::Range<usize> = 112..120;
 const VERIFIED_TD_INFO: core::ops::Range<usize> = 120..520;
 const VERIFIED_REPORT_DATA: core::ops::Range<usize> = 520..584;
 
+#[cfg(not(feature = "test_disable_ra_and_accept_all"))]
+fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, QuoteError> {
+    #[cfg(feature = "policy_v2")]
+    {
+        let policy =
+            crate::mig_policy::get_verified_policy().ok_or(QuoteError::QuoteVerificationFailed)?;
+        crate::mig_policy::verify_quote(quote, policy.get_collaterals())
+            .map(|(_, verified_report)| verified_report)
+            .map_err(|_| QuoteError::QuoteVerificationFailed)
+    }
+    #[cfg(not(feature = "policy_v2"))]
+    {
+        attestation::verify_quote(quote).map_err(|_| QuoteError::QuoteVerificationFailed)
+    }
+}
+
 /// Verify a local quote and bind it to the TD REPORT supplied to the quote service.
 #[cfg(not(any(feature = "use-mock-quote", feature = "test_disable_ra_and_accept_all")))]
 pub fn verify_local_quote(quote: &[u8], report: &[u8]) -> Result<(), QuoteError> {
-    let verified_report =
-        attestation::verify_quote(quote).map_err(|_| QuoteError::QuoteVerificationFailed)?;
-    verify_local_report(&verified_report, report)
+    let verified_report = verify_quote(quote)?;
+    verify_local_report_binding(&verified_report, report)
 }
 
 /// Verify the static mock quote without binding it to the live TD REPORT.
@@ -62,12 +77,9 @@ pub fn verify_local_quote(quote: &[u8], report: &[u8]) -> Result<(), QuoteError>
     feature = "use-mock-quote",
     not(feature = "test_disable_ra_and_accept_all")
 ))]
-pub fn verify_local_quote(quote: &[u8], _report: &[u8]) -> Result<(), QuoteError> {
-    attestation::verify_quote(quote).map_err(|_| QuoteError::QuoteVerificationFailed)?;
-    log::warn!(
-        "use-mock-quote mode: Skipping local quote binding verification. This is NOT secure for production use.\n"
-    );
-    Ok(())
+pub fn verify_local_quote(quote: &[u8], report: &[u8]) -> Result<(), QuoteError> {
+    let verified_report = verify_quote(quote)?;
+    verify_local_report_binding(&verified_report, report)
 }
 
 /// Skip verification when remote attestation is explicitly disabled for testing.
@@ -77,6 +89,21 @@ pub fn verify_local_quote(_quote: &[u8], _report: &[u8]) -> Result<(), QuoteErro
         "test_disable_ra_and_accept_all mode: Skipping local quote binding verification. This is NOT secure for production use.\n"
     );
     Ok(())
+}
+
+/// Apply the build mode's binding rule after cryptographic quote verification.
+pub(crate) fn verify_local_report_binding(
+    verified_report: &[u8],
+    report: &[u8],
+) -> Result<(), QuoteError> {
+    if cfg!(feature = "use-mock-quote") {
+        log::warn!(
+            "use-mock-quote mode: Skipping local quote binding verification. This is NOT secure for production use.\n"
+        );
+        Ok(())
+    } else {
+        verify_local_report(verified_report, report)
+    }
 }
 
 /// Compare quote verification output with the authentic local TD REPORT.
@@ -222,6 +249,23 @@ mod tests {
     fn accepts_quote_for_authentic_report() {
         let (verified, report) = matching_evidence();
         assert!(verify_local_report(&verified, &report).is_ok());
+    }
+
+    #[test]
+    fn local_binding_requires_matching_report_unless_mock_quote() {
+        let (verified, report) = matching_evidence();
+        let mut current = TdxReport::read_from_bytes(&report).unwrap();
+        current.report_mac.report_data[0] ^= 1;
+        let mut td_info = current.td_info;
+        td_info.mrtd[0] ^= 1;
+        current.td_info = td_info;
+
+        assert!(verify_local_report(&verified, current.as_bytes()).is_err());
+        let result = verify_local_report_binding(&verified, current.as_bytes());
+        #[cfg(feature = "use-mock-quote")]
+        assert!(result.is_ok());
+        #[cfg(not(feature = "use-mock-quote"))]
+        assert!(matches!(result, Err(QuoteError::QuoteReportMismatch)));
     }
 
     #[test]

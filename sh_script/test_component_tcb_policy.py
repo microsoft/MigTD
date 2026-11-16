@@ -20,7 +20,9 @@ def rule(reference):
     return {"operation": "greater-or-equal", "reference": reference}
 
 
-def run_case(base, name, components, reject=False, operation="migration"):
+def run_case(
+    base, name, components, reject=False, operation="migration", mock_quote=False
+):
     policy = copy.deepcopy(base)
     policy["policyData"]["version"] = "2.1"
     policy["policyData"]["policy"].append({"global": components})
@@ -32,14 +34,19 @@ def run_case(base, name, components, reject=False, operation="migration"):
     ]
     for path in guest_logs:
         path.unlink(missing_ok=True)
+    features = "spdm_attestation"
+    if mock_quote:
+        features += ",use-mock-quote"
     command = [
         "timeout", "--kill-after=10s", "300", "./migtdemu.sh",
         "--policy-v2", "--policy-file", str(policy_path),
         "--policy-issuer-chain-file", "./config/AzCVMEmu/policy_issuer_chain.pem",
         "--servtd-tcb-mapping-file", "./config/AzCVMEmu/tcb_mapping_signed.json",
-        "--mock-report", "--features", "spdm_attestation",
+        "--mock-report", "--features", features,
         "--both", "--no-sudo", "--log-level", "info", "--operation", operation,
     ]
+    if mock_quote:
+        command.append("--debug")
     with log_path.open("w") as log:
         result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
     with log_path.open("a") as log:
@@ -48,6 +55,11 @@ def run_case(base, name, components, reject=False, operation="migration"):
                 log.write(f"\n=== {path.name} ===\n")
                 log.write(path.read_text(errors="replace"))
     output = log_path.read_text(errors="replace")
+    if "GET_COLLATERAL_REQ detected" in output:
+        raise SystemExit(
+            f"FAIL {name}: quote verification fetched host collateral "
+            f"instead of using the local policy; see {log_path}"
+        )
     if reject:
         passed = result.returncode not in (0, 124, 137) and "TcbEvaluation" in output
     else:
@@ -59,6 +71,12 @@ def run_case(base, name, components, reject=False, operation="migration"):
     if not passed:
         print("\n".join(output.splitlines()[-60:]), flush=True)
         raise SystemExit(f"FAIL {name}: exit={result.returncode}; see {log_path}")
+    if mock_quote and (
+        "use-mock-quote mode: Skipping local quote binding verification" not in output
+    ):
+        raise SystemExit(
+            f"FAIL {name}: mock-quote verification was not exercised; see {log_path}"
+        )
     print(f"PASS {name}", flush=True)
 
 
@@ -74,6 +92,7 @@ def main():
         for name in COMPONENTS
     }
     run_case(base, "relative", relative)
+    run_case(base, "mock-quote", relative, mock_quote=True)
     run_case(base, "absolute", absolute)
     for name in COMPONENTS:
         for field, floor in (
