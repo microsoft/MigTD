@@ -10,6 +10,55 @@ This guide describes the end-to-end flow to produce and integrate Policy v2 arti
   - Policy generator: [tools/migtd-policy-generator/readme.md](../tools/migtd-policy-generator/readme.md)
   - JSON signer: [tools/json-signer/readme.md](../tools/json-signer/readme.md)
 
+### Freshness of local `"reference": "self"` TCB evidence
+
+SPDM migration uses the **current handshake's local quote**, not the peer's
+quote or a startup cache, as its local policy reference. Quote generation binds
+REPORTDATA to `SHA384("MigTDReq" || TH1)` or `SHA384("MigTDRsp" || TH1)`, padded
+to 64 bytes. Before sending the quote, MigTD verifies it with its authenticated
+local policy collaterals and matches its TD/module identity and full REPORTDATA
+against the local TDREPORT used for that request.
+
+The resulting FMSPC and complete verifier supplemental data are retained in an
+opaque, non-cloneable exchange-owned value and consumed during peer
+policy evaluation. This preserves platform, QE, module, aggregate TCB, and
+collateral evaluation-number evidence; a bare TDREPORT cannot replace it.
+Both local-reference paths use the same evaluation conversion and local
+collaterals. There is no ordering or policy-version constraint requiring a
+second quote in SPDM migration. Policy v1 is unchanged.
+
+The freshness boundary is **one handshake**, not each subsequent comparison
+within that handshake. A firmware update during an in-flight handshake does
+not refresh its snapshot; a new handshake generates and verifies new evidence.
+Cancellation or failure drops retained evidence. No evidence is cached
+across handshakes, including across an impactless firmware update.
+
+RA-TLS verification currently has no retained local evidence in its certificate
+verification callback. Rebinding exchanges TDREPORTs rather than quotes, and
+the `test-get-quote` startup diagnostic has no handshake at all. These callers
+still generate an independent local quote for each evaluation. Its REPORTDATA
+is a fresh 64-byte cryptographic nonce; RNG failure is fatal to the evaluation.
+Quote verification and matching the complete REPORTDATA to the requested local
+TDREPORT reject a quote replay even if TD/module measurements are unchanged.
+Retries belong to the same request and may retain its nonce.
+
+REPORTDATA freshness does not make policy-enrolled collaterals current. Platform
+and QE supplemental fields are authenticated by quote/certification-data and
+collateral verification, not by comparing them directly to TDREPORT fields.
+They must remain outputs of the production verifier under the local policy's
+collaterals. MigTD has no trusted wall clock; this mechanism does not prove
+collateral wall-clock freshness or refresh enrolled collateral after boot.
+The existing mock-quote binding exception is test-only and is unchanged.
+
+Production validation requires a real TDX/QGS path with neither mock quotes nor
+accept-all attestation: exercise both SPDM roles, verify each produces only
+its handshake quote, and replay a previous QGS response into a new handshake
+or independent local-reference request. The replay must fail local-report
+binding. Repeat after a platform/QE TCB change with appropriate authenticated
+collaterals and confirm that the next handshake uses the new verifier output.
+Unit tests and mock-report emulator passes do not establish this hardware
+freshness property.
+
 ## 1. Generate Platform Collaterals
 
 Fetch platform collaterals:

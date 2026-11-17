@@ -984,13 +984,21 @@ mod verify {
         // MigTD-src acts as TLS client. Source authentication also validates
         // initial/current TCB continuity using the authenticated SERVTD_EXT.
         let policy_check_result = if is_client {
-            mig_policy::authenticate_remote(true, quote_report, peer_data, event_log, servtd_ext)
+            mig_policy::authenticate_remote(
+                true,
+                quote_report,
+                peer_data,
+                event_log,
+                servtd_ext,
+                None,
+            )
         } else {
             mig_policy::authenticate_migration_source(
                 quote_report,
                 peer_data,
                 event_log,
                 servtd_ext,
+                None,
             )
         };
 
