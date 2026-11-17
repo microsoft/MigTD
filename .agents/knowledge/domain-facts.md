@@ -64,6 +64,12 @@ bypassed under which build feature.
 
 ## Local quote collateral
 
+- Policy-v2 SPDM migration retains its verified local quote's full supplemental
+  evidence in exchange-owned, non-cloneable `LocalTcbEvidence` and consumes it
+  for `"self"` references. Never substitute peer evidence or a bare TDREPORT.
+  TLS, rebind, and diagnostics still require independent nonce-bound quotes.
+  Freshness is per handshake for reuse, per evaluation for independent quotes
+  (`mig_policy::verify_local_tcb_evidence`, `doc/policy_v2.md`).
 - Policy-v2 local quote verification must use the initialized verified policy's
   FMSPC-selected collateral, just like peer verification
   (`src/migtd/src/quote.rs`, `mig_policy::verify_quote`).

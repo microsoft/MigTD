@@ -68,6 +68,7 @@ mod v2 {
     use crypto::{crl::get_crl_number, hash::digest_sha384, pem_cert_to_der, SHA384_DIGEST_SIZE};
     use lazy_static::lazy_static;
     use policy::*;
+    use ring::rand::{SecureRandom, SystemRandom};
     use spin::Once;
     use tdx_tdcall::tdreport::{tdcall_verify_report, TdInfo, TdxReport};
 
@@ -165,25 +166,74 @@ mod v2 {
         Ok(version)
     }
 
-    /// Generate a fresh local TCB evaluation info on demand by creating a
-    /// quote and verifying it against the policy collaterals.
-    pub fn get_local_tcb_evaluation_info() -> Result<PolicyEvaluationInfo, PolicyError> {
+    /// Verified local evidence owned by one attestation exchange, never a global cache.
+    /// Private fields prevent substituting peer evidence; consuming it prevents reuse.
+    pub(crate) struct LocalTcbEvidence {
+        fmspc: [u8; 6],
+        supplemental_data: Vec<u8>,
+    }
+
+    impl LocalTcbEvidence {
+        fn into_evaluation_info(
+            self,
+            policy: &VerifiedPolicy,
+        ) -> Result<PolicyEvaluationInfo, PolicyError> {
+            setup_evaluation_data(
+                self.fmspc,
+                &self.supplemental_data,
+                policy,
+                policy.get_collaterals(),
+                crate::migration::servtd_ext::EXPECTED_SERVTD_ATTR,
+            )
+        }
+    }
+
+    pub(crate) fn verify_local_tcb_evidence(
+        quote: &[u8],
+        report: &[u8],
+    ) -> Result<LocalTcbEvidence, PolicyError> {
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
+        let (fmspc, supplemental_data) = verify_quote(quote, policy.get_collaterals())?;
+        crate::quote::verify_local_report_binding(&supplemental_data, report)
+            .map_err(|_| PolicyError::QuoteVerification)?;
+        Ok(LocalTcbEvidence {
+            fmspc,
+            supplemental_data,
+        })
+    }
+
+    fn local_reference_report_data() -> Result<[u8; 64], PolicyError> {
+        let mut report_data = [0u8; 64];
+        SystemRandom::new()
+            .fill(&mut report_data)
+            .map_err(|_| PolicyError::Crypto)?;
+        Ok(report_data)
+    }
+
+    /// Independent callers have a per-evaluation freshness boundary. SPDM migration
+    /// instead consumes its already verified, TH1-bound local handshake evidence.
+    pub fn get_local_tcb_evaluation_info() -> Result<PolicyEvaluationInfo, PolicyError> {
+        let report_data = local_reference_report_data()?;
         let (quote, report) =
-            crate::quote::get_quote_with_retry(&[0u8; 64]).map_err(|err| match err {
+            crate::quote::get_quote_with_retry(&report_data).map_err(|err| match err {
                 crate::quote::QuoteError::ReportGenerationFailed => PolicyError::GetTdxReport,
                 _ => PolicyError::QuoteGeneration,
             })?;
-        let (fmspc, suppl_data) = verify_quote(&quote, policy.get_collaterals())?;
-        crate::quote::verify_local_report_binding(&suppl_data, &report)
-            .map_err(|_| PolicyError::QuoteVerification)?;
-        setup_evaluation_data(
-            fmspc,
-            &suppl_data,
-            policy,
-            policy.get_collaterals(),
-            crate::migration::servtd_ext::EXPECTED_SERVTD_ATTR,
-        )
+        let evidence = verify_local_tcb_evidence(&quote, &report)?;
+        let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
+        evidence.into_evaluation_info(policy)
+    }
+
+    fn local_reference(
+        evidence: Option<LocalTcbEvidence>,
+    ) -> Result<PolicyEvaluationInfo, PolicyError> {
+        match evidence {
+            Some(evidence) => {
+                let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
+                evidence.into_evaluation_info(policy)
+            }
+            None => get_local_tcb_evaluation_info(),
+        }
     }
 
     /// Get reference to the global verified policy
@@ -192,12 +242,13 @@ mod v2 {
         VERIFIED_POLICY.get()
     }
 
-    pub fn authenticate_remote(
+    pub(crate) fn authenticate_remote(
         is_src: bool,
         quote_peer: &[u8],
         policy_peer: &[u8],
         event_log_peer: &[u8],
         servtd_ext_peer: &[u8],
+        local_evidence: Option<LocalTcbEvidence>,
     ) -> Result<Vec<u8>, PolicyError> {
         let peer = crate::migration::pre_session_data::decode_peer_data(policy_peer)
             .ok_or(PolicyError::InvalidParameter)?;
@@ -209,6 +260,7 @@ mod v2 {
                 peer.issuer_chain,
                 peer.servtd_tcb_mapping,
                 servtd_ext_peer,
+                local_evidence,
             )
         } else {
             evaluate_migration_source(
@@ -218,6 +270,7 @@ mod v2 {
                 peer.issuer_chain,
                 peer.servtd_tcb_mapping,
                 servtd_ext_peer,
+                local_evidence,
             )
         }
     }
@@ -229,6 +282,7 @@ mod v2 {
         policy_issuer_chain: &[u8],
         peer_servtd_corim: Option<&[u8]>,
         servtd_ext_dst: &[u8],
+        local_evidence: Option<LocalTcbEvidence>,
     ) -> Result<Vec<u8>, PolicyError> {
         let servtd_attr_dst = peer_cur_servtd_attr(servtd_ext_dst)?;
         let (evaluation_data_dst, _verified_policy_dst, suppl_data) = authenticate_remote_common(
@@ -239,7 +293,7 @@ mod v2 {
             peer_servtd_corim,
             servtd_attr_dst,
         )?;
-        let relative_reference = get_local_tcb_evaluation_info()?;
+        let relative_reference = local_reference(local_evidence)?;
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
         policy.policy_data.evaluate_policy_common(
@@ -263,6 +317,7 @@ mod v2 {
         policy_issuer_chain: &[u8],
         peer_servtd_corim: Option<&[u8]>,
         servtd_ext_src: &[u8],
+        local_evidence: Option<LocalTcbEvidence>,
     ) -> Result<Vec<u8>, PolicyError> {
         let servtd_attr_src = peer_cur_servtd_attr(servtd_ext_src)?;
         let (evaluation_data_src, _verified_policy_src, suppl_data) = authenticate_remote_common(
@@ -273,7 +328,7 @@ mod v2 {
             peer_servtd_corim,
             servtd_attr_src,
         )?;
-        let relative_reference = get_local_tcb_evaluation_info()?;
+        let relative_reference = local_reference(local_evidence)?;
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
         policy.policy_data.evaluate_policy_common(
@@ -841,11 +896,12 @@ mod v2 {
     ///
     /// Returns the verified supplemental data on success so the caller can
     /// reuse it for SPDM-level bindings (e.g., REPORTDATA / TH1).
-    pub fn authenticate_migration_source(
+    pub(crate) fn authenticate_migration_source(
         quote_src: &[u8],
         peer_data: &[u8],
         event_log_src: &[u8],
         servtd_ext_src: &[u8],
+        local_evidence: Option<LocalTcbEvidence>,
     ) -> Result<Vec<u8>, PolicyError> {
         let servtd_attr_src = peer_cur_servtd_attr(servtd_ext_src)?;
         let peer = crate::migration::pre_session_data::decode_peer_data(peer_data)
@@ -860,7 +916,7 @@ mod v2 {
             servtd_attr_src,
         )?;
 
-        let relative_reference = get_local_tcb_evaluation_info()?;
+        let relative_reference = local_reference(local_evidence)?;
         let policy = get_verified_policy().ok_or(PolicyError::InvalidParameter)?;
 
         // Existing migration-source policy checks (common + backward)
@@ -885,6 +941,26 @@ mod v2 {
         )?;
 
         Ok(suppl_data)
+    }
+
+    #[test]
+    fn independent_local_reference_rejects_replayed_quote_body() {
+        let first = local_reference_report_data().unwrap();
+        let second = local_reference_report_data().unwrap();
+        assert_ne!(first, second);
+
+        let mut report =
+            TdxReport::read_from_bytes(&[0; core::mem::size_of::<TdxReport>()]).unwrap();
+        report.report_mac.report_data = first;
+        let mut verified = [0; REPORT_DATA_SIZE];
+        verified[520..584].copy_from_slice(&first);
+        assert!(crate::quote::verify_local_report(&verified, report.as_bytes()).is_ok());
+
+        // The TD and module may be unchanged; only the request nonce differs.
+        report.report_mac.report_data = second;
+        assert!(crate::quote::verify_local_report(&verified, report.as_bytes()).is_err());
+        verified[520..584].copy_from_slice(&second);
+        assert!(crate::quote::verify_local_report(&verified, report.as_bytes()).is_ok());
     }
 
     #[test]
@@ -1265,13 +1341,11 @@ mod v2 {
             let status = "TDRelaunchAdvisedConfigurationNeeded";
             data[Report::R_AGGREGATE_TCB_STATUS.start..][..status.len()]
                 .copy_from_slice(status.as_bytes());
-            let value = setup_evaluation_data(
-                [0, 0xC0, 0x6F, 0, 0, 0],
-                &data,
-                &policy,
-                policy.get_collaterals(),
-                0,
-            )
+            let value = LocalTcbEvidence {
+                fmspc: [0, 0xC0, 0x6F, 0, 0, 0],
+                supplemental_data: data.to_vec(),
+            }
+            .into_evaluation_info(&policy)
             .unwrap();
             assert_eq!(value.tcb_date.as_deref(), Some("2024-01-01T00:00:00Z"));
             assert_eq!(value.tcb_status.as_deref(), Some(status));
@@ -1285,6 +1359,22 @@ mod v2 {
             assert_eq!(platform.tcb_evaluation_number, 20);
             assert_eq!(module.tcb_evaluation_number, 20);
             assert_eq!(attestation.tcb_evaluation_number, 13);
+
+            // A later exchange must use its own verified component TCB, even
+            // when the TDINFO and policy have not changed after a firmware update.
+            let mut next_data = data;
+            next_data[Report::R_PLATFORM_TCB_DATE].copy_from_slice(&1_767_225_600u64.to_le_bytes());
+            next_data[Report::R_TCB_INFO_EVALUATION_NUMBER].copy_from_slice(&21u32.to_le_bytes());
+            let next = LocalTcbEvidence {
+                fmspc: [0, 0xC0, 0x6F, 0, 0, 0],
+                supplemental_data: next_data.to_vec(),
+            }
+            .into_evaluation_info(&policy)
+            .unwrap();
+            let next_platform = next.platform_tcb.unwrap();
+            assert_eq!(next_platform.tcb_date, "2026-01-01T00:00:00Z");
+            assert_eq!(next_platform.tcb_evaluation_number, 21);
+            assert_eq!(platform.tcb_date, "2025-01-01T00:00:00Z");
 
             let rebind = setup_evaluation_data_with_tdreport(&tdreport, &policy, 0).unwrap();
             assert!(rebind.platform_tcb.is_none());

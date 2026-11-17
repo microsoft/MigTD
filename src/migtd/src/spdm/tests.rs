@@ -10,6 +10,44 @@ use spdmlib::common::{session::SpdmSessionState, INVALID_SESSION_ID};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
+#[test]
+fn local_quote_evidence_is_bound_to_handshake_and_role() {
+    use tdx_tdcall::tdreport::TdxReport;
+
+    let mut th1 = SpdmDigestStruct::default();
+    th1.data_size = 48;
+    th1.data[..48].fill(0x11);
+    for role in [b"MigTDReq", b"MigTDRsp"] {
+        let report_data = build_report_data(role, &th1).unwrap();
+        let hash = digest_sha384(&report_data).unwrap();
+        let mut report =
+            TdxReport::read_from_bytes(&[0; core::mem::size_of::<TdxReport>()]).unwrap();
+        report.report_mac.report_data[..48].copy_from_slice(hash.as_ref());
+        let mut verified = [0; crate::mig_policy::REPORT_DATA_SIZE];
+        verified[520..584].copy_from_slice(&report.report_mac.report_data);
+        assert!(crate::quote::verify_local_report(&verified, report.as_bytes()).is_ok());
+
+        for (next_role, next_th1_byte) in [
+            (role, 0x22),
+            (
+                if role == b"MigTDReq" {
+                    b"MigTDRsp"
+                } else {
+                    b"MigTDReq"
+                },
+                0x11,
+            ),
+        ] {
+            let mut next_th1 = th1.clone();
+            next_th1.data[..48].fill(next_th1_byte);
+            let next_data = build_report_data(next_role, &next_th1).unwrap();
+            let next_hash = digest_sha384(&next_data).unwrap();
+            report.report_mac.report_data[..48].copy_from_slice(next_hash.as_ref());
+            assert!(crate::quote::verify_local_report(&verified, report.as_bytes()).is_err());
+        }
+    }
+}
+
 struct WipeCheckingAllocator;
 
 #[global_allocator]
