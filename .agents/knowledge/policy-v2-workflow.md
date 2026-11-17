@@ -109,17 +109,23 @@ At boot, MigTD:
 
 ## Implementation status
 
-Component TCB rules require `policyData.version = "2.1"` and use the exact
-blocks `global.platform`, `global.tdxModule`, and `global.AttestationModule`.
+Component TCB rules require `policyData.version = "2.1"` and use
+`global.platform`, `global.tdxModule`, and `global.attestationModule`.
+The old `AttestationModule` spelling remains a read-compatible alias.
+Each component accepts date, evaluation-number, and accepted-status rules.
+Do not mix these rules with `global.tcb` in the same entry; an FMSPC-only
+`platform` object and `global.crl` can accompany either TCB form.
 MigTD consumes QVL-selected launch results through the explicit
-`verify_quote_integrity_ex2` 900-byte report; do not reconstruct matches from
+`verify_quote_integrity_ex3` 912-byte report; do not reconstruct matches from
 collateral JSON or substitute the v5 current-SVN result. REPORTDATA remains
 at offset 520. Platform and module share the TCB Info evaluation number;
 QE/TDQE uses QE Identity's number. Legacy module version zero bundles the
-module date with the platform date, not an independent module identity.
-`global.tcb` uses QVL's aggregate date/status/number, including for schema 2.0.
-Read the extended aggregate-status field: legacy component-status slots may
-be empty when a full QVL status name cannot fit their 32-byte width.
+module date/status with the platform result, not an independent identity.
+Schema 2.1 `global.tcb` applies common rules to every component, including
+same-component `"self"` comparisons; schema 2.0 retains aggregate behavior.
+Read the three numeric component-status fields, not the legacy 32-byte
+status strings. QVL already exports these statuses; the version-3 ServTD
+bridge transfers them without changing the older 822/900-byte API results.
 Rebind peer TDREPORT data has no component results and continues to skip
 global rules. See `doc/policy_v2.md` and the
 `component_evaluation_uses_verifier_output_not_collateral_json` regression.

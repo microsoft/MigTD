@@ -27,7 +27,7 @@ use core::ops::Range;
 /// Size of the full supplemental data returned by quote verification.
 /// Matches the legacy ServTD result, or its versioned component extension for v2 policy.
 pub const REPORT_DATA_SIZE: usize = if cfg!(feature = "policy_v2") {
-    900
+    912
 } else {
     822
 };
@@ -123,6 +123,9 @@ impl<'a> Report<'a> {
     pub const R_TCB_INFO_EVALUATION_NUMBER: Range<usize> = 842..846;
     pub const R_QE_EVALUATION_NUMBER: Range<usize> = 846..850;
     pub const R_AGGREGATE_TCB_STATUS: Range<usize> = 850..900;
+    pub const R_PLATFORM_COMPONENT_TCB_STATUS: Range<usize> = 900..904;
+    pub const R_TDX_MODULE_COMPONENT_TCB_STATUS: Range<usize> = 904..908;
+    pub const R_QE_COMPONENT_TCB_STATUS: Range<usize> = 908..912;
 
     fn setup_migtd_info(
         report: &'a [u8],

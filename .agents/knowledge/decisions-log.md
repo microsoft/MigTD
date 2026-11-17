@@ -77,3 +77,13 @@ timestamp: 2026-07-26T00:14:16+00:00
   enrollment, firmware, and offline hashing use the same formula. See
   [the anchor contract](../../doc/policy_v2.md#direct-signer-anchor-enrollment)
   and `src/policy/src/v2/measurement.rs`.
+
+- **Apply schema 2.1 common TCB rules to each component, preserving schema
+  2.0 aggregate behavior.** For `"self"`, comparing aggregate minima can hide
+  a peer component that is older than its local counterpart. The common
+  and per-component forms are mutually exclusive per `global` entry;
+  FMSPC-only platform rules and CRL rules are independent. This versioned
+  compatibility choice was explicitly approved when aligning
+  [intel/MigTD#1128](https://github.com/intel/MigTD/issues/1128).
+  See `common_rules_compare_same_components_in_21_and_aggregate_in_20` in
+  `src/policy/src/v2/policy.rs`.

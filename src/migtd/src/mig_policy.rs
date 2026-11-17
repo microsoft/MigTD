@@ -685,16 +685,19 @@ mod v2 {
                 suppl_data,
                 Report::R_PLATFORM_TCB_DATE,
                 Report::R_TCB_INFO_EVALUATION_NUMBER,
+                Report::R_PLATFORM_COMPONENT_TCB_STATUS,
             )?),
             tdx_module_tcb: Some(component_tcb_from_suppl_data(
                 suppl_data,
                 Report::R_TDX_MODULE_TCB_DATE,
                 Report::R_TCB_INFO_EVALUATION_NUMBER,
+                Report::R_TDX_MODULE_COMPONENT_TCB_STATUS,
             )?),
             attestation_module_tcb: Some(component_tcb_from_suppl_data(
                 suppl_data,
                 Report::R_QE_TCB_DATE,
                 Report::R_QE_EVALUATION_NUMBER,
+                Report::R_QE_COMPONENT_TCB_STATUS,
             )?),
             fmspc: Some(fmspc),
             migtd_isvsvn: Some(migtd.isvsvn),
@@ -744,7 +747,7 @@ mod v2 {
         suppl_data: &[u8],
     ) -> Result<(String, String), PolicyError> {
         if suppl_data.len() != REPORT_DATA_SIZE
-            || suppl_data[Report::R_SUPPL_VERSION] != 2u16.to_le_bytes()
+            || suppl_data[Report::R_SUPPL_VERSION] != 3u16.to_le_bytes()
             || suppl_data[Report::R_SUPPL_SIZE] != (REPORT_DATA_SIZE as u16).to_le_bytes()
         {
             return Err(PolicyError::InvalidParameter);
@@ -766,10 +769,25 @@ mod v2 {
         data: &[u8],
         date: Range<usize>,
         number: Range<usize>,
+        status: Range<usize>,
     ) -> Result<ComponentTcbEvaluationInfo, PolicyError> {
+        // sgx_ql_qv_result_t from the versioned ServTD component result.
+        let tcb_status = match u32_from_suppl_data(data, status)? {
+            0x0000 => TcbStatus::UpToDate,
+            0xA001 => TcbStatus::ConfigurationNeeded,
+            0xA002 => TcbStatus::OutOfDate,
+            0xA003 => TcbStatus::OutOfDateConfigurationNeeded,
+            0xA005 => TcbStatus::Revoked,
+            0xA007 => TcbStatus::SWHardeningNeeded,
+            0xA008 => TcbStatus::ConfigurationAndSWHardeningNeeded,
+            0xA009 => TcbStatus::TDRelaunchAdvised,
+            0xA00A => TcbStatus::TDRelaunchAdvisedConfigurationNeeded,
+            _ => return Err(PolicyError::InvalidParameter),
+        };
         Ok(ComponentTcbEvaluationInfo {
             tcb_date: date_from_suppl_data(data, date)?,
             tcb_evaluation_number: u32_from_suppl_data(data, number)?,
+            tcb_status: tcb_status.as_str().to_string(),
         })
     }
 
@@ -1141,7 +1159,7 @@ mod v2 {
             let status = TcbStatus::UpToDate.as_str().as_bytes();
             suppl_data[Report::R_AGGREGATE_TCB_STATUS.start..][..status.len()]
                 .copy_from_slice(status);
-            suppl_data[Report::R_SUPPL_VERSION].copy_from_slice(&2u16.to_le_bytes());
+            suppl_data[Report::R_SUPPL_VERSION].copy_from_slice(&3u16.to_le_bytes());
             suppl_data[Report::R_SUPPL_SIZE]
                 .copy_from_slice(&(REPORT_DATA_SIZE as u16).to_le_bytes());
             suppl_data[Report::R_COMPONENT_FLAGS].copy_from_slice(&15u32.to_le_bytes());
@@ -1261,6 +1279,10 @@ mod v2 {
             data[Report::R_TCB_EVALUATION_NUMBER].copy_from_slice(&13u32.to_le_bytes());
             data[Report::R_TCB_INFO_EVALUATION_NUMBER].copy_from_slice(&20u32.to_le_bytes());
             data[Report::R_QE_EVALUATION_NUMBER].copy_from_slice(&13u32.to_le_bytes());
+            data[Report::R_PLATFORM_COMPONENT_TCB_STATUS].copy_from_slice(&0xA008u32.to_le_bytes());
+            data[Report::R_TDX_MODULE_COMPONENT_TCB_STATUS]
+                .copy_from_slice(&0xA002u32.to_le_bytes());
+            data[Report::R_QE_COMPONENT_TCB_STATUS].copy_from_slice(&0xA001u32.to_le_bytes());
             data[Report::R_AGGREGATE_TCB_STATUS].fill(0);
             let status = "TDRelaunchAdvisedConfigurationNeeded";
             data[Report::R_AGGREGATE_TCB_STATUS.start..][..status.len()]
@@ -1285,12 +1307,35 @@ mod v2 {
             assert_eq!(platform.tcb_evaluation_number, 20);
             assert_eq!(module.tcb_evaluation_number, 20);
             assert_eq!(attestation.tcb_evaluation_number, 13);
+            assert_eq!(platform.tcb_status, "ConfigurationAndSWHardeningNeeded");
+            assert_eq!(module.tcb_status, "OutOfDate");
+            assert_eq!(attestation.tcb_status, "ConfigurationNeeded");
+
+            for range in [
+                Report::R_PLATFORM_COMPONENT_TCB_STATUS,
+                Report::R_TDX_MODULE_COMPONENT_TCB_STATUS,
+                Report::R_QE_COMPONENT_TCB_STATUS,
+            ] {
+                for status in [0xA004u32, 0xA006, u32::MAX] {
+                    let mut invalid = data;
+                    invalid[range.clone()].copy_from_slice(&status.to_le_bytes());
+                    assert!(setup_evaluation_data(
+                        [0, 0xC0, 0x6F, 0, 0, 0],
+                        &invalid,
+                        &policy,
+                        policy.get_collaterals(),
+                        0,
+                    )
+                    .is_err());
+                }
+            }
 
             let rebind = setup_evaluation_data_with_tdreport(&tdreport, &policy, 0).unwrap();
             assert!(rebind.platform_tcb.is_none());
             assert!(rebind.tdx_module_tcb.is_none());
             assert!(rebind.attestation_module_tcb.is_none());
             assert!(get_tcb_date_and_status_from_suppl_data(&data[..822]).is_err());
+            assert!(get_tcb_date_and_status_from_suppl_data(&data[..900]).is_err());
             data[Report::R_COMPONENT_FLAGS].copy_from_slice(&3u32.to_le_bytes());
             assert!(get_tcb_date_and_status_from_suppl_data(&data).is_err());
             data[Report::R_COMPONENT_FLAGS].copy_from_slice(&7u32.to_le_bytes());

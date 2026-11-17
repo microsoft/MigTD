@@ -169,36 +169,68 @@ Generate a policy v2 JSON referencing:
 
 ### Component TCB rules (schema 2.1)
 
-Set `policyData.version` to `"2.1"` to configure component TCB rules.
-The component names are exactly `platform`, `tdxModule`, and
-`AttestationModule`. Each accepts `tcbDate` and `tcbEvaluationDataNumber`;
-`platform` also retains `fmspc`. Unknown global/component fields are rejected.
-Ordinary schema `"2.0"` policies remain supported, but cannot contain component
-TCB rules. Older firmware rejects version 2.1 rather than silently ignoring
-its new constraints.
+Schema `"2.1"` supports the two TCB forms specified in
+[intel/MigTD#1128](https://github.com/intel/MigTD/issues/1128).
+Choose one form in each `global` entry:
+
+- **Common:** `global.tcb` applies the same `tcbDate`,
+  `tcbEvaluationDataNumber`, and `tcbStatusAccepted` rules separately to the
+  platform, TDX module, and attestation module.
+- **Per-component:** `global.platform`, `global.tdxModule`, and
+  `global.attestationModule` each accept those three properties, with
+  independent limits.
+
+Combining `global.tcb` with component TCB rules in one entry is rejected.
+`platform.fmspc` and `global.crl` are independent of the TCB form and can
+accompany either form. Entries containing only these non-TCB properties
+remain supported. The legacy `AttestationModule` spelling remains an alias
+for existing policies; new policies should use `attestationModule`. Supplying
+both spellings in one entry is rejected, as are unknown component fields.
+
+Schema `"2.0"` retains its aggregate `global.tcb` behavior and cannot contain
+component TCB rules. In schema `"2.1"`, a common `"self"` rule compares each
+peer component with the **same local component**, not the minimum of unrelated
+local component values. This can reject a peer that would pass the old
+aggregate comparison. Review common rules when changing a policy's version.
 
 All values below come from generic QVL's evaluation of the verified quote
 against the verifier's authoritative collateral, without repeating TCB-level
 matching in MigTD:
 
-| Policy block | `tcbDate` | `tcbEvaluationDataNumber` |
-|---|---|---|
-| `global.tcb` | Generic QVL's aggregate minimum component date | Minimum of TCB Info and QE Identity document numbers |
-| `global.platform` | Matched platform TCB-level date | TCB Info document number |
-| `global.tdxModule` | Matched TDX module identity TCB-level date | Same TCB Info document number |
-| `global.AttestationModule` | Matched QE/TDQE identity TCB-level date | QE Identity document number |
+| Component | `tcbDate` | `tcbEvaluationDataNumber` | `tcbStatusAccepted` |
+|---|---|---|---|
+| `platform` | Matched platform TCB-level date | TCB Info document number | Matched platform status |
+| `tdxModule` | Matched TDX module identity TCB-level date | Same TCB Info document number | Matched module status |
+| `attestationModule` | Matched QE/TDQE identity TCB-level date | QE Identity document number | Matched QE/TDQE status |
 
 These are TCB-level dates, not collateral issue/expiration dates. Module
 version zero has no independently selected module identity: its module result
-is explicitly bundled with the platform result and uses the platform date.
+is explicitly bundled with the platform result and uses its date and status.
 The module evaluation number is not an independent module-level counter.
 
 For TDX 1.5/1.5ex quotes, policy evaluates the **launch** `TEE_TCB_SVN` result.
 QVL retains the current `TEE_TCB_SVN2` result separately; this policy does not
 silently substitute it. Single-vector TDX quote formats use their sole result.
 
-For example, the following fragment requires absolute platform/module floors
-and an attestation-module result at least as recent as the local result:
+For example, this common-form fragment sets the same date floor for all three
+components:
+
+```json
+{
+  "global": {
+    "tcb": {
+      "tcbDate": {
+        "operation": "greater-or-equal",
+        "reference": "2025-01-01T00:00:00Z"
+      }
+    }
+  }
+}
+```
+
+Alternatively, this per-component fragment sets absolute platform/module
+floors, allows platform configuration advisories, and requires the
+attestation-module result to be at least as recent as its local counterpart:
 
 ```json
 {
@@ -206,13 +238,11 @@ and an attestation-module result at least as recent as the local result:
   "policy": [
     {
       "global": {
-        "tcb": {
+        "platform": {
           "tcbStatusAccepted": {
             "operation": "allow-list",
             "reference": ["ConfigurationNeeded"]
-          }
-        },
-        "platform": {
+          },
           "tcbDate": {
             "operation": "greater-or-equal",
             "reference": "2025-01-01T00:00:00Z"
@@ -232,7 +262,7 @@ and an attestation-module result at least as recent as the local result:
             "reference": 13
           }
         },
-        "AttestationModule": {
+        "attestationModule": {
           "tcbDate": {
             "operation": "greater-or-equal",
             "reference": "self"
@@ -254,31 +284,35 @@ support `equal` and `greater-or-equal`. A relative component rule compares
 only that component on the peer and local endpoints. Missing required
 component evidence, including a missing relative reference, fails closed.
 Rebinding still skips `global` checks: peer TDREPORT evidence has no
-quote-derived component dates or evaluation numbers.
+quote-derived component dates, evaluation numbers, or statuses.
 
-`global.tcb.tcbStatusAccepted` now uses QVL's aggregate status, not just
-platform status. `TDRelaunchAdvised` follows the existing non-configuration
-status class; `TDRelaunchAdvisedConfigurationNeeded` requires the existing
-configuration-needed allowance. Revoked evidence remains rejected.
-The aggregate date/status/number correction also applies to existing 2.0
-policies, so a peer accepted by the former platform/QE-only date, platform-only
-status, or TCB-Info-only number checks can now fail its existing thresholds.
-Review those thresholds when upgrading; no production threshold is
+Status rules retain the existing policy status classes: non-configuration
+statuses remain allowed, while `"ConfigurationNeeded"` in an allow-list
+also permits the combined configuration-needed statuses. A status rule on one
+component never substitutes another component's or the aggregate status.
+Revoked evidence is rejected even when no explicit status rule is configured.
+
+Schema 2.0 continues to use QVL's aggregate minimum date, minimum collateral
+evaluation number, and combined status. `TDRelaunchAdvised` follows the
+non-configuration status class; `TDRelaunchAdvisedConfigurationNeeded` requires
+the configuration-needed allowance. No configured production threshold is
 automatically changed.
 
 The verifier boundary uses explicit versioned APIs:
-`sgxAttestationVerifyQuoteEx2` returns QVL collateral-info version 3, and
-`verify_quote_integrity_ex2` returns a 900-byte ServTD record with a versioned
-tail after the legacy 822-byte prefix. REPORTDATA remains at offset 520.
-Legacy API record sizes and their legacy effective-date semantics are
-unchanged. The new API's full aggregate-status field is authoritative.
-If a component status cannot fit the legacy 32-byte status slot, the new API
-leaves that slot empty rather than truncating it or rejecting the extended
-result; the old APIs retain their existing length checks.
+`sgxAttestationVerifyQuoteEx2` already returns QVL collateral-info version 3
+with independent launch/current component results.
+`verify_quote_integrity_ex3` returns a 912-byte ServTD version-3 record,
+appending three little-endian `sgx_ql_qv_result_t` values to the 900-byte
+version-2 layout. These complete component statuses, not the legacy
+32-byte status strings, drive component policy evaluation. Unknown or
+non-TCB result codes fail closed.
+REPORTDATA remains at offset 520. The existing `verify_quote_integrity_ex2`
+API still returns 900 bytes, and older APIs retain their 822-byte layouts
+and effective-date semantics, regardless of caller buffer capacity.
 
-`AttestationModule` currently represents QE/TDQE. QTD/NRX verification is not
+`attestationModule` currently represents QE/TDQE. QTD/NRX verification is not
 implemented by this change. A future authenticated NRX backend should copy
-its TDX module result into `AttestationModule`; absent QE collateral must
+its TDX module result into `attestationModule`; absent QE collateral must
 never be interpreted as proof of that backend.
 
 ### ServTD signer CRL floor

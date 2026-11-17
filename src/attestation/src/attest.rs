@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 #[cfg(feature = "attest-lib-ext")]
-use crate::binding::verify_quote_integrity_ex2;
+use crate::binding::verify_quote_integrity_ex3;
 
 #[cfg(not(feature = "attest-lib-ext"))]
 use crate::binding::verify_quote_integrity;
@@ -180,7 +180,7 @@ pub fn verify_quote(quote: &[u8]) -> Result<Vec<u8>, Error> {
             &mut report_verify_size as *mut u32,
         );
         #[cfg(feature = "attest-lib-ext")]
-        let result = verify_quote_integrity_ex2(
+        let result = verify_quote_integrity_ex3(
             quote.as_ptr() as *const c_void,
             quote.len() as u32,
             public_key.as_ptr() as *const c_void,
@@ -215,7 +215,7 @@ pub fn verify_quote_with_collaterals(
 
     let qve_collateral: QveCollateral = (&collateral).into();
     unsafe {
-        let result = verify_quote_integrity_ex2(
+        let result = verify_quote_integrity_ex3(
             quote.as_ptr() as *const c_void,
             quote.len() as u32,
             public_key.as_ptr() as *const c_void,
@@ -225,7 +225,7 @@ pub fn verify_quote_with_collaterals(
             &mut report_verify_size as *mut u32,
         );
         if result != 0 {
-            log::error!("verify_quote_integrity_ex2 failed with error: {result:#x}\n");
+            log::error!("verify_quote_integrity_ex3 failed with error: {result:#x}\n");
             return Err(Error::VerifyQuote);
         }
     }
@@ -240,7 +240,7 @@ fn finish_verified_report(mut report: Vec<u8>, size: u32) -> Result<Vec<u8>, Err
     }
 
     #[cfg(feature = "attest-lib-ext")]
-    if report[822..824] != 2u16.to_le_bytes()
+    if report[822..824] != 3u16.to_le_bytes()
         || report[824..826] != (TD_VERIFIED_REPORT_SIZE as u16).to_le_bytes()
     {
         return Err(Error::InvalidOutput);
@@ -273,24 +273,24 @@ mod tests {
     fn extended_report_preserves_binding_and_checks_version_and_size() {
         let mut report = vec![0; TD_REPORT_VERIFY_SIZE];
         report[520..584].fill(0x5a);
-        report[822..824].copy_from_slice(&2u16.to_le_bytes());
+        report[822..824].copy_from_slice(&3u16.to_le_bytes());
         report[824..826].copy_from_slice(&(TD_VERIFIED_REPORT_SIZE as u16).to_le_bytes());
         let verified =
             finish_verified_report(report.clone(), TD_VERIFIED_REPORT_SIZE as u32).unwrap();
         assert_eq!(verified.len(), TD_VERIFIED_REPORT_SIZE);
         assert_eq!(verified[520..584], [0x5a; 64]);
 
-        for size in [822, 899, 901, 1025] {
+        for size in [822, 900, 911, 913, 1025] {
             assert!(matches!(
                 finish_verified_report(report.clone(), size),
                 Err(Error::InvalidOutput)
             ));
         }
-        report[822] = 3;
-        assert!(finish_verified_report(report.clone(), 900).is_err());
         report[822] = 2;
+        assert!(finish_verified_report(report.clone(), 912).is_err());
+        report[822] = 3;
         report[824] ^= 1;
-        assert!(finish_verified_report(report.clone(), 900).is_err());
-        assert!(finish_verified_report(vec![0; 899], 900).is_err());
+        assert!(finish_verified_report(report.clone(), 912).is_err());
+        assert!(finish_verified_report(vec![0; 911], 912).is_err());
     }
 }

@@ -168,11 +168,12 @@ impl PartialEq for ServtdTcbStatus {
 
 impl Eq for ServtdTcbStatus {}
 
-/// A component's matched launch TCB date and its authenticated collateral revision.
+/// A component's matched launch TCB level and authenticated collateral revision.
 #[derive(Debug, Clone)]
 pub struct ComponentTcbEvaluationInfo {
     pub tcb_date: String,
     pub tcb_evaluation_number: u32,
+    pub tcb_status: String,
 }
 
 /// Contains the evidence available for migration or rebinding policy evaluation.
@@ -567,6 +568,7 @@ impl<'a> PolicyData<'a> {
             value,
             relative_reference,
             skip_global,
+            &self.version,
         )
     }
 
@@ -581,6 +583,7 @@ impl<'a> PolicyData<'a> {
             value,
             relative_reference,
             skip_global,
+            &self.version,
         )
     }
 
@@ -590,7 +593,13 @@ impl<'a> PolicyData<'a> {
         relative_reference: &PolicyEvaluationInfo,
         skip_global: bool,
     ) -> Result<(), PolicyError> {
-        Self::evaluate_policy_block(self.policy.as_ref(), value, relative_reference, skip_global)
+        Self::evaluate_policy_block(
+            self.policy.as_ref(),
+            value,
+            relative_reference,
+            skip_global,
+            &self.version,
+        )
     }
 
     fn evaluate_policy_block(
@@ -598,13 +607,14 @@ impl<'a> PolicyData<'a> {
         value: &PolicyEvaluationInfo,
         relative_reference: &PolicyEvaluationInfo,
         skip_global: bool,
+        version: &str,
     ) -> Result<(), PolicyError> {
         // Apply explicit policy constraints, if present.
         if let Some(block) = block {
             for policy_type in block {
                 match policy_type {
                     PolicyTypes::Global(global) if !skip_global => {
-                        global.evaluate(value, relative_reference)?
+                        global.evaluate(value, relative_reference, version)?
                     }
                     PolicyTypes::Servtd(migtd) => migtd.evaluate(value, relative_reference)?,
                     _ => {}
@@ -628,6 +638,18 @@ impl<'a> PolicyData<'a> {
         if !skip_global {
             if let Some(status) = value.tcb_status.as_deref() {
                 if TcbStatus::try_from(status)? == TcbStatus::Revoked {
+                    return Err(PolicyError::TcbEvaluation);
+                }
+            }
+            for component in [
+                &value.platform_tcb,
+                &value.tdx_module_tcb,
+                &value.attestation_module_tcb,
+            ]
+            .iter()
+            .filter_map(|component| component.as_ref())
+            {
+                if TcbStatus::try_from(component.tcb_status.as_str())? == TcbStatus::Revoked {
                     return Err(PolicyError::TcbEvaluation);
                 }
             }
@@ -657,7 +679,7 @@ struct GlobalPolicy {
     platform: Option<PlatformPolicy>,
     crl: Option<CrlPolicy>,
     tdx_module: Option<ComponentTcbPolicy>,
-    #[serde(rename = "AttestationModule")]
+    #[serde(alias = "AttestationModule")]
     attestation_module: Option<ComponentTcbPolicy>,
 }
 
@@ -666,9 +688,22 @@ impl GlobalPolicy {
         let component_rules = self.tdx_module.is_some()
             || self.attestation_module.is_some()
             || self.platform.as_ref().is_some_and(|platform| {
-                platform.tcb_date.is_some() || platform.tcb_evaluation_data_number.is_some()
+                platform.tcb_date.is_some()
+                    || platform.tcb_evaluation_data_number.is_some()
+                    || platform.tcb_status_accepted.is_some()
             });
-        if component_rules && version != "2.1" {
+        if component_rules && (version != "2.1" || self.tcb.is_some()) {
+            return false;
+        }
+        if version == "2.1"
+            && self.tcb.as_ref().is_some_and(|policy| {
+                !valid_component_rules(
+                    policy.tcb_date.as_ref(),
+                    policy.tcb_evaluation_data_number.as_ref(),
+                    policy.tcb_status_accepted.as_ref(),
+                )
+            })
+        {
             return false;
         }
         [&self.tdx_module, &self.attestation_module]
@@ -678,12 +713,14 @@ impl GlobalPolicy {
                 valid_component_rules(
                     policy.tcb_date.as_ref(),
                     policy.tcb_evaluation_data_number.as_ref(),
+                    policy.tcb_status_accepted.as_ref(),
                 )
             })
             && self.platform.as_ref().is_none_or(|platform| {
                 valid_component_rules(
                     platform.tcb_date.as_ref(),
                     platform.tcb_evaluation_data_number.as_ref(),
+                    platform.tcb_status_accepted.as_ref(),
                 )
             })
     }
@@ -692,9 +729,29 @@ impl GlobalPolicy {
         &self,
         value: &PolicyEvaluationInfo,
         relative_reference: &PolicyEvaluationInfo,
+        version: &str,
     ) -> Result<(), PolicyError> {
         if let Some(tcb_policy) = &self.tcb {
-            tcb_policy.evaluate(value, relative_reference)?;
+            if version == "2.1" {
+                for (component, reference) in [
+                    (&value.platform_tcb, &relative_reference.platform_tcb),
+                    (&value.tdx_module_tcb, &relative_reference.tdx_module_tcb),
+                    (
+                        &value.attestation_module_tcb,
+                        &relative_reference.attestation_module_tcb,
+                    ),
+                ] {
+                    evaluate_component_tcb(
+                        tcb_policy.tcb_date.as_ref(),
+                        tcb_policy.tcb_evaluation_data_number.as_ref(),
+                        tcb_policy.tcb_status_accepted.as_ref(),
+                        component.as_ref(),
+                        reference.as_ref(),
+                    )?;
+                }
+            } else {
+                tcb_policy.evaluate(value, relative_reference)?;
+            }
         }
 
         if let Some(platform_policy) = &self.platform {
@@ -786,6 +843,7 @@ struct PlatformPolicy {
     fmspc: Option<PolicyProperty>,
     tcb_date: Option<PolicyProperty>,
     tcb_evaluation_data_number: Option<PolicyProperty>,
+    tcb_status_accepted: Option<PolicyProperty>,
 }
 
 impl PlatformPolicy {
@@ -808,6 +866,7 @@ impl PlatformPolicy {
         evaluate_component_tcb(
             self.tcb_date.as_ref(),
             self.tcb_evaluation_data_number.as_ref(),
+            self.tcb_status_accepted.as_ref(),
             value.platform_tcb.as_ref(),
             relative_reference.platform_tcb.as_ref(),
         )
@@ -819,6 +878,7 @@ impl PlatformPolicy {
 struct ComponentTcbPolicy {
     tcb_date: Option<PolicyProperty>,
     tcb_evaluation_data_number: Option<PolicyProperty>,
+    tcb_status_accepted: Option<PolicyProperty>,
 }
 
 impl ComponentTcbPolicy {
@@ -830,13 +890,18 @@ impl ComponentTcbPolicy {
         evaluate_component_tcb(
             self.tcb_date.as_ref(),
             self.tcb_evaluation_data_number.as_ref(),
+            self.tcb_status_accepted.as_ref(),
             value,
             relative,
         )
     }
 }
 
-fn valid_component_rules(date: Option<&PolicyProperty>, number: Option<&PolicyProperty>) -> bool {
+fn valid_component_rules(
+    date: Option<&PolicyProperty>,
+    number: Option<&PolicyProperty>,
+    status: Option<&PolicyProperty>,
+) -> bool {
     date.is_none_or(|property| match &property.reference {
         Reference::String(reference) => {
             matches!(property.operation.as_str(), "equal" | "greater-or-equal")
@@ -851,11 +916,21 @@ fn valid_component_rules(date: Option<&PolicyProperty>, number: Option<&PolicyPr
         }
         _ => false,
     }) && number.is_none_or(|property| property.evaluate_integer(0, Some(0)).is_ok())
+        && status.is_none_or(|property| {
+            // Avoid the always-allowed status classes, which bypass reference validation.
+            property
+                .evaluate_tcb_status(
+                    TcbStatus::ConfigurationNeeded,
+                    Some(TcbStatus::ConfigurationNeeded),
+                )
+                .is_ok()
+        })
 }
 
 fn evaluate_component_tcb(
     date: Option<&PolicyProperty>,
     number: Option<&PolicyProperty>,
+    status: Option<&PolicyProperty>,
     value: Option<&ComponentTcbEvaluationInfo>,
     relative: Option<&ComponentTcbEvaluationInfo>,
 ) -> Result<(), PolicyError> {
@@ -872,6 +947,24 @@ fn evaluate_component_tcb(
         if !property.evaluate_integer(
             value.tcb_evaluation_number,
             relative.map(|info| info.tcb_evaluation_number),
+        )? {
+            return Err(PolicyError::TcbEvaluation);
+        }
+    }
+    if let Some(property) = status {
+        let value = value.ok_or(PolicyError::TcbEvaluation)?;
+        let relative_status = relative
+            .map(|info| TcbStatus::try_from(info.tcb_status.as_str()))
+            .transpose()?;
+        if matches!(&property.reference, Reference::String(reference)
+            if matches!(reference.as_str(), "self" | "init"))
+            && relative_status.is_none()
+        {
+            return Err(PolicyError::InvalidReference);
+        }
+        if !property.evaluate_tcb_status(
+            TcbStatus::try_from(value.tcb_status.as_str())?,
+            relative_status,
         )? {
             return Err(PolicyError::TcbEvaluation);
         }
@@ -1301,7 +1394,7 @@ mod test {
         match name {
             "platform" => &mut info.platform_tcb,
             "tdxModule" => &mut info.tdx_module_tcb,
-            "AttestationModule" => &mut info.attestation_module_tcb,
+            "attestationModule" => &mut info.attestation_module_tcb,
             _ => panic!("unknown test component"),
         }
     }
@@ -1311,7 +1404,7 @@ mod test {
         let cases = [
             ("platform", "2025-01-01T00:00:00Z", 20),
             ("tdxModule", "2024-01-01T00:00:00Z", 20),
-            ("AttestationModule", "2025-05-01T00:00:00Z", 13),
+            ("attestationModule", "2025-05-01T00:00:00Z", 13),
         ];
         let mut evidence = PolicyEvaluationInfo {
             tcb_date: Some("2030-01-01T00:00:00Z".into()),
@@ -1322,6 +1415,7 @@ mod test {
             *component_mut(&mut evidence, name) = Some(ComponentTcbEvaluationInfo {
                 tcb_date: date.into(),
                 tcb_evaluation_number: number,
+                tcb_status: "UpToDate".into(),
             });
         }
         for (name, date, number) in cases {
@@ -1332,18 +1426,26 @@ mod test {
                 }
             })).unwrap();
             assert!(absolute
-                .evaluate(&evidence, &PolicyEvaluationInfo::default())
+                .evaluate(&evidence, &PolicyEvaluationInfo::default(), "2.1")
                 .is_ok());
             let mut older = evidence.clone();
             component_mut(&mut older, name).as_mut().unwrap().tcb_date =
                 "2023-01-01T00:00:00Z".into();
-            assert!(absolute.evaluate(&older, &evidence).is_err(), "{}", name);
+            assert!(
+                absolute.evaluate(&older, &evidence, "2.1").is_err(),
+                "{}",
+                name
+            );
             let mut lower = evidence.clone();
             component_mut(&mut lower, name)
                 .as_mut()
                 .unwrap()
                 .tcb_evaluation_number = number - 1;
-            assert!(absolute.evaluate(&lower, &evidence).is_err(), "{}", name);
+            assert!(
+                absolute.evaluate(&lower, &evidence, "2.1").is_err(),
+                "{}",
+                name
+            );
 
             let relative: GlobalPolicy = serde_json::from_value(serde_json::json!({
                 (name): {
@@ -1351,14 +1453,30 @@ mod test {
                     "tcbEvaluationDataNumber": {"operation": "greater-or-equal", "reference": "self"}
                 }
             })).unwrap();
-            assert!(relative.evaluate(&evidence, &evidence).is_ok());
-            assert!(relative.evaluate(&evidence, &older).is_ok());
-            assert!(relative.evaluate(&older, &evidence).is_err(), "{}", name);
-            assert!(relative.evaluate(&lower, &evidence).is_err(), "{}", name);
+            assert!(relative.evaluate(&evidence, &evidence, "2.1").is_ok());
+            assert!(relative.evaluate(&evidence, &older, "2.1").is_ok());
+            assert!(
+                relative.evaluate(&older, &evidence, "2.1").is_err(),
+                "{}",
+                name
+            );
+            assert!(
+                relative.evaluate(&lower, &evidence, "2.1").is_err(),
+                "{}",
+                name
+            );
             let mut missing = evidence.clone();
             *component_mut(&mut missing, name) = None;
-            assert!(relative.evaluate(&evidence, &missing).is_err(), "{}", name);
-            assert!(relative.evaluate(&missing, &evidence).is_err(), "{}", name);
+            assert!(
+                relative.evaluate(&evidence, &missing, "2.1").is_err(),
+                "{}",
+                name
+            );
+            assert!(
+                relative.evaluate(&missing, &evidence, "2.1").is_err(),
+                "{}",
+                name
+            );
         }
     }
 
@@ -1367,7 +1485,7 @@ mod test {
         let template: serde_json::Value =
             serde_json::from_str(include_str!("../../test/policy_v2/policy_data.json")).unwrap();
         for block in ["policy", "forwardPolicy", "backwardPolicy"] {
-            for name in ["platform", "tdxModule", "AttestationModule"] {
+            for name in ["platform", "tdxModule", "attestationModule"] {
                 let mut data = template.clone();
                 data[block] = serde_json::json!([{"global": {
                     (name): {"tcbDate": {"operation": "greater-or-equal", "reference": "2025-01-01T00:00:00Z"}}
@@ -1389,7 +1507,15 @@ mod test {
                     .validate());
             }
         }
-        assert!(serde_json::from_str::<GlobalPolicy>(r#"{"attestationModule":{}}"#).is_err());
+        let legacy: GlobalPolicy = serde_json::from_str(r#"{"AttestationModule":{}}"#).unwrap();
+        let canonical = serde_json::to_value(legacy).unwrap();
+        assert!(canonical.get("attestationModule").is_some());
+        assert!(canonical.get("AttestationModule").is_none());
+        assert!(serde_json::from_str::<GlobalPolicy>(
+            r#"{"attestationModule":{},"AttestationModule":{}}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<GlobalPolicy>(r#"{"attestationmodule":{}}"#).is_err());
         assert!(serde_json::from_str::<GlobalPolicy>(r#"{"platform":{" fmspc":{}}}"#).is_err());
         assert!(serde_json::from_str::<GlobalPolicy>(r#"{"tdxModule":{"tcbDtae":{}}}"#).is_err());
     }
@@ -1408,12 +1534,197 @@ mod test {
             ..Default::default()
         };
         let reference = PolicyEvaluationInfo::default();
-        assert!(deny_configuration.evaluate(&value, &reference).is_ok());
+        assert!(deny_configuration
+            .evaluate(&value, &reference, "2.0")
+            .is_ok());
         value.tcb_status = Some("TDRelaunchAdvisedConfigurationNeeded".into());
-        assert!(deny_configuration.evaluate(&value, &reference).is_err());
-        assert!(allow_configuration.evaluate(&value, &reference).is_ok());
+        assert!(deny_configuration
+            .evaluate(&value, &reference, "2.0")
+            .is_err());
+        assert!(allow_configuration
+            .evaluate(&value, &reference, "2.0")
+            .is_ok());
         value.tcb_status = Some("Revoked".into());
-        assert!(allow_configuration.evaluate(&value, &reference).is_err());
+        assert!(allow_configuration
+            .evaluate(&value, &reference, "2.0")
+            .is_err());
+    }
+
+    fn component_status_evidence() -> PolicyEvaluationInfo {
+        let mut info = PolicyEvaluationInfo {
+            tcb_date: Some("2024-01-01T00:00:00Z".into()),
+            tcb_evaluation_number: Some(13),
+            tcb_status: Some("ConfigurationNeeded".into()),
+            ..Default::default()
+        };
+        for (name, date, number, status) in [
+            ("platform", "2025-01-01T00:00:00Z", 20, "UpToDate"),
+            (
+                "tdxModule",
+                "2024-01-01T00:00:00Z",
+                20,
+                "ConfigurationNeeded",
+            ),
+            ("attestationModule", "2025-05-01T00:00:00Z", 13, "UpToDate"),
+        ] {
+            *component_mut(&mut info, name) = Some(ComponentTcbEvaluationInfo {
+                tcb_date: date.into(),
+                tcb_evaluation_number: number,
+                tcb_status: status.into(),
+            });
+        }
+        info
+    }
+
+    #[test]
+    fn common_rules_compare_same_components_in_21_and_aggregate_in_20() {
+        let reference = component_status_evidence();
+        let template: serde_json::Value =
+            serde_json::from_str(include_str!("../../test/policy_v2/policy_data.json")).unwrap();
+        for field in ["tcbDate", "tcbEvaluationDataNumber", "tcbStatusAccepted"] {
+            let rule = serde_json::json!({"operation": "greater-or-equal", "reference": "self"});
+            let mut data = template.clone();
+            data["policy"] = serde_json::json!([{"global": {"tcb": {(field): rule}}}]);
+            data["version"] = "2.0".into();
+            let legacy_input = serde_json::to_string(&data).unwrap();
+            let legacy = PolicyData::deserialize_from_json(legacy_input.as_bytes()).unwrap();
+            data["version"] = "2.1".into();
+            let input = serde_json::to_string(&data).unwrap();
+            let policy = PolicyData::deserialize_from_json(input.as_bytes()).unwrap();
+            let mut peer = reference.clone();
+            let platform = peer.platform_tcb.as_mut().unwrap();
+            match field {
+                "tcbDate" => platform.tcb_date = "2024-06-01T00:00:00Z".into(),
+                "tcbEvaluationDataNumber" => platform.tcb_evaluation_number = 19,
+                _ => platform.tcb_status = "ConfigurationNeeded".into(),
+            }
+            // The module/QE still determine the unchanged aggregate values.
+            assert!(
+                legacy
+                    .evaluate_policy_common(&peer, &reference, false)
+                    .is_ok(),
+                "{}",
+                field
+            );
+            assert!(
+                policy
+                    .evaluate_policy_common(&peer, &reference, false)
+                    .is_err(),
+                "{}",
+                field
+            );
+            assert!(
+                policy
+                    .evaluate_policy_common(&reference, &reference, false)
+                    .is_ok(),
+                "{}",
+                field
+            );
+            for name in ["platform", "tdxModule", "attestationModule"] {
+                let mut missing = reference.clone();
+                *component_mut(&mut missing, name) = None;
+                assert!(
+                    policy
+                        .evaluate_policy_common(&reference, &missing, false)
+                        .is_err(),
+                    "{}/{}",
+                    field,
+                    name
+                );
+                assert!(
+                    policy
+                        .evaluate_policy_common(&missing, &reference, false)
+                        .is_err(),
+                    "{}/{}",
+                    field,
+                    name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn component_status_rules_do_not_use_another_components_status() {
+        for name in ["platform", "tdxModule", "attestationModule"] {
+            let policy: GlobalPolicy = serde_json::from_value(serde_json::json!({
+                (name): {"tcbStatusAccepted": {"operation": "allow-list", "reference": []}}
+            }))
+            .unwrap();
+            let mut value = component_status_evidence();
+            for other in ["platform", "tdxModule", "attestationModule"] {
+                component_mut(&mut value, other)
+                    .as_mut()
+                    .unwrap()
+                    .tcb_status = if name == other {
+                    "UpToDate"
+                } else {
+                    "ConfigurationNeeded"
+                }
+                .into();
+            }
+            assert!(policy.evaluate(&value, &value, "2.1").is_ok(), "{}", name);
+            component_mut(&mut value, name).as_mut().unwrap().tcb_status =
+                "ConfigurationNeeded".into();
+            assert!(policy.evaluate(&value, &value, "2.1").is_err(), "{}", name);
+            let allow: GlobalPolicy = serde_json::from_value(serde_json::json!({
+                (name): {"tcbStatusAccepted": {
+                    "operation": "allow-list", "reference": ["ConfigurationNeeded"]
+                }}
+            }))
+            .unwrap();
+            assert!(allow.evaluate(&value, &value, "2.1").is_ok(), "{}", name);
+            component_mut(&mut value, name).as_mut().unwrap().tcb_status = "Revoked".into();
+            assert!(allow.evaluate(&value, &value, "2.1").is_err(), "{}", name);
+            assert!(
+                PolicyData::enforce_mandatory_deny(&value, false).is_err(),
+                "{}",
+                name
+            );
+            assert!(
+                PolicyData::enforce_mandatory_deny(&value, true).is_ok(),
+                "{}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn tcb_forms_are_exclusive_and_component_status_requires_21() {
+        let template: serde_json::Value =
+            serde_json::from_str(include_str!("../../test/policy_v2/policy_data.json")).unwrap();
+        for block in ["policy", "forwardPolicy", "backwardPolicy"] {
+            for name in ["platform", "tdxModule", "attestationModule"] {
+                let mut data = template.clone();
+                data[block] = serde_json::json!([{"global": {
+                    (name): {"tcbStatusAccepted": {
+                        "operation": "allow-list", "reference": ["ConfigurationNeeded"]
+                    }}
+                }}]);
+                let validate = |data: &serde_json::Value| {
+                    let input = serde_json::to_string(data).unwrap();
+                    serde_json::from_str::<PolicyData>(&input)
+                        .unwrap()
+                        .validate()
+                };
+                assert!(!validate(&data), "{}/{}", block, name);
+                data["version"] = "2.1".into();
+                assert!(validate(&data), "{}/{}", block, name);
+                data[block][0]["global"]["tcb"] = serde_json::json!({});
+                assert!(!validate(&data), "{}/{}", block, name);
+                data[block][0]["global"]["tcb"] = serde_json::Value::Null;
+                assert!(validate(&data), "{}/{}", block, name);
+                data[block][0]["global"][name]["tcbStatusAccepted"]["reference"] =
+                    serde_json::json!(["NotATcbStatus"]);
+                assert!(!validate(&data), "{}/{}", block, name);
+            }
+        }
+        let identity_with_common: GlobalPolicy = serde_json::from_value(serde_json::json!({
+            "tcb": {"tcbDate": {"operation": "greater-or-equal", "reference": "self"}},
+            "platform": {"fmspc": {"operation": "equal", "reference": "90C06F000000"}}
+        }))
+        .unwrap();
+        assert!(identity_with_common.validate("2.0"));
+        assert!(identity_with_common.validate("2.1"));
     }
 
     fn verified_test_policy_without_mapping() -> VerifiedPolicy<'static> {
@@ -1823,30 +2134,38 @@ mod test {
             servtd_crl_num: None,
         };
         let relative_ref = PolicyEvaluationInfo::default();
-        assert!(global_policy.evaluate(&value, &relative_ref).is_ok());
+        assert!(global_policy.evaluate(&value, &relative_ref, "2.0").is_ok());
 
         // Unqualified TCB date
         value.tcb_date = Some("2024-09-01T00:00:00Z".to_string());
-        assert!(global_policy.evaluate(&value, &relative_ref).is_err());
+        assert!(global_policy
+            .evaluate(&value, &relative_ref, "2.0")
+            .is_err());
         value.tcb_date = Some("2025-09-01T00:00:00Z".to_string());
 
         // Unqualified TCB status
         value.tcb_status = Some("Revoked".to_string());
-        assert!(global_policy.evaluate(&value, &relative_ref).is_err());
+        assert!(global_policy
+            .evaluate(&value, &relative_ref, "2.0")
+            .is_err());
         value.tcb_status = Some("ConfigurationNeeded".to_string());
 
         // Unqualified TCB evaluation data number
         value.tcb_evaluation_number = Some(10);
-        assert!(global_policy.evaluate(&value, &relative_ref).is_err());
+        assert!(global_policy
+            .evaluate(&value, &relative_ref, "2.0")
+            .is_err());
         value.tcb_evaluation_number = Some(15);
 
         // Unqualified FMSPC
 
         value.fmspc = Some([0x10, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        assert!(global_policy.evaluate(&value, &relative_ref).is_err());
+        assert!(global_policy
+            .evaluate(&value, &relative_ref, "2.0")
+            .is_err());
         value.fmspc = Some([0x10, 0xC0, 0x6F, 0x00, 0x00, 0x00]);
 
-        assert!(global_policy.evaluate(&value, &relative_ref).is_ok());
+        assert!(global_policy.evaluate(&value, &relative_ref, "2.0").is_ok());
     }
 
     #[test]
@@ -2258,9 +2577,10 @@ mod test {
         let relative = PolicyEvaluationInfo::default();
 
         // `skip_global = false` evaluates platform status.
-        assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, false).is_err()
-        );
+        assert!(PolicyData::<'static>::evaluate_policy_block(
+            None, &value, &relative, false, "2.0"
+        )
+        .is_err());
     }
 
     #[test]
@@ -2275,7 +2595,8 @@ mod test {
 
         // Engine status is checked even with `skip_global = true`.
         assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true).is_err()
+            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true, "2.0")
+                .is_err()
         );
     }
 
@@ -2290,9 +2611,10 @@ mod test {
         };
         let relative = PolicyEvaluationInfo::default();
 
-        assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, false).is_ok()
-        );
+        assert!(PolicyData::<'static>::evaluate_policy_block(
+            None, &value, &relative, false, "2.0"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2307,7 +2629,8 @@ mod test {
         let relative = PolicyEvaluationInfo::default();
 
         assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true).is_ok()
+            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true, "2.0")
+                .is_ok()
         );
     }
 
@@ -2319,11 +2642,13 @@ mod test {
         };
         let relative = PolicyEvaluationInfo::default();
 
+        assert!(PolicyData::<'static>::evaluate_policy_block(
+            None, &value, &relative, false, "2.0"
+        )
+        .is_ok());
         assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, false).is_ok()
-        );
-        assert!(
-            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true).is_ok()
+            PolicyData::<'static>::evaluate_policy_block(None, &value, &relative, true, "2.0")
+                .is_ok()
         );
     }
 
@@ -2342,7 +2667,8 @@ mod test {
             Some(&block),
             &value,
             &relative,
-            false
+            false,
+            "2.0"
         )
         .is_err());
     }
