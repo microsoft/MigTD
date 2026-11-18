@@ -111,7 +111,7 @@ At boot, MigTD:
 
 Component TCB rules require `policyData.version = "2.1"` and use
 `global.platform`, `global.tdxModule`, and `global.attestationModule`.
-The old `AttestationModule` spelling remains a read-compatible alias.
+The `AttestationModule` spelling is accepted as a read-compatible alias.
 Each component accepts date, evaluation-number, and accepted-status rules.
 Do not mix these rules with `global.tcb` in the same entry; an FMSPC-only
 `platform` object and `global.crl` can accompany either TCB form.
@@ -124,20 +124,20 @@ module date/status with the platform result, not an independent identity.
 Schema 2.1 `global.tcb` applies common rules to every component, including
 same-component `"self"` comparisons; schema 2.0 retains aggregate behavior.
 Read the three numeric component-status fields, not the legacy 32-byte
-status strings. QVL already exports these statuses; the ServTD version-2
-bridge transfers them in its expanded layout, replacing the earlier 900-byte
-v2 result rather than adding a parallel v3 interface. Update the verifier pin
-and consumers together; the legacy 822-byte APIs remain unchanged.
-QVL's collateral-info version 3 is a separate format and is unchanged.
+status strings. The ServTD v2 report has version 2 and size 912; the verifier
+and consumers must agree on this layout. The legacy quote-verification APIs
+return 822-byte reports. QVL's collateral-info version 3 is independent of
+the ServTD report version.
 Rebind peer TDREPORT data has no component results and continues to skip
 global rules. See `doc/policy_v2.md` and the
 `component_evaluation_uses_verifier_output_not_collateral_json` regression.
 
-The runtime enforces the completed design in both migration and rebinding:
-it resolves `ServtdExt.init_servtd_info_hash` and the authenticated source's
-current report hash through the source's verified mapping, fails closed on
-either miss, and rejects `init SVN > current SVN`. The legacy wire
-Init_TDINFO is ignored.
+Migration and rebinding resolve the authenticated source's current report
+hash through the source's verified mapping. The initial hash from
+`ServtdExt.init_servtd_info_hash` uses that mapping with an authenticated
+local fallback. Missing current mappings, initial hashes absent from both
+mappings, conflicting initial SVN assignments, and `init SVN > current SVN`
+fail closed. The legacy wire Init_TDINFO is ignored.
 
 ## Gotcha
 
