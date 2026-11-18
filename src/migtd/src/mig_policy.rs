@@ -747,7 +747,7 @@ mod v2 {
         suppl_data: &[u8],
     ) -> Result<(String, String), PolicyError> {
         if suppl_data.len() != REPORT_DATA_SIZE
-            || suppl_data[Report::R_SUPPL_VERSION] != 3u16.to_le_bytes()
+            || suppl_data[Report::R_SUPPL_VERSION] != 2u16.to_le_bytes()
             || suppl_data[Report::R_SUPPL_SIZE] != (REPORT_DATA_SIZE as u16).to_le_bytes()
         {
             return Err(PolicyError::InvalidParameter);
@@ -1159,7 +1159,7 @@ mod v2 {
             let status = TcbStatus::UpToDate.as_str().as_bytes();
             suppl_data[Report::R_AGGREGATE_TCB_STATUS.start..][..status.len()]
                 .copy_from_slice(status);
-            suppl_data[Report::R_SUPPL_VERSION].copy_from_slice(&3u16.to_le_bytes());
+            suppl_data[Report::R_SUPPL_VERSION].copy_from_slice(&2u16.to_le_bytes());
             suppl_data[Report::R_SUPPL_SIZE]
                 .copy_from_slice(&(REPORT_DATA_SIZE as u16).to_le_bytes());
             suppl_data[Report::R_COMPONENT_FLAGS].copy_from_slice(&15u32.to_le_bytes());
@@ -1336,6 +1336,9 @@ mod v2 {
             assert!(rebind.attestation_module_tcb.is_none());
             assert!(get_tcb_date_and_status_from_suppl_data(&data[..822]).is_err());
             assert!(get_tcb_date_and_status_from_suppl_data(&data[..900]).is_err());
+            data[Report::R_SUPPL_VERSION].copy_from_slice(&3u16.to_le_bytes());
+            assert!(get_tcb_date_and_status_from_suppl_data(&data).is_err());
+            data[Report::R_SUPPL_VERSION].copy_from_slice(&2u16.to_le_bytes());
             data[Report::R_COMPONENT_FLAGS].copy_from_slice(&3u32.to_le_bytes());
             assert!(get_tcb_date_and_status_from_suppl_data(&data).is_err());
             data[Report::R_COMPONENT_FLAGS].copy_from_slice(&7u32.to_le_bytes());

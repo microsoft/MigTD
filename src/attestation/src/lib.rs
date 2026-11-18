@@ -38,7 +38,7 @@ mod mock_quote;
 pub use attest::*;
 
 /// Supplemental data produced by quote verification: 822 bytes for the legacy
-/// API, 912 bytes with `attest-lib-ext` (`servtd_tdx_quote_suppl_data_v3`).
+/// API, 912 bytes with `attest-lib-ext` (`servtd_tdx_quote_suppl_data_v2`).
 /// The layout of the data:
 ///
 /// #[repr(C, packed)]
@@ -78,7 +78,7 @@ pub use attest::*;
 ///     pub qe_tcb_date: u64,                        // 782..790
 ///     pub qe_tcb_status: [u8; 32],                 // 790..822
 ///     // attest-lib-ext only; all integers are little-endian:
-///     pub version: u16,                           // 822..824  = 3
+///     pub version: u16,                           // 822..824  = 2
 ///     pub size: u16,                              // 824..826  = 912
 ///     pub component_flags: u32,                   // 826..830
 ///     pub tdx_module_tcb_date: i64,                // 830..838

@@ -301,14 +301,16 @@ automatically changed.
 The verifier boundary uses explicit versioned APIs:
 `sgxAttestationVerifyQuoteEx2` already returns QVL collateral-info version 3
 with independent launch/current component results.
-`verify_quote_integrity_ex3` returns a 912-byte ServTD version-3 record,
-appending three little-endian `sgx_ql_qv_result_t` values to the 900-byte
-version-2 layout. These complete component statuses, not the legacy
-32-byte status strings, drive component policy evaluation. Unknown or
-non-TCB result codes fail closed.
-REPORTDATA remains at offset 520. The existing `verify_quote_integrity_ex2`
-API still returns 900 bytes, and older APIs retain their 822-byte layouts
-and effective-date semantics, regardless of caller buffer capacity.
+`verify_quote_integrity_ex2` returns a 912-byte ServTD version-2 record,
+including three little-endian `sgx_ql_qv_result_t` component statuses.
+These complete component statuses, not the legacy 32-byte status strings,
+drive component policy evaluation. Unknown or non-TCB result codes fail closed.
+This extended v2 layout replaces the earlier 900-byte v2 layout; update
+the native verifier and MigTD consumers together. Results with the old size
+or an unsupported version are rejected.
+REPORTDATA remains at offset 520. The legacy `verify_quote_integrity` and
+`verify_quote_integrity_ex` APIs retain their 822-byte layouts and
+effective-date semantics, regardless of caller buffer capacity.
 
 `attestationModule` currently represents QE/TDQE. QTD/NRX verification is not
 implemented by this change. A future authenticated NRX backend should copy

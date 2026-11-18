@@ -46,6 +46,14 @@ SPDM_CONFIG="$PWD/config/spdm_config.json" cargo check -p spdmlib --features chu
 The repository's SPDM configuration requires `chunk-cap`; without it,
 `spdmlib/build.rs` rejects the configured transport buffer sizes.
 
+For device-specific library Clippy checks, select `-p migtd --lib` with
+`--no-default-features` and the intended feature set, not `--workspace`.
+Workspace members `migtd-hash` and `xtask` can re-enable the default
+`virtio-vsock` alongside `vmcall-raw`. That unsupported mixed profile produces
+`mig_socket_info` field errors (`src/migtd/src/migration/data.rs`), even when
+the isolated profile passes. Keep transports separate and retain the
+required warning policy; the firmware matrix covers the other device profiles.
+
 ## Verification — all five CI workflows MUST pass, no exceptions
 
 The project standard is that **every test in every workflow passes** before a

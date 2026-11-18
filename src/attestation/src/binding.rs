@@ -111,7 +111,7 @@ mod attest_lib_binding {
         ) -> i32;
 
         #[cfg(feature = "attest-lib-ext")]
-        pub fn verify_quote_integrity_ex3(
+        pub fn verify_quote_integrity_ex2(
             p_quote: *const ::core::ffi::c_void,
             quote_size: u32,
             root_pub_key: *const ::core::ffi::c_void,
@@ -163,7 +163,7 @@ mod null_binding {
 
     #[cfg(feature = "attest-lib-ext")]
     #[no_mangle]
-    pub unsafe extern "C" fn verify_quote_integrity_ex3(
+    pub unsafe extern "C" fn verify_quote_integrity_ex2(
         _p_quote: *const ::core::ffi::c_void,
         _quote_size: u32,
         _root_pub_key: *const ::core::ffi::c_void,
