@@ -1311,6 +1311,12 @@ impl PolicyProperty {
                     _ => Err(PolicyError::InvalidOperation),
                 }
             }
+            // Empty JSON arrays select IntegerList in the untagged Reference enum.
+            // Both empty list forms admit only the always-allowed status classes above.
+            Reference::IntegerList(items) if items.is_empty() => match self.operation.as_str() {
+                "allow-list" | "deny-list" => Ok(false),
+                _ => Err(PolicyError::InvalidOperation),
+            },
             Reference::StringList(reference) => {
                 let mut policy_allow = Vec::new();
                 match self.operation.as_str() {
@@ -1538,9 +1544,10 @@ mod test {
             .evaluate(&value, &reference, "2.0")
             .is_ok());
         value.tcb_status = Some("TDRelaunchAdvisedConfigurationNeeded".into());
-        assert!(deny_configuration
-            .evaluate(&value, &reference, "2.0")
-            .is_err());
+        assert!(matches!(
+            deny_configuration.evaluate(&value, &reference, "2.0"),
+            Err(PolicyError::TcbEvaluation)
+        ));
         assert!(allow_configuration
             .evaluate(&value, &reference, "2.0")
             .is_ok());
@@ -1574,6 +1581,81 @@ mod test {
             });
         }
         info
+    }
+
+    #[test]
+    fn empty_status_arrays_validate_and_evaluate_in_21() {
+        let template: serde_json::Value =
+            serde_json::from_str(include_str!("../../test/policy_v2/policy_data.json")).unwrap();
+        for field in ["tcb", "platform", "tdxModule", "attestationModule"] {
+            for operation in ["allow-list", "deny-list"] {
+                let mut data = template.clone();
+                data["version"] = "2.1".into();
+                data["policy"] = serde_json::json!([{"global": {
+                    (field): {"tcbStatusAccepted": {"operation": operation, "reference": []}}
+                }}]);
+                let input = serde_json::to_string(&data).unwrap();
+                let policy = PolicyData::deserialize_from_json(input.as_bytes()).unwrap();
+                assert!(policy.validate(), "{}/{}", field, operation);
+
+                let mut value = component_status_evidence();
+                for component in ["platform", "tdxModule", "attestationModule"] {
+                    component_mut(&mut value, component)
+                        .as_mut()
+                        .unwrap()
+                        .tcb_status = "UpToDate".into();
+                }
+                assert!(
+                    policy.evaluate_policy_common(&value, &value, false).is_ok(),
+                    "{}/{}",
+                    field,
+                    operation
+                );
+                for component in ["platform", "tdxModule", "attestationModule"] {
+                    if field != "tcb" && field != component {
+                        continue;
+                    }
+                    let mut configured = value.clone();
+                    component_mut(&mut configured, component)
+                        .as_mut()
+                        .unwrap()
+                        .tcb_status = "ConfigurationNeeded".into();
+                    assert!(
+                        matches!(
+                            policy.evaluate_policy_common(&configured, &value, false),
+                            Err(PolicyError::TcbEvaluation)
+                        ),
+                        "{}/{}/{}",
+                        field,
+                        operation,
+                        component
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_status_arrays_preserve_numeric_list_rules() {
+        let subset: PolicyProperty =
+            serde_json::from_str(r#"{"operation":"subset","reference":[]}"#).unwrap();
+        assert!(!subset.evaluate_integer(0, None).unwrap());
+        assert!(matches!(
+            subset.evaluate_tcb_status(TcbStatus::ConfigurationNeeded, None),
+            Err(PolicyError::InvalidOperation)
+        ));
+
+        let array: PolicyProperty =
+            serde_json::from_str(r#"{"operation":"array-equal","reference":[]}"#).unwrap();
+        assert!(array.evaluate_integer_list(&[], None).unwrap());
+        assert!(!array.evaluate_integer_list(&[1], None).unwrap());
+
+        let invalid: PolicyProperty =
+            serde_json::from_str(r#"{"operation":"allow-list","reference":[0]}"#).unwrap();
+        assert!(matches!(
+            invalid.evaluate_tcb_status(TcbStatus::ConfigurationNeeded, None),
+            Err(PolicyError::InvalidReference)
+        ));
     }
 
     #[test]
@@ -1650,6 +1732,7 @@ mod test {
                 (name): {"tcbStatusAccepted": {"operation": "allow-list", "reference": []}}
             }))
             .unwrap();
+            assert!(policy.validate("2.1"), "{}", name);
             let mut value = component_status_evidence();
             for other in ["platform", "tdxModule", "attestationModule"] {
                 component_mut(&mut value, other)
@@ -1665,7 +1748,14 @@ mod test {
             assert!(policy.evaluate(&value, &value, "2.1").is_ok(), "{}", name);
             component_mut(&mut value, name).as_mut().unwrap().tcb_status =
                 "ConfigurationNeeded".into();
-            assert!(policy.evaluate(&value, &value, "2.1").is_err(), "{}", name);
+            assert!(
+                matches!(
+                    policy.evaluate(&value, &value, "2.1"),
+                    Err(PolicyError::TcbEvaluation)
+                ),
+                "{}",
+                name
+            );
             let allow: GlobalPolicy = serde_json::from_value(serde_json::json!({
                 (name): {"tcbStatusAccepted": {
                     "operation": "allow-list", "reference": ["ConfigurationNeeded"]

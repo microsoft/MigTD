@@ -113,6 +113,9 @@ Component TCB rules require `policyData.version = "2.1"` and use
 `global.platform`, `global.tdxModule`, and `global.attestationModule`.
 The `AttestationModule` spelling is accepted as a read-compatible alias.
 Each component accepts date, evaluation-number, and accepted-status rules.
+Empty accepted-status lists retain the default status-class rules.
+The untagged `Reference` enum deserializes `[]` as `IntegerList`; handle
+that case in `evaluate_tcb_status` without changing numeric-list behavior.
 Do not mix these rules with `global.tcb` in the same entry; an FMSPC-only
 `platform` object and `global.crl` can accompany either TCB form.
 MigTD consumes QVL-selected launch results through the explicit
