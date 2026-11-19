@@ -63,16 +63,26 @@ fn validate_component_policy(policy: &Value) -> Result<()> {
             let global = global
                 .as_object()
                 .ok_or_else(|| anyhow!("global must be an object"))?;
+            if global.contains_key("attestationModule") && global.contains_key("AttestationModule")
+            {
+                return Err(anyhow!("Duplicate attestationModule policy field"));
+            }
+            let mut component_rules = false;
             for (name, component) in global {
                 if !matches!(
                     name.as_str(),
-                    "tcb" | "platform" | "crl" | "tdxModule" | "AttestationModule"
+                    "tcb"
+                        | "platform"
+                        | "crl"
+                        | "tdxModule"
+                        | "attestationModule"
+                        | "AttestationModule"
                 ) {
                     return Err(anyhow!("Unknown global policy field: {name}"));
                 }
                 if !matches!(
                     name.as_str(),
-                    "platform" | "tdxModule" | "AttestationModule"
+                    "platform" | "tdxModule" | "attestationModule" | "AttestationModule"
                 ) || component.is_null()
                 {
                     continue;
@@ -81,18 +91,26 @@ fn validate_component_policy(policy: &Value) -> Result<()> {
                     .as_object()
                     .ok_or_else(|| anyhow!("{name} must be an object"))?;
                 let extended = name != "platform"
-                    || ["tcbDate", "tcbEvaluationDataNumber"]
+                    || ["tcbDate", "tcbEvaluationDataNumber", "tcbStatusAccepted"]
                         .iter()
                         .any(|field| component.get(*field).is_some_and(|value| !value.is_null()));
                 if extended && version != "2.1" {
                     return Err(anyhow!("Component TCB rules require policy version 2.1"));
                 }
+                component_rules |= extended;
                 for field in component.keys() {
-                    if !(matches!(field.as_str(), "tcbDate" | "tcbEvaluationDataNumber")
-                        || name == "platform" && field == "fmspc")
+                    if !(matches!(
+                        field.as_str(),
+                        "tcbDate" | "tcbEvaluationDataNumber" | "tcbStatusAccepted"
+                    ) || name == "platform" && field == "fmspc")
                     {
                         return Err(anyhow!("Unknown {name} policy field: {field}"));
                     }
+                }
+                if component_rules && global.get("tcb").is_some_and(|value| !value.is_null()) {
+                    return Err(anyhow!(
+                        "global.tcb cannot be combined with per-component TCB rules"
+                    ));
                 }
             }
         }
@@ -176,15 +194,51 @@ mod tests {
         .is_ok());
         for block in ["policy", "forwardPolicy", "backwardPolicy"] {
             let mut policy = json!({"version": "2.0", (block): [{"global": {
-                "AttestationModule": {"tcbDate": {"operation": "greater-or-equal", "reference": "self"}}
+                "attestationModule": {"tcbDate": {"operation": "greater-or-equal", "reference": "self"}}
             }}]});
             assert!(validate_component_policy(&policy).is_err());
             policy["version"] = json!("2.1");
             assert!(validate_component_policy(&policy).is_ok());
-            policy[block][0]["global"] = json!({"attestationModule": {}});
+            policy[block][0]["global"] = json!({"attestationmodule": {}});
             assert!(validate_component_policy(&policy).is_err());
             policy[block][0]["global"] = json!({"platform": {" fmspc": {}}});
             assert!(validate_component_policy(&policy).is_err());
+        }
+    }
+
+    #[test]
+    fn component_status_and_exclusive_forms_are_validated_in_every_block() {
+        for block in ["policy", "forwardPolicy", "backwardPolicy"] {
+            for component in [
+                "platform",
+                "tdxModule",
+                "attestationModule",
+                "AttestationModule",
+            ] {
+                let mut policy = json!({"version": "2.0", (block): [{"global": {
+                    (component): {"tcbStatusAccepted": {
+                        "operation": "allow-list", "reference": ["ConfigurationNeeded"]
+                    }}
+                }}]});
+                assert!(validate_component_policy(&policy).is_err());
+                policy["version"] = json!("2.1");
+                assert!(validate_component_policy(&policy).is_ok());
+                policy[block][0]["global"]["tcb"] = json!({});
+                assert!(validate_component_policy(&policy).is_err());
+                policy[block][0]["global"]["tcb"] = Value::Null;
+                assert!(validate_component_policy(&policy).is_ok());
+            }
+            let duplicate = json!({"version": "2.1", (block): [{"global": {
+                "attestationModule": {}, "AttestationModule": null
+            }}]});
+            assert!(validate_component_policy(&duplicate).is_err());
+            for version in ["2.0", "2.1"] {
+                let common = json!({"version": version, (block): [{"global": {
+                    "tcb": {"tcbDate": {"operation": "greater-or-equal", "reference": "self"}},
+                    "platform": {"fmspc": {"operation": "equal", "reference": "90C06F000000"}}
+                }}]});
+                assert!(validate_component_policy(&common).is_ok());
+            }
         }
     }
 

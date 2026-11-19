@@ -13,7 +13,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "target/component-tcb-policy"
-COMPONENTS = ("platform", "tdxModule", "AttestationModule")
+COMPONENTS = ("platform", "tdxModule", "attestationModule")
 
 
 def rule(reference):
@@ -84,16 +84,32 @@ def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
     base = json.loads((ROOT / "config/AzCVMEmu/policy_v2_signed.json").read_text())
     relative = {
-        name: {"tcbDate": rule("self"), "tcbEvaluationDataNumber": rule("self")}
+        name: {
+            "tcbDate": rule("self"),
+            "tcbEvaluationDataNumber": rule("self"),
+            "tcbStatusAccepted": rule("self"),
+        }
         for name in COMPONENTS
     }
     absolute = {
-        name: {"tcbDate": rule("2000-01-01T00:00:00Z"), "tcbEvaluationDataNumber": rule(1)}
+        name: {
+            "tcbDate": rule("2000-01-01T00:00:00Z"),
+            "tcbEvaluationDataNumber": rule(1),
+            "tcbStatusAccepted": {
+                "operation": "allow-list",
+                "reference": ["ConfigurationNeeded"],
+            },
+        }
         for name in COMPONENTS
     }
     run_case(base, "relative", relative)
+    legacy = copy.deepcopy(relative)
+    legacy["AttestationModule"] = legacy.pop("attestationModule")
+    run_case(base, "legacy-field-alias", legacy)
     run_case(base, "mock-quote", relative, mock_quote=True)
     run_case(base, "absolute", absolute)
+    run_case(base, "common-relative", {"tcb": relative["platform"]})
+    run_case(base, "common-absolute", {"tcb": absolute["platform"]})
     for name in COMPONENTS:
         for field, floor in (
             ("tcbDate", "2100-01-01T00:00:00Z"),

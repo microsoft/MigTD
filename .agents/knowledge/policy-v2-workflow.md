@@ -109,26 +109,38 @@ At boot, MigTD:
 
 ## Implementation status
 
-Component TCB rules require `policyData.version = "2.1"` and use the exact
-blocks `global.platform`, `global.tdxModule`, and `global.AttestationModule`.
+Component TCB rules require `policyData.version = "2.1"` and use
+`global.platform`, `global.tdxModule`, and `global.attestationModule`.
+The `AttestationModule` spelling is accepted as a read-compatible alias.
+Each component accepts date, evaluation-number, and accepted-status rules.
+Empty accepted-status lists retain the default status-class rules.
+The untagged `Reference` enum deserializes `[]` as `IntegerList`; handle
+that case in `evaluate_tcb_status` without changing numeric-list behavior.
+Do not mix these rules with `global.tcb` in the same entry; an FMSPC-only
+`platform` object and `global.crl` can accompany either TCB form.
 MigTD consumes QVL-selected launch results through the explicit
-`verify_quote_integrity_ex2` 900-byte report; do not reconstruct matches from
+`verify_quote_integrity_ex2` 912-byte report; do not reconstruct matches from
 collateral JSON or substitute the v5 current-SVN result. REPORTDATA remains
 at offset 520. Platform and module share the TCB Info evaluation number;
 QE/TDQE uses QE Identity's number. Legacy module version zero bundles the
-module date with the platform date, not an independent module identity.
-`global.tcb` uses QVL's aggregate date/status/number, including for schema 2.0.
-Read the extended aggregate-status field: legacy component-status slots may
-be empty when a full QVL status name cannot fit their 32-byte width.
+module date/status with the platform result, not an independent identity.
+Schema 2.1 `global.tcb` applies common rules to every component, including
+same-component `"self"` comparisons; schema 2.0 retains aggregate behavior.
+Read the three numeric component-status fields, not the legacy 32-byte
+status strings. The ServTD v2 report has version 2 and size 912; the verifier
+and consumers must agree on this layout. The legacy quote-verification APIs
+return 822-byte reports. QVL's collateral-info version 3 is independent of
+the ServTD report version.
 Rebind peer TDREPORT data has no component results and continues to skip
 global rules. See `doc/policy_v2.md` and the
 `component_evaluation_uses_verifier_output_not_collateral_json` regression.
 
-The runtime enforces the completed design in both migration and rebinding:
-it resolves `ServtdExt.init_servtd_info_hash` and the authenticated source's
-current report hash through the source's verified mapping, fails closed on
-either miss, and rejects `init SVN > current SVN`. The legacy wire
-Init_TDINFO is ignored.
+Migration and rebinding resolve the authenticated source's current report
+hash through the source's verified mapping. The initial hash from
+`ServtdExt.init_servtd_info_hash` uses that mapping with an authenticated
+local fallback. Missing current mappings, initial hashes absent from both
+mappings, conflicting initial SVN assignments, and `init SVN > current SVN`
+fail closed. The legacy wire Init_TDINFO is ignored.
 
 ## Gotcha
 

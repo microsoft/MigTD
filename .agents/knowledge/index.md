@@ -1,5 +1,8 @@
 # .agents/knowledge — topical reference index
 
+Keep topical references focused on current behavior and contracts. Put
+revision narratives in `decisions-log.md`, not in the reference documents.
+
 ## Workflow & conventions
 
 * [Commit Hygiene, Remotes & Workflow Patterns](commit-and-workflow.md) - DCO sign-off, force-push rules, remote layout, rebase/cherry-pick patterns, issue filing.

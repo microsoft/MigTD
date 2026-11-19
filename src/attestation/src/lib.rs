@@ -38,7 +38,7 @@ mod mock_quote;
 pub use attest::*;
 
 /// Supplemental data produced by quote verification: 822 bytes for the legacy
-/// API, 900 bytes with `attest-lib-ext` (`servtd_tdx_quote_suppl_data_v2`).
+/// API, 912 bytes with `attest-lib-ext` (`servtd_tdx_quote_suppl_data_v2`).
 /// The layout of the data:
 ///
 /// #[repr(C, packed)]
@@ -79,16 +79,20 @@ pub use attest::*;
 ///     pub qe_tcb_status: [u8; 32],                 // 790..822
 ///     // attest-lib-ext only; all integers are little-endian:
 ///     pub version: u16,                           // 822..824  = 2
-///     pub size: u16,                              // 824..826  = 900
+///     pub size: u16,                              // 824..826  = 912
 ///     pub component_flags: u32,                   // 826..830
 ///     pub tdx_module_tcb_date: i64,                // 830..838
 ///     pub tcb_eval_data_num: u32,                  // 838..842
 ///     pub tcb_info_eval_data_num: u32,             // 842..846
 ///     pub qe_eval_data_num: u32,                   // 846..850
 ///     pub aggregate_tcb_status: [u8; 50],          // 850..900
+///     // Component statuses are sgx_ql_qv_result_t values:
+///     pub platform_tcb_status: u32,               // 900..904
+///     pub tdx_module_tcb_status: u32,             // 904..908
+///     pub qe_tcb_status: u32,                     // 908..912
 /// }
 pub const TD_VERIFIED_REPORT_SIZE: usize = if cfg!(feature = "attest-lib-ext") {
-    900
+    912
 } else {
     822
 };

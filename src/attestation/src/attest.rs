@@ -280,17 +280,17 @@ mod tests {
         assert_eq!(verified.len(), TD_VERIFIED_REPORT_SIZE);
         assert_eq!(verified[520..584], [0x5a; 64]);
 
-        for size in [822, 899, 901, 1025] {
+        for size in [822, 900, 911, 913, 1025] {
             assert!(matches!(
                 finish_verified_report(report.clone(), size),
                 Err(Error::InvalidOutput)
             ));
         }
         report[822] = 3;
-        assert!(finish_verified_report(report.clone(), 900).is_err());
+        assert!(finish_verified_report(report.clone(), 912).is_err());
         report[822] = 2;
         report[824] ^= 1;
-        assert!(finish_verified_report(report.clone(), 900).is_err());
-        assert!(finish_verified_report(vec![0; 899], 900).is_err());
+        assert!(finish_verified_report(report.clone(), 912).is_err());
+        assert!(finish_verified_report(vec![0; 911], 912).is_err());
     }
 }
